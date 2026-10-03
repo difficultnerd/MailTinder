@@ -1,0 +1,34 @@
+rules:
+  - id: privacy-log-sensitive-identifier
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      A logging or print call mentions a sensitive identifier (email, token, password, secret,
+      authorization, cookie, key, message body). Log an opaque ID or a length instead. If this
+      is a false positive, add `// nosemgrep: privacy-log-sensitive-identifier` with a reason.
+    paths:
+      include: ["*.rs", "*.dart"]
+    pattern-regex: >-
+      (?is)\b(trace|debug|info|warn|error|println|eprintln|print|eprint|dbg|debugPrint|log|logger\.\w+|_log\.\w+)!?\s*\([^;]*?\b\w*(email|password|passwd|secret|token|authorization|api_?key|cookie|bearer|(mail|message|msg)_?(body|content|text|subject))\w*\b
+
+  - id: privacy-rust-derive-debug-on-sensitive-struct
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      A struct with a sensitive-looking field derives Debug, so any `{:?}` log leaks it. Wrap the
+      field in a redacting newtype (for example `secrecy::SecretString`) or implement Debug by hand.
+    paths:
+      include: ["*.rs"]
+    pattern-regex: >-
+      (?is)#\[derive\([^)]*\bDebug\b[^)]*\)\]\s*(pub(\([^)]*\))?\s+)?struct\s+\w+\s*\{[^}]*\b\w*(email|password|passwd|secret|token|api_?key|(mail|message|msg)_?(body|content|text))\w*\s*:
+
+  - id: privacy-dart-to-string-print-of-model
+    languages: [generic]
+    severity: WARNING
+    message: >-
+      Printing a whole model or request object can include sensitive fields. Log selected
+      non-sensitive fields instead.
+    paths:
+      include: ["*.dart"]
+    pattern-regex: >-
+      \b(print|debugPrint)\(\s*(response|request|user|credentials|session|auth)\w*\s*\)

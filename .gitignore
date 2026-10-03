@@ -1,0 +1,33 @@
+# Rust
+backend/target/
+
+# Dart / Flutter
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/.packages
+app/pubspec_overrides.yaml
+app/ios/Pods/
+app/android/.gradle/
+app/android/local.properties
+
+# Python (tooling only)
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

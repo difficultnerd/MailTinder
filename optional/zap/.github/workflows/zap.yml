@@ -1,0 +1,49 @@
+name: zap-dast
+
+# Only scan systems you own or have written permission to test.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 2"
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    # Set repository variable ZAP_TARGET_URL (Settings > Variables), e.g. https://staging.example.com
+    if: ${{ vars.ZAP_TARGET_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: ZAP baseline scan (passive)
+        run: |
+          mkdir -p zap-out && chmod 777 zap-out
+          docker run --rm -v "$PWD/.zap:/zap/wrk/rules:ro" -v "$PWD/zap-out:/zap/wrk/out:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t "${{ vars.ZAP_TARGET_URL }}" -c rules/rules.tsv \
+            -r out/report.html -J out/report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: zap-report
+          path: zap-out/
+
+  api-scan:
+    # Set ZAP_OPENAPI_URL to scan an API from its OpenAPI definition (active scan: use staging only).
+    if: ${{ vars.ZAP_OPENAPI_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: ZAP API scan
+        run: |
+          mkdir -p zap-out && chmod 777 zap-out
+          docker run --rm -v "$PWD/.zap:/zap/wrk/rules:ro" -v "$PWD/zap-out:/zap/wrk/out:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-api-scan.py \
+            -t "${{ vars.ZAP_OPENAPI_URL }}" -f openapi -c rules/rules.tsv \
+            -r out/api-report.html
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: zap-api-report
+          path: zap-out/

@@ -1,0 +1,22 @@
+name: verify-signatures
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  signed-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require GitHub-verified signatures on every PR commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bad=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}/commits" \
+            --jq '.[] | select(.commit.verification.verified != true) | .sha[0:10] + " " + (.commit.message | split("\n")[0])')
+          if [ -n "$bad" ]; then
+            echo "Unverified commits:"; echo "$bad"; exit 1
+          fi

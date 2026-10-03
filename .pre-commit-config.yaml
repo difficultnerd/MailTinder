@@ -1,0 +1,65 @@
+# Install once per clone:  pre-commit install
+# Fast checks run on commit; slower static analysis runs on push.
+default_install_hook_types: [pre-commit, pre-push]
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.0
+    hooks:
+      - id: gitleaks
+        stages: [pre-commit]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-toml
+
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt
+        entry: cargo fmt --manifest-path backend/Cargo.toml --all --
+        language: system
+        files: ^backend/.*\.rs$
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: dart-format
+        name: dart format
+        entry: dart format app
+        language: system
+        files: ^app/.*\.dart$
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: language-policy
+        name: language policy (no Python in core code)
+        entry: tools/check_language_policy.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+      - id: clippy
+        name: clippy
+        entry: cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features -- -D warnings
+        language: system
+        files: ^backend/
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: dart-analyze
+        name: dart analyze
+        entry: bash -c 'cd app && flutter analyze --fatal-infos'
+        language: system
+        files: ^app/
+        pass_filenames: false
+        stages: [pre-push]

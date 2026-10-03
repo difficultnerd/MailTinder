@@ -1,0 +1,10 @@
+# Extend the upstream ruleset; add project-specific allowlists below.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project-wide allowlist"
+paths = [
+  '''(^|/)\.gitleaks\.toml$''',
+]
+# Add known-safe fixtures here, with a comment explaining why each is safe.
