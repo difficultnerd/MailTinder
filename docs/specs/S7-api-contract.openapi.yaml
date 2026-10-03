@@ -1,0 +1,1675 @@
+openapi: 3.1.0
+info:
+  title: Mail Tinder API
+  version: 1.0.0-draft
+  description: >
+    Contract for traffic from the Flutter web app to the Rust api service, and
+    the internal calls made by Cloud Tasks and Cloud Scheduler. Prose, story
+    mapping and rationale are in S7-api-contract.md, which wins where the two
+    differ. Every response carries Cache-Control no-store and X-Request-Id.
+servers:
+  - url: /api/v1
+    description: Public API, same origin as the app through Firebase Hosting
+  - url: /internal/v1
+    description: Internal endpoints, OIDC only, internal ingress
+tags:
+  - name: auth
+  - name: mailboxes
+  - name: feed
+  - name: swipes
+  - name: categories
+  - name: rules
+  - name: needs-attention
+  - name: history
+  - name: account
+  - name: admin
+  - name: experiments
+  - name: internal
+security:
+  - session: []
+paths:
+  /auth/{provider}/start:
+    post:
+      tags: [auth]
+      operationId: authStart
+      summary: API-AUTH-1 Start Google OAuth to sign in, join (invite), link (step-up), reconnect or step up (AU-02, AU-03, AU-04, ST-03, S7 section 3.6)
+      security: [{}, {session: []}]
+      parameters:
+        - $ref: '#/components/parameters/Provider'
+        - $ref: '#/components/parameters/Csrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [intent]
+              properties:
+                intent: {type: string, enum: [sign_in, join, link, reconnect, step_up], description: 'step_up sends prompt=login and max_age=0; the callback checks auth_time is within 5 minutes'}
+                invite_token: {type: [string, 'null'], minLength: 43, maxLength: 64}
+                mailbox_id: {type: [string, 'null'], format: uuid}
+      responses:
+        '200':
+          description: Provider authorisation URL; the app navigates to it. Session created or rotated.
+          headers:
+            Set-Cookie: {schema: {type: string}}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [authorization_url]
+                properties:
+                  authorization_url: {type: string, format: uri, pattern: '^https://'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /auth/{provider}/callback:
+    get:
+      tags: [auth]
+      operationId: authCallback
+      summary: API-AUTH-2 OAuth callback (AU-02, AU-03, AU-04)
+      security: [{session: []}]
+      parameters:
+        - $ref: '#/components/parameters/Provider'
+        - {name: code, in: query, required: false, schema: {type: string, maxLength: 2048}}
+        - {name: state, in: query, required: true, schema: {type: string, maxLength: 256}}
+        - {name: error, in: query, required: false, schema: {type: string, maxLength: 256}}
+      responses:
+        '302':
+          description: >
+            Redirect to /#/auth/result?outcome=signed_in|joined|linked|reconnected|stepped_up|
+            not_invited|not_registered|invite_invalid|email_mismatch|email_unverified|
+            mailbox_linked_elsewhere|step_up_wrong_account|consent_blocked|cancelled|failed.
+            consent_blocked is v2. Session rotated; a new sign-in ends the user's other session.
+          headers:
+            Location: {schema: {type: string}}
+            Set-Cookie: {schema: {type: string}}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /session:
+    get:
+      tags: [auth]
+      operationId: getSession
+      summary: API-AUTH-3 Current session state and CSRF token (AU-03 AC5)
+      security: [{}, {session: []}]
+      responses:
+        '200':
+          description: Session state. Never 401.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+  /auth/sign-out:
+    post:
+      tags: [auth]
+      operationId: signOut
+      summary: API-AUTH-4 Sign out
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      responses:
+        '204':
+          description: Signed out; cookie cleared
+          headers:
+            Clear-Site-Data: {schema: {type: string, example: '"cache", "storage"'}}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /progress:
+    get:
+      tags: [feed]
+      operationId: getProgress
+      summary: API-PROG-1 Inbox meter and level (GM-01, GM-04)
+      responses:
+        '200':
+          description: Progress
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [inbox_count, mailbox_errors, level]
+                properties:
+                  inbox_count: {type: integer, minimum: 0}
+                  mailbox_errors:
+                    type: array
+                    items: {$ref: '#/components/schemas/MailboxError'}
+                  level:
+                    type: [object, 'null']
+                    additionalProperties: false
+                    required: [year, remaining]
+                    properties:
+                      year: {type: integer, minimum: 1970, maximum: 2100}
+                      remaining: {type: integer, minimum: 0}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/users:
+    get:
+      tags: [admin]
+      operationId: listUsers
+      summary: API-ADM-16 List users (S9 section 7.6)
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [users, next_cursor]
+                properties:
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [user_id, email_address, created_at, is_admin, mailbox_count, signed_in, last_seen_at]
+                      properties:
+                        user_id: {type: string, format: uuid}
+                        email_address: {$ref: '#/components/schemas/EmailAddress'}
+                        created_at: {type: string, format: date-time}
+                        is_admin: {type: boolean}
+                        mailbox_count: {type: integer, minimum: 0}
+                        signed_in: {type: boolean, description: True when the user has a live session}
+                        last_seen_at: {type: [string, 'null'], format: date-time}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/users/{user_id}/sessions:
+    delete:
+      tags: [admin]
+      operationId: adminEndUserSessions
+      summary: API-ADM-15 End a user's session; step-up (ASVS V7.4.5)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: user_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Ended}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /invite-requests:
+    post:
+      tags: [auth]
+      operationId: createInviteRequest
+      summary: API-INV-1 Request an invite using the verified email in the pending session (AU-02)
+      security: [{session: []}]
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Empty'}
+      responses:
+        '202': {description: Accepted. Same response whether or not a request already exists.}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /mailboxes:
+    get:
+      tags: [mailboxes]
+      operationId: listMailboxes
+      summary: API-MBX-1 List linked mailboxes (ST-03, AU-04)
+      responses:
+        '200':
+          description: Mailboxes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [mailboxes]
+                properties:
+                  mailboxes:
+                    type: array
+                    items: {$ref: '#/components/schemas/Mailbox'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /mailboxes/{mailbox_id}:
+    delete:
+      tags: [mailboxes]
+      operationId: disconnectMailbox
+      summary: API-MBX-2 Disconnect a mailbox; needs recent auth (AU-05)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: mailbox_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Disconnected}
+        '409': {$ref: '#/components/responses/Problem'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /feed/next:
+    post:
+      tags: [feed]
+      operationId: feedNext
+      summary: API-FEED-1 Next page of cards; advances cursor and applies rules (FD-01 to FD-04, SR-01, UN-06)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                cursor: {$ref: '#/components/schemas/Cursor'}
+                limit: {type: integer, minimum: 1, maximum: 50, default: 20}
+                refresh: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Cards, possibly with per-mailbox errors
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FeedPage'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /swipes:
+    post:
+      tags: [swipes]
+      operationId: swipe
+      summary: API-SW-1 Apply a swipe (SW-01 to SW-04, SR-01, PB-01, UN-01)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SwipeRequest'}
+      responses:
+        '200':
+          description: Swipe applied
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SwipeResult'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /swipes/undo:
+    post:
+      tags: [swipes]
+      operationId: undoSwipe
+      summary: API-SW-2 Undo one swipe (SW-05)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [undo_token]
+              properties:
+                undo_token: {$ref: '#/components/schemas/SealedRef'}
+      responses:
+        '200':
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [restored, unsubscribe_already_sent]
+                properties:
+                  restored: {type: boolean}
+                  unsubscribe_already_sent: {type: boolean}
+        '410': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /categories:
+    get:
+      tags: [categories]
+      operationId: listCategories
+      summary: API-CAT-1 List categories with counts (FL-05)
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [categories]
+                properties:
+                  categories:
+                    type: array
+                    items: {$ref: '#/components/schemas/Category'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [categories]
+      operationId: createCategory
+      summary: API-CAT-2 Create a category (FL-02)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CategoryName'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Category'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /categories/{category_id}:
+    parameters:
+      - {name: category_id, in: path, required: true, schema: {type: string, format: uuid}}
+    patch:
+      tags: [categories]
+      operationId: renameCategory
+      summary: API-CAT-3 Rename a category
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CategoryName'}
+      responses:
+        '200':
+          description: Renamed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Category'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [categories]
+      operationId: deleteCategory
+      summary: API-CAT-4 Delete a category label; messages are never deleted
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      responses:
+        '204': {description: Deleted}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /categories/{category_id}/messages:
+    get:
+      tags: [categories]
+      operationId: listCategoryMessages
+      summary: API-CAT-5 Messages in a category (FL-05)
+      parameters:
+        - {name: category_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [messages, next_cursor, mailbox_errors]
+                properties:
+                  messages:
+                    type: array
+                    items: {$ref: '#/components/schemas/FiledMessage'}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+                  mailbox_errors:
+                    type: array
+                    items: {$ref: '#/components/schemas/MailboxError'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /rules:
+    get:
+      tags: [rules]
+      operationId: listRules
+      summary: API-RULE-1 List sort rules (SR-01, PB-01, FL-04)
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/RuleKind'}
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [rules]
+                properties:
+                  rules:
+                    type: array
+                    items: {$ref: '#/components/schemas/Rule'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [rules]
+      operationId: createRule
+      summary: API-RULE-2 Create a block or filing rule (PB-01 AC2, FL-04 AC2)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  additionalProperties: false
+                  required: [kind, prompt_ref]
+                  properties:
+                    kind: {const: block_person}
+                    prompt_ref: {$ref: '#/components/schemas/SealedRef'}
+                - type: object
+                  additionalProperties: false
+                  required: [kind, mailbox_id, message_id, category_id]
+                  properties:
+                    kind: {const: file}
+                    mailbox_id: {type: string, format: uuid}
+                    message_id: {$ref: '#/components/schemas/MessageId'}
+                    category_id: {type: string, format: uuid}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rule'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /rules/{rule_id}:
+    parameters:
+      - {name: rule_id, in: path, required: true, schema: {type: string, format: uuid}}
+    patch:
+      tags: [rules]
+      operationId: updateRule
+      summary: API-RULE-3 Switch a rule on or off (SR-01 AC4)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rule'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [rules]
+      operationId: deleteRule
+      summary: API-RULE-4 Delete a rule
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      responses:
+        '204': {description: Deleted}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /block-prompts/decline:
+    post:
+      tags: [rules]
+      operationId: declineBlockPrompt
+      summary: API-RULE-5 Decline a block prompt for 90 days (PB-01 AC3)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [prompt_ref]
+              properties:
+                prompt_ref: {$ref: '#/components/schemas/SealedRef'}
+      responses:
+        '204': {description: Declined}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /needs-attention:
+    get:
+      tags: [needs-attention]
+      operationId: listNeedsAttention
+      summary: API-NA-1 Open Needs Attention items (NA-01, UN-05)
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, open_count, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/NeedsAttentionItem'}
+                  open_count: {type: integer, minimum: 0}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /needs-attention/{item_id}/resolve:
+    post:
+      tags: [needs-attention]
+      operationId: resolveNeedsAttention
+      summary: API-NA-2 Mark done (NA-01 AC2)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: item_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Resolved and deleted}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /needs-attention/{item_id}/dismiss:
+    post:
+      tags: [needs-attention]
+      operationId: dismissNeedsAttention
+      summary: API-NA-3 Dismiss (NA-01 AC2)
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: item_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Dismissed and deleted}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /history:
+    get:
+      tags: [history]
+      operationId: listHistory
+      summary: API-HIST-1 History of automated actions (ST-01, UN-01 AC3)
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          schema: {type: string, enum: [all, unsubscribes, rule_actions, filing], default: all}
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [entries, next_cursor]
+                properties:
+                  entries:
+                    type: array
+                    items: {$ref: '#/components/schemas/HistoryEntry'}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /stats:
+    get:
+      tags: [history]
+      operationId: getStats
+      summary: API-STAT-1 Stats (ST-02)
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [emails_triaged, senders_unsubscribed, unsubscribes_confirmed, mail_stopped_per_year, achievements]
+                properties:
+                  emails_triaged: {type: integer, minimum: 0}
+                  senders_unsubscribed: {type: integer, minimum: 0}
+                  unsubscribes_confirmed: {type: integer, minimum: 0}
+                  mail_stopped_per_year: {type: integer, minimum: 0}
+                  achievements:
+                    type: array
+                    items: {$ref: '#/components/schemas/Achievement'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /account:
+    delete:
+      tags: [account]
+      operationId: deleteAccount
+      summary: API-ACCT-1 Delete my account; step-up; app folders deleted and tokens revoked in the request (AU-06)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      responses:
+        '202':
+          description: Deletion queued; session ended
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [deletion_due_by, app_folders_not_deleted]
+                properties:
+                  deletion_due_by: {type: string, format: date-time}
+                  app_folders_not_deleted:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [mailbox_id, email_address]
+                      properties:
+                        mailbox_id: {type: string, format: uuid}
+                        email_address: {$ref: '#/components/schemas/EmailAddress'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invites:
+    get:
+      tags: [admin]
+      operationId: listInvites
+      summary: API-ADM-1 List invites (AU-01)
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: {type: string, enum: [pending, used, revoked, expired]}
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Invites
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invites, next_cursor]
+                properties:
+                  invites:
+                    type: array
+                    items: {$ref: '#/components/schemas/Invite'}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [admin]
+      operationId: createInvite
+      summary: API-ADM-2 Invite by email; re-sends if one exists (AU-01 AC1, AC2); needs step-up
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email_address]
+              properties:
+                email_address: {$ref: '#/components/schemas/EmailAddress'}
+      responses:
+        '200':
+          description: Existing invite re-sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invite'}
+        '201':
+          description: Invite created and sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invite'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invites/{invite_id}/resend:
+    post:
+      tags: [admin]
+      operationId: resendInvite
+      summary: API-ADM-3 Re-send an invite (AU-01 AC2); needs step-up
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: invite_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Re-sent
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invite'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invites/{invite_id}:
+    delete:
+      tags: [admin]
+      operationId: revokeInvite
+      summary: API-ADM-4 Revoke an invite (AU-01 AC4); needs step-up
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: invite_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Revoked}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invite-requests:
+    get:
+      tags: [admin]
+      operationId: listInviteRequests
+      summary: API-ADM-5 List invite requests (AU-02 AC2)
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Requests
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [requests, next_cursor]
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [request_id, email_address, created_at]
+                      properties:
+                        request_id: {type: string, format: uuid}
+                        email_address: {$ref: '#/components/schemas/EmailAddress'}
+                        created_at: {type: string, format: date-time}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invite-requests/{request_id}/approve:
+    post:
+      tags: [admin]
+      operationId: approveInviteRequest
+      summary: API-ADM-6 Approve a request; creates and sends an invite (AU-02 AC3); needs step-up
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: request_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '201':
+          description: Invite created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invite'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/invite-requests/{request_id}/decline:
+    post:
+      tags: [admin]
+      operationId: declineInviteRequest
+      summary: API-ADM-7 Decline and delete a request (AU-02 AC3); needs step-up
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: request_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Declined and deleted}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /me/experiments:
+    get:
+      tags: [experiments]
+      operationId: getMyExperiments
+      summary: API-EXP-1 My experiment settings (CR-01 section 2)
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MyExperiments'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    put:
+      tags: [experiments]
+      operationId: putMyExperiments
+      summary: API-EXP-2 Opt in to or out of the classifier bake-off; opt-out deletes my classifier_eval records (CR-01 section 2)
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [classifier_bakeoff]
+              properties:
+                classifier_bakeoff:
+                  type: object
+                  additionalProperties: false
+                  required: [opted_in]
+                  properties:
+                    opted_in: {type: boolean}
+                    consent_version: {type: [string, 'null'], maxLength: 32}
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MyExperiments'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/experiments/classifier:
+    get:
+      tags: [admin, experiments]
+      operationId: getClassifierExperiment
+      summary: API-ADM-8 Bake-off model switches (CR-01 1.7)
+      responses:
+        '200':
+          description: State
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClassifierExperiment'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    patch:
+      tags: [admin, experiments]
+      operationId: setClassifierExperiment
+      summary: API-ADM-9 Kill switch per model (CR-01 1.7); needs step-up
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [models]
+              properties:
+                models:
+                  type: array
+                  minItems: 1
+                  maxItems: 2
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [model, enabled]
+                    properties:
+                      model: {$ref: '#/components/schemas/Model'}
+                      enabled: {type: boolean}
+      responses:
+        '200':
+          description: Updated state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ClassifierExperiment'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/bakeoff:
+    get:
+      tags: [admin, experiments]
+      operationId: getBakeoffReport
+      summary: API-ADM-10 Bake-off report for header rules, Gemini and Jev; aggregates only, suppressed (CL-03, CL-04, CR-01a)
+      parameters:
+        - {name: from, in: query, required: true, schema: {type: string, format: date}}
+        - {name: to, in: query, required: true, schema: {type: string, format: date}}
+        - {name: input_version, in: query, required: false, schema: {type: string, maxLength: 16}}
+        - {name: question_version, in: query, required: false, schema: {type: string, maxLength: 16}}
+        - {name: price_version, in: query, required: false, schema: {type: string, maxLength: 16}}
+        - {name: pool_versions, in: query, required: false, schema: {type: boolean, default: false}}
+      responses:
+        '200':
+          description: Aggregates
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BakeoffReport'}
+            text/csv:
+              schema: {type: string, description: 'Tidy table: section,model,segment,metric,value,lower,upper,n. Content-Disposition filename is server-fixed (bakeoff-report.csv or bakeoff-snapshot.csv).'}
+        '406': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/bakeoff/snapshots:
+    get:
+      tags: [admin, experiments]
+      operationId: listBakeoffSnapshots
+      summary: API-ADM-13 List saved snapshots, newest first (CL-04)
+      parameters:
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Snapshot summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [snapshots, next_cursor]
+                properties:
+                  snapshots:
+                    type: array
+                    items: {$ref: '#/components/schemas/SnapshotSummary'}
+                  next_cursor: {$ref: '#/components/schemas/Cursor'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [admin, experiments]
+      operationId: createBakeoffSnapshot
+      summary: API-ADM-11 Save a suppressed aggregate snapshot; survives opt-outs and TTL (CR-01a G6); needs step-up
+      parameters: [{$ref: '#/components/parameters/Csrf'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, query]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                query: {$ref: '#/components/schemas/BakeoffQuery'}
+      responses:
+        '201':
+          description: Saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Snapshot'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /admin/bakeoff/snapshots/{snapshot_id}:
+    get:
+      tags: [admin, experiments]
+      operationId: getBakeoffSnapshot
+      summary: API-ADM-12 Get a snapshot as JSON or CSV (CR-01a G6, G7)
+      parameters:
+        - {name: snapshot_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Snapshot'}
+            text/csv:
+              schema: {type: string, description: 'Tidy table: section,model,segment,metric,value,lower,upper,n. Content-Disposition filename is server-fixed (bakeoff-report.csv or bakeoff-snapshot.csv).'}
+        '406': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+    delete:
+      tags: [admin, experiments]
+      operationId: deleteBakeoffSnapshot
+      summary: API-ADM-14 Delete a snapshot (CL-04); needs step-up
+      parameters:
+        - $ref: '#/components/parameters/Csrf'
+        - {name: snapshot_id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Deleted}
+        '429': {$ref: '#/components/responses/RateLimited'}
+        '4XX': {$ref: '#/components/responses/Problem'}
+        '5XX': {$ref: '#/components/responses/Problem'}
+  /unsubscribe-jobs/{job_id}/run:
+    servers: [{url: /internal/v1}]
+    post:
+      tags: [internal]
+      operationId: runUnsubscribeJob
+      summary: API-INT-1 Run an unsubscribe job; unsub service, called by Cloud Tasks (UN-01 to UN-05)
+      security: [{oidc: []}]
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Empty'}
+      responses:
+        '200':
+          description: Terminal state reached, job missing, or job not queued. Cloud Tasks stops.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: {type: string, enum: [sent, needs_attention, cancelled, not_found, not_queued]}
+        '401': {$ref: '#/components/responses/Problem'}
+        '503': {description: Retryable failure; Cloud Tasks retries with backoff}
+  /sweep:
+    servers: [{url: /internal/v1}]
+    post:
+      tags: [internal]
+      operationId: sweep
+      summary: API-INT-2 Expire jobs, Needs Attention items and sessions, and delete terminal jobs uncollected after 30 days; called by Cloud Scheduler
+      security: [{oidc: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Empty'}
+      responses:
+        '200':
+          description: Counts only
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {type: integer, minimum: 0}
+        '401': {$ref: '#/components/responses/Problem'}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: __session
+      description: Opaque session ID. Secure, HttpOnly, SameSite=Lax, Path=/. Unsafe methods also need X-CSRF-Token.
+    oidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Google-signed OIDC token; aud and caller service account email are checked.
+  parameters:
+    Provider:
+      name: provider
+      in: path
+      required: true
+      schema: {type: string, enum: [google, microsoft]}
+      description: v1 accepts google only; microsoft returns 400 until v2.
+    Csrf:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string, minLength: 32, maxLength: 128}
+    CursorQuery:
+      name: cursor
+      in: query
+      required: false
+      schema: {type: string, maxLength: 2048}
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+  responses:
+    Problem:
+      description: RFC 9457 problem details
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    RateLimited:
+      description: Rate limit hit
+      headers:
+        Retry-After: {schema: {type: integer, minimum: 1}}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+  schemas:
+    Empty:
+      type: object
+      additionalProperties: false
+    Cursor:
+      type: [string, 'null']
+      maxLength: 2048
+      description: Opaque sealed cursor; null starts from the stored position or marks the end.
+    SealedRef:
+      type: string
+      minLength: 16
+      maxLength: 4096
+      description: Opaque value sealed by the server, bound to user and session.
+    MessageId:
+      type: string
+      minLength: 1
+      maxLength: 256
+    EmailAddress:
+      type: string
+      format: email
+      maxLength: 320
+    HttpsUrl:
+      type: string
+      format: uri
+      pattern: '^https://'
+      maxLength: 2048
+    ProblemCode:
+      type: string
+      enum:
+        - invalid_request
+        - unauthenticated
+        - csrf_failed
+        - forbidden
+        - step_up_required
+        - not_found
+        - app_folder_move_failed
+        - last_mailbox
+        - mailbox_needs_sign_in
+        - message_changed
+        - category_exists
+        - consent_outdated
+        - experiment_unavailable
+        - versions_mixed
+        - snapshot_limit
+        - not_acceptable
+        - undo_expired
+        - payload_too_large
+        - unsupported_media_type
+        - rate_limited
+        - provider_error
+        - provider_unavailable
+        - internal_error
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, request_id]
+      properties:
+        type: {type: string, format: uri}
+        title: {type: string, maxLength: 100}
+        status: {type: integer, minimum: 400, maximum: 599}
+        code: {$ref: '#/components/schemas/ProblemCode'}
+        request_id: {type: string, format: uuid}
+        mailbox_id: {type: string, format: uuid}
+        retry_after_seconds: {type: integer, minimum: 1}
+        versions_present: {$ref: '#/components/schemas/VersionsPresent'}
+        fields:
+          type: array
+          maxItems: 20
+          items: {type: string, maxLength: 200}
+    SessionState:
+      type: string
+      enum: [anonymous, pending_invite_request, authenticated]
+    Achievement:
+      type: object
+      additionalProperties: false
+      required: [achievement_id, unlocked_at]
+      properties:
+        achievement_id: {type: string, maxLength: 40}
+        unlocked_at: {type: string, format: date-time}
+    Session:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state: {$ref: '#/components/schemas/SessionState'}
+        csrf_token: {type: string}
+        step_up_valid_until: {type: [string, 'null'], format: date-time}
+        user:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [user_id, is_admin]
+          properties:
+            user_id: {type: string, format: uuid}
+            is_admin: {type: boolean}
+        pending_invite_email:
+          oneOf:
+            - {$ref: '#/components/schemas/EmailAddress'}
+            - {type: 'null'}
+        mailboxes:
+          type: array
+          items: {$ref: '#/components/schemas/Mailbox'}
+        idle_expires_at: {type: [string, 'null'], format: date-time}
+        absolute_expires_at: {type: [string, 'null'], format: date-time}
+    Mailbox:
+      type: object
+      additionalProperties: false
+      required: [mailbox_id, provider, email_address, status, is_primary]
+      properties:
+        mailbox_id: {type: string, format: uuid}
+        provider: {type: string, enum: [gmail, graph], description: v1 accepts gmail only; graph is v2}
+        email_address: {$ref: '#/components/schemas/EmailAddress'}
+        status: {type: string, enum: [connected, needs_sign_in, consent_blocked], description: consent_blocked is v2 (Microsoft work tenants)}
+        is_primary: {type: boolean}
+        linked_at: {type: string, format: date-time}
+    MailboxError:
+      type: object
+      additionalProperties: false
+      required: [mailbox_id, code]
+      properties:
+        mailbox_id: {type: string, format: uuid}
+        code: {type: string, enum: [mailbox_needs_sign_in, consent_blocked, provider_error, provider_unavailable]}
+    CategoryRef:
+      type: object
+      additionalProperties: false
+      required: [category_id, name]
+      properties:
+        category_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 100}
+    Suggestion:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, alternates, confidence]
+      properties:
+        category_id: {type: [string, 'null'], format: uuid}
+        name: {type: [string, 'null'], maxLength: 100}
+        alternates:
+          type: array
+          maxItems: 2
+          items: {$ref: '#/components/schemas/CategoryRef'}
+        confidence: {type: string, enum: [learned, suggested, none]}
+    Card:
+      type: object
+      additionalProperties: false
+      required: [mailbox_id, message_id, received_at, sender_name, sender_address, subject, preview, bulk_score, bulk_reason, class, has_one_click, suggestion, keep_prompt, skip_count, provider_web_url, classification_token]
+      properties:
+        mailbox_id: {type: string, format: uuid}
+        message_id: {$ref: '#/components/schemas/MessageId'}
+        received_at: {type: string, format: date-time}
+        sender_name: {type: string, maxLength: 256}
+        sender_address: {type: string, maxLength: 320}
+        subject: {type: string, maxLength: 998}
+        preview: {type: string, maxLength: 300}
+        bulk_score: {type: integer, minimum: 0, maximum: 100}
+        bulk_reason: {type: string, maxLength: 200}
+        class: {type: string, enum: [list, bulk_no_header, notice, personal, suspect]}
+        has_one_click: {type: boolean}
+        suggestion:
+          oneOf:
+            - {$ref: '#/components/schemas/Suggestion'}
+            - {type: 'null'}
+        keep_prompt:
+          oneOf:
+            - {$ref: '#/components/schemas/CategoryRef'}
+            - {type: 'null'}
+        skip_count: {type: integer, minimum: 0, maximum: 2}
+        boss:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [remaining]
+          properties:
+            remaining: {type: integer, minimum: 0}
+        provider_web_url: {$ref: '#/components/schemas/HttpsUrl'}
+        classification_token: {$ref: '#/components/schemas/SealedRef'}
+        classifier_id:
+          type: string
+          maxLength: 64
+          description: Admin sessions only, for debugging; the classifier behind the badge. Absent for other users. Model predictions are never sent to the browser.
+    FeedPage:
+      type: object
+      additionalProperties: false
+      required: [cards, next_cursor, phase, phase_changed, mailbox_errors, rule_actions_applied]
+      properties:
+        cards:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/Card'}
+        next_cursor: {$ref: '#/components/schemas/Cursor'}
+        phase: {type: string, enum: [new, backlog]}
+        phase_changed: {type: boolean}
+        mailbox_errors:
+          type: array
+          items: {$ref: '#/components/schemas/MailboxError'}
+        rule_actions_applied: {type: integer, minimum: 0}
+    SwipeRequest:
+      type: object
+      additionalProperties: false
+      required: [mailbox_id, message_id, action, classification_token]
+      properties:
+        mailbox_id: {type: string, format: uuid}
+        message_id: {$ref: '#/components/schemas/MessageId'}
+        action: {type: string, enum: [keep, skip, reject, file]}
+        category_id: {type: [string, 'null'], format: uuid}
+        new_category_name: {type: [string, 'null'], minLength: 1, maxLength: 100}
+        classification_token: {$ref: '#/components/schemas/SealedRef'}
+    SwipeResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, undo_token, prompts]
+      properties:
+        outcome:
+          type: string
+          enum: [kept, skipped, trashed_unsubscribe_queued, trashed_unsubscribe_manual, trashed_list_no_unsubscribe, trashed, reported_spam, filed]
+        unsubscribe_due_at: {type: [string, 'null'], format: date-time}
+        filed_category:
+          oneOf:
+            - {$ref: '#/components/schemas/CategoryRef'}
+            - {type: 'null'}
+        undo_token: {$ref: '#/components/schemas/SealedRef'}
+        prompts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, prompt_ref, sender_name]
+            properties:
+              type: {type: string, enum: [block_person]}
+              prompt_ref: {$ref: '#/components/schemas/SealedRef'}
+              sender_name: {type: string, maxLength: 256}
+        achievements_unlocked:
+          type: array
+          items: {$ref: '#/components/schemas/Achievement'}
+        boss_defeated: {type: boolean}
+    CategoryName:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+    Category:
+      type: object
+      additionalProperties: false
+      required: [category_id, name, message_count, per_mailbox]
+      properties:
+        category_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 100}
+        message_count: {type: integer, minimum: 0}
+        per_mailbox:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [mailbox_id, message_count]
+            properties:
+              mailbox_id: {type: string, format: uuid}
+              message_count: {type: integer, minimum: 0}
+    FiledMessage:
+      type: object
+      additionalProperties: false
+      required: [mailbox_id, message_id, sender_name, subject, received_at, provider_web_url]
+      properties:
+        mailbox_id: {type: string, format: uuid}
+        message_id: {$ref: '#/components/schemas/MessageId'}
+        sender_name: {type: string, maxLength: 256}
+        subject: {type: string, maxLength: 998}
+        received_at: {type: string, format: date-time}
+        provider_web_url: {$ref: '#/components/schemas/HttpsUrl'}
+    RuleKind:
+      type: string
+      enum: [reject_list, block_person, file]
+    Rule:
+      type: object
+      additionalProperties: false
+      required: [rule_id, kind, match, category_id, enabled, created_at, times_applied, yearly_rate]
+      properties:
+        rule_id: {type: string, format: uuid}
+        kind: {$ref: '#/components/schemas/RuleKind'}
+        match:
+          type: object
+          additionalProperties: false
+          required: [sender_address, list_id]
+          properties:
+            sender_address: {type: string, maxLength: 320}
+            list_id: {type: [string, 'null'], maxLength: 512}
+        category_id: {type: [string, 'null'], format: uuid}
+        enabled: {type: boolean}
+        created_at: {type: string, format: date-time}
+        times_applied: {type: integer, minimum: 0}
+        yearly_rate: {type: [integer, 'null'], minimum: 0}
+    NeedsAttentionItem:
+      type: object
+      additionalProperties: false
+      required: [item_id, mailbox_id, sender_display, reason_code, link, created_at]
+      properties:
+        item_id: {type: string, format: uuid}
+        mailbox_id: {type: string, format: uuid}
+        sender_display: {type: string, maxLength: 256}
+        reason_code:
+          type: string
+          enum: [https_only_unsubscribe, one_click_redirect, one_click_address_refused, unsubscribe_failed, unsubscribe_ignored, job_expired, captcha, login_required, page_unclear, page_failed]
+          description: v1 uses the first six; captcha, login_required and the page_* codes are reserved for the v2 page handler.
+        link:
+          oneOf:
+            - {$ref: '#/components/schemas/HttpsUrl'}
+            - {type: 'null'}
+        created_at: {type: string, format: date-time}
+    HistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [entry_id, at, mailbox_id, sender_display, action, outcome, rule_id]
+      properties:
+        entry_id: {type: string, format: uuid}
+        at: {type: string, format: date-time}
+        mailbox_id: {type: string, format: uuid}
+        sender_display: {type: string, maxLength: 256}
+        action: {type: string, enum: [trashed_by_rule, unsubscribe, filed, filed_by_rule, blocked, reported_spam]}
+        outcome: {type: string, enum: [sent, failed, cancelled, expired, done]}
+        rule_id: {type: [string, 'null'], format: uuid}
+    Model:
+      type: string
+      enum: [gemini, jev]
+    MyExperiments:
+      type: object
+      additionalProperties: false
+      required: [classifier_bakeoff]
+      properties:
+        classifier_bakeoff:
+          type: object
+          additionalProperties: false
+          required: [available, opted_in, consent_version, current_consent_version, opted_in_at]
+          properties:
+            available: {type: boolean}
+            opted_in: {type: boolean}
+            consent_version: {type: [string, 'null'], maxLength: 32}
+            current_consent_version: {type: string, maxLength: 32}
+            opted_in_at: {type: [string, 'null'], format: date-time}
+    ClassifierExperiment:
+      type: object
+      additionalProperties: false
+      required: [models, participants]
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model, classifier_id, enabled, changed_at]
+            properties:
+              model: {$ref: '#/components/schemas/Model'}
+              classifier_id: {type: string, maxLength: 64}
+              enabled: {type: boolean}
+              changed_at: {type: string, format: date-time}
+        participants: {type: integer, minimum: 0}
+    NullableCount:
+      type: [integer, 'null']
+      minimum: 0
+      description: Null when below min_cell_size.
+    Ci:
+      type: object
+      additionalProperties: false
+      required: [value, lower, upper, n]
+      description: Rate with Wilson 95% interval; all null when suppressed.
+      properties:
+        value: {type: [number, 'null'], minimum: 0, maximum: 1}
+        lower: {type: [number, 'null'], minimum: 0, maximum: 1}
+        upper: {type: [number, 'null'], minimum: 0, maximum: 1}
+        n: {$ref: '#/components/schemas/NullableCount'}
+    Method:
+      type: string
+      enum: [header_rules, gemini, jev]
+    VersionsPresent:
+      type: object
+      additionalProperties: false
+      required: [input, question, price]
+      properties:
+        input: {type: array, items: {type: string, maxLength: 16}}
+        question: {type: array, items: {type: string, maxLength: 16}}
+        price: {type: array, items: {type: string, maxLength: 16}}
+    BakeoffQuery:
+      type: object
+      additionalProperties: false
+      required: [from, to]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        input_version: {type: [string, 'null'], maxLength: 16}
+        question_version: {type: [string, 'null'], maxLength: 16}
+        price_version: {type: [string, 'null'], maxLength: 16}
+        pool_versions: {type: boolean, default: false}
+    BakeoffReport:
+      type: object
+      additionalProperties: false
+      required: [query, versions_present, min_cell_size, ground_truth_version, interval_method, labelled_swipes, participants, models, paired, agreement, by_segment, confusion, trend]
+      properties:
+        query: {$ref: '#/components/schemas/BakeoffQuery'}
+        versions_present: {$ref: '#/components/schemas/VersionsPresent'}
+        min_cell_size: {type: integer, minimum: 1}
+        ground_truth_version: {type: string, maxLength: 16}
+        interval_method: {const: wilson_95}
+        labelled_swipes: {$ref: '#/components/schemas/NullableCount'}
+        participants:
+          type: object
+          additionalProperties: false
+          required: [count, top_contributor_share]
+          properties:
+            count: {$ref: '#/components/schemas/NullableCount'}
+            top_contributor_share:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [value, n]
+              properties:
+                value: {type: number, minimum: 0, maximum: 1}
+                n: {type: integer, minimum: 0}
+        models:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model, classifier_id, cards, valid_answers, accuracy, junk_precision, junk_recall, junk_f1, false_junk_rate, calibration, latency, timeout_rate, error_rate, input_tokens, cost_per_1000_messages_usd]
+            properties:
+              model: {$ref: '#/components/schemas/Method'}
+              classifier_id: {type: string, maxLength: 64}
+              cards: {$ref: '#/components/schemas/NullableCount'}
+              valid_answers: {$ref: '#/components/schemas/NullableCount'}
+              accuracy: {$ref: '#/components/schemas/Ci'}
+              junk_precision: {$ref: '#/components/schemas/Ci'}
+              junk_recall: {$ref: '#/components/schemas/Ci'}
+              junk_f1: {type: [number, 'null'], minimum: 0, maximum: 1}
+              false_junk_rate: {$ref: '#/components/schemas/Ci'}
+              calibration:
+                type: [object, 'null']
+                additionalProperties: false
+                required: [ece, bins]
+                properties:
+                  ece: {type: [number, 'null'], minimum: 0, maximum: 1}
+                  bins:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [confidence_from, confidence_to, count, observed_accuracy]
+                      properties:
+                        confidence_from: {type: number, minimum: 0, maximum: 1}
+                        confidence_to: {type: number, minimum: 0, maximum: 1}
+                        count: {$ref: '#/components/schemas/NullableCount'}
+                        observed_accuracy: {type: [number, 'null'], minimum: 0, maximum: 1}
+              latency:
+                type: object
+                additionalProperties: false
+                required: [p50_ms, p95_ms, histogram]
+                properties:
+                  p50_ms: {type: [integer, 'null'], minimum: 0}
+                  p95_ms: {type: [integer, 'null'], minimum: 0}
+                  histogram:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [from_ms, to_ms, count]
+                      properties:
+                        from_ms: {type: integer, minimum: 0}
+                        to_ms: {type: [integer, 'null'], minimum: 0, description: null means timeout bin}
+                        count: {$ref: '#/components/schemas/NullableCount'}
+              timeout_rate: {$ref: '#/components/schemas/Ci'}
+              error_rate: {$ref: '#/components/schemas/Ci'}
+              input_tokens: {type: [integer, 'null'], minimum: 0}
+              cost_per_1000_messages_usd: {type: [number, 'null'], minimum: 0}
+        paired:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model_a, model_b, n_paired, only_a_correct, only_b_correct, both_correct, neither_correct, mcnemar_exact_p, accuracy_difference, bootstrap]
+            properties:
+              model_a: {$ref: '#/components/schemas/Method'}
+              model_b: {$ref: '#/components/schemas/Method'}
+              n_paired: {$ref: '#/components/schemas/NullableCount'}
+              only_a_correct: {$ref: '#/components/schemas/NullableCount'}
+              only_b_correct: {$ref: '#/components/schemas/NullableCount'}
+              both_correct: {$ref: '#/components/schemas/NullableCount'}
+              neither_correct: {$ref: '#/components/schemas/NullableCount'}
+              mcnemar_exact_p: {type: [number, 'null'], minimum: 0, maximum: 1}
+              accuracy_difference:
+                type: object
+                additionalProperties: false
+                required: [value, lower, upper]
+                properties:
+                  value: {type: [number, 'null'], minimum: -1, maximum: 1}
+                  lower: {type: [number, 'null'], minimum: -1, maximum: 1}
+                  upper: {type: [number, 'null'], minimum: -1, maximum: 1}
+              bootstrap:
+                type: object
+                additionalProperties: false
+                required: [method, resamples, seed, participants]
+                properties:
+                  method: {type: string, enum: [cluster_by_participant, insufficient_participants]}
+                  resamples: {type: integer, minimum: 0}
+                  seed: {type: integer}
+                  participants: {$ref: '#/components/schemas/NullableCount'}
+        agreement:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model_a, model_b, rate]
+            properties:
+              model_a: {$ref: '#/components/schemas/Method'}
+              model_b: {$ref: '#/components/schemas/Method'}
+              rate: {$ref: '#/components/schemas/Ci'}
+        by_segment:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [dimension, value, model, accuracy, false_junk_rate]
+            properties:
+              dimension: {type: string, enum: [header_rules_class, has_list_unsubscribe, dkim_covers_unsubscribe, has_list_id, provider, age_bucket, text_tokens_bucket, lang_is_english]}
+              value: {type: string, maxLength: 32}
+              model: {$ref: '#/components/schemas/Method'}
+              accuracy: {$ref: '#/components/schemas/Ci'}
+              false_junk_rate: {$ref: '#/components/schemas/Ci'}
+        confusion:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model, class, label, count]
+            properties:
+              model: {$ref: '#/components/schemas/Method'}
+              class: {type: string, enum: [list, bulk_no_header, notice, personal, suspect]}
+              label: {type: string, enum: [junk, wanted]}
+              count: {$ref: '#/components/schemas/NullableCount'}
+        trend:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [date, model, accuracy]
+            properties:
+              date: {type: string, format: date}
+              model: {$ref: '#/components/schemas/Method'}
+              accuracy: {$ref: '#/components/schemas/Ci'}
+    SnapshotSummary:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, name, created_at, labelled_swipes]
+      properties:
+        snapshot_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 100}
+        created_at: {type: string, format: date-time}
+        labelled_swipes: {$ref: '#/components/schemas/NullableCount'}
+    Snapshot:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, name, created_at, labelled_swipes, report]
+      properties:
+        snapshot_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 100}
+        created_at: {type: string, format: date-time}
+        labelled_swipes: {$ref: '#/components/schemas/NullableCount'}
+        report: {$ref: '#/components/schemas/BakeoffReport'}
+    Invite:
+      type: object
+      additionalProperties: false
+      required: [invite_id, email_address, status, created_at, expires_at, last_sent_at]
+      properties:
+        invite_id: {type: string, format: uuid}
+        email_address: {$ref: '#/components/schemas/EmailAddress'}
+        status: {type: string, enum: [pending, used, revoked, expired]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        last_sent_at: {type: string, format: date-time}
