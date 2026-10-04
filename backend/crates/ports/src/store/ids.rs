@@ -54,7 +54,7 @@ impl<'de> Deserialize<'de> for Ciphertext {
 macro_rules! hash32 {
     ($n:ident, $doc:expr) => {
         #[doc = $doc]
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $n(pub [u8; 32]);
 
         impl fmt::Debug for $n {
@@ -94,13 +94,13 @@ impl SessionHash {
 
 /// HMAC-SHA-256 of the user ID under the log pseudonymisation key, first 16
 /// bytes, lower-case hex (32 chars).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UserPseudoId(pub String);
 
 /// Opaque per-limit key built by the caller, already hashed (no raw IP or
 /// address). Max 200 chars, `[a-z0-9:_-]`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RateLimitKey(pub String);
 
 fn hex(bytes: &[u8]) -> String {
