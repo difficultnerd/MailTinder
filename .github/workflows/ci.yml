@@ -53,6 +53,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: tools/check_language_policy.sh
 
+  ac-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - run: python3 tools/check_ac_coverage.py
+
   coverage:
     runs-on: ubuntu-latest
     steps:
