@@ -13,6 +13,7 @@ import argparse
 import fnmatch
 import json
 import mimetypes
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -66,9 +67,9 @@ def main() -> None:
             if ".." in rel or not all(c.isalnum() or c in "._-/" for c in rel):
                 return root / "index.html"
             candidate = (root / rel).resolve()
-            try:
-                candidate.relative_to(root)
-            except ValueError:
+            # Containment check CodeQL recognises: the resolved path must share
+            # the root as its common path, else fall back to index.html.
+            if os.path.commonpath([str(candidate), str(root)]) != str(root):
                 return root / "index.html"
             return candidate
 
