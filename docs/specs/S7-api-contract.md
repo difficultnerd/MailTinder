@@ -144,7 +144,7 @@ Without it they return `403 step_up_required`. The app shows the step-up overlay
 
 ### 3.7 Roles
 
-Two roles: `user` and `admin`. `admin` is a flag on the `User` record set by Terraform or a one-off script, never through the API (ASVS V8). Every `/api/v1/admin/**` route checks it server side and logs refusals (AU-01 AC3).
+Two roles: `user` and `admin`. `admin` is a flag on the `User` record set by the `mt-admin` tool (backlog T-507), run by James outside the API (ASVS V8). The tool also prints the first invite link. Every `/api/v1/admin/**` route checks it server side and logs refusals (AU-01 AC3).
 
 ## 4. Errors (ASVS V16)
 
