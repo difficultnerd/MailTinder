@@ -20,6 +20,9 @@ time.workspace = true
 uuid.workspace = true
 url.workspace = true
 async-trait.workspace = true
+jsonwebtoken.workspace = true
+sha2.workspace = true
+serde_urlencoded = "0.7"
 
 [lints]
 workspace = true

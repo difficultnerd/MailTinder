@@ -5,11 +5,44 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use time::OffsetDateTime;
 
+use super::scenario::{ClientReg, NextLogin, TokenScenario};
 use super::tokens::TokenRecord;
 
 /// A mailbox keyed by its email address (reserved domains only).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FakeMailboxKey(pub String);
+
+/// A stored grant (authorisation code and its follow-on).
+#[derive(Clone, Debug)]
+pub struct Grant {
+    pub code: String,
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub challenge: String,
+    pub nonce: String,
+    pub scopes: Vec<String>,
+    pub sub: String,
+    pub email: String,
+    pub email_verified: bool,
+    pub amr: Option<Vec<String>>,
+    pub auth_time: Option<i64>,
+    pub created_at: OffsetDateTime,
+    pub refresh_issued: bool,
+    pub used: bool,
+    pub access_tokens: Vec<String>,
+    pub refresh_token: Option<String>,
+}
+
+/// An issued refresh token.
+#[derive(Clone, Debug)]
+pub struct RefreshRecord {
+    pub token: String,
+    pub grant: String,
+    pub sub: String,
+    pub client_id: String,
+    pub scopes: Vec<String>,
+    pub email: String,
+}
 
 /// A stored message.
 #[derive(Clone, Debug)]
@@ -73,6 +106,16 @@ pub struct FakeState {
     pub fail_rules: Vec<FailRule>,
     /// When set, the next `POST /labels` creates the label but still answers 409.
     pub label_create_race: BTreeSet<String>,
+    // --- identity (T-206) ---
+    pub clients: BTreeMap<String, ClientReg>,
+    pub grants: BTreeMap<String, Grant>,
+    pub refresh_tokens: BTreeMap<String, RefreshRecord>,
+    pub next_login: Option<NextLogin>,
+    pub token_scenario: Option<TokenScenario>,
+    /// Revoked token kinds recorded for assertions; never values.
+    pub revocations: Vec<String>,
+    pub code_counter: u64,
+    pub last_nonce: Option<String>,
 }
 
 impl FakeState {

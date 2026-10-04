@@ -10,5 +10,11 @@ paths = [
   # literals; they are never real credentials. gitleaks scans full history,
   # so allow the whole test tree (current and historical copies).
   '''app/test/.*\.dart$''',
+  # TEST-ONLY RSA keys for fake-google's OIDC fake (T-206). These are committed
+  # test-only keys, never secrets: shipping them lets fake-google sign
+  # deterministic RS256 JWTs without the `rsa` crate (which carries an open
+  # RustSec advisory). The matching public n/e are constants in
+  # fake-google/src/oidc.rs; restoring these keys does not compromise anything.
+  '''backend/crates/testkit/fixtures/keys/TEST-ONLY-.*\.pem$''',
 ]
 # Add known-safe fixtures here, with a comment explaining why each is safe.

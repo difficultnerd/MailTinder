@@ -32,9 +32,17 @@ use super::mime;
 use super::state::{FakeEvent, FakeState, StoredMessage};
 use super::tokens::GMAIL_MODIFY;
 
-/// The shared state wrapper used by axum.
+/// The shared state wrapper used by axum. `.0` is the shared fake state;
+/// `.1` is the injected clock (all times come from it).
 #[derive(Clone)]
-pub struct AppState(pub Arc<std::sync::Mutex<FakeState>>);
+pub struct AppState(pub Arc<std::sync::Mutex<FakeState>>, pub Arc<dyn ports::Clock>);
+
+impl AppState {
+    /// The current time from the injected clock.
+    pub fn now(&self) -> OffsetDateTime {
+        self.1.now()
+    }
+}
 
 /// Build the Gmail router (mounted under `/gmail/v1/users/me`).
 pub fn router() -> Router<AppState> {

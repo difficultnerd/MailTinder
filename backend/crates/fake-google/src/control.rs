@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 
 use super::gmail::AppState;
+use super::scenario::{ClientReg, NextLogin, TokenScenario};
 use super::state::{FailRule, FakeEvent, FakeMailboxKey, FakeState, StoredMessage};
 use super::tokens::TokenRecord;
 
@@ -30,6 +31,12 @@ pub fn router() -> Router<AppState> {
         .route("/gmail/labels-create-race", post(arm_label_race))
         .route("/events", get(read_events))
         .route("/reset", post(reset))
+        .route("/identity/clients", post(register_client))
+        .route("/identity/next-login", post(set_next_login))
+        .route("/identity/token-scenario", post(set_token_scenario))
+        .route("/identity/revoke-all", post(revoke_all))
+        .route("/identity/revocations", get(read_revocations))
+        .route("/identity/service-token", post(service_token))
 }
 
 #[derive(Deserialize)]
@@ -277,9 +284,122 @@ async fn reset(State(st): State<AppState>) -> Result<Json<Value>, Json<Value>> {
     Ok(Json(json!({ "ok": true })))
 }
 
+
+#[derive(Deserialize)]
+struct ClientBody {
+    client_id: String,
+    client_secret: String,
+    redirect_uris: Vec<String>,
+}
+
+async fn register_client(
+    State(st): State<AppState>,
+    Json(body): Json<ClientBody>,
+) -> Result<Json<Value>, Json<Value>> {
+    let mut st = st.0.lock().unwrap();
+    st.clients.insert(
+        body.client_id.clone(),
+        ClientReg {
+            client_id: body.client_id,
+            client_secret: body.client_secret,
+            redirect_uris: body.redirect_uris,
+        },
+    );
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn set_next_login(
+    State(st): State<AppState>,
+    Json(body): Json<NextLogin>,
+) -> Result<Json<Value>, Json<Value>> {
+    let mut st = st.0.lock().unwrap();
+    st.next_login = Some(body);
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct ScenarioBody {
+    scenario: TokenScenario,
+}
+
+async fn set_token_scenario(
+    State(st): State<AppState>,
+    Json(body): Json<ScenarioBody>,
+) -> Result<Json<Value>, Json<Value>> {
+    let mut st = st.0.lock().unwrap();
+    st.token_scenario = Some(body.scenario);
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct RevokeAllBody {
+    sub: String,
+}
+
+async fn revoke_all(
+    State(st): State<AppState>,
+    Json(body): Json<RevokeAllBody>,
+) -> Result<Json<Value>, Json<Value>> {
+    let mut st = st.0.lock().unwrap();
+    let subs: Vec<String> = st
+        .refresh_tokens
+        .iter()
+        .filter(|(_, r)| r.sub == body.sub)
+        .map(|(t, _)| t.clone())
+        .collect();
+    for t in subs {
+        if let Some(rec) = st.refresh_tokens.remove(&t) {
+            st.revocations.push("refresh".to_owned());
+            let to_remove: Vec<String> = st
+                .grants
+                .get(&rec.grant)
+                .map(|g| g.access_tokens.clone())
+                .unwrap_or_default();
+            for at in &to_remove {
+                st.tokens.remove(at);
+            }
+        }
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn read_revocations(State(st): State<AppState>) -> Result<Json<Value>, Json<Value>> {
+    let st = st.0.lock().unwrap();
+    Ok(Json(json!({ "revocations": st.revocations })))
+}
+
+#[derive(Deserialize)]
+struct ServiceTokenBody {
+    aud: String,
+    email: String,
+    ttl_s: u64,
+}
+
+async fn service_token(
+    State(st): State<AppState>,
+    Json(body): Json<ServiceTokenBody>,
+) -> Result<Json<Value>, Json<Value>> {
+    let ttl_s = i64::try_from(body.ttl_s).unwrap_or(i64::MAX);
+    let ttl = time::Duration::seconds(ttl_s);
+    let token = super::oidc::build_id_token(
+        &super::oidc::IdTokenOptions {
+            aud: Some(&body.aud),
+            sub: "service-sub",
+            email: &body.email,
+            email_verified: true,
+            now: OffsetDateTime::now_utc().unix_timestamp(),
+            exp_offset: ttl.whole_seconds(),
+            ..Default::default()
+        },
+        None,
+    );
+    let _ = st;
+    Ok(Json(json!({ "id_token": token })))
+}
+
+
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-fn reserved(email: &str) -> bool {
-    let domain = email.rsplit('@').next().unwrap_or("");
+fn reserved(email: &str) -> bool {    let domain = email.rsplit('@').next().unwrap_or("");
     let d = domain.to_lowercase();
     d == "example.com"
         || d == "example.net"

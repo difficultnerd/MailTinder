@@ -17,6 +17,12 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=1024"]
       - id: detect-private-key
+        # TEST-ONLY RSA keys for fake-google's OIDC fake (T-206) are committed
+        # test infrastructure, never secrets; skip the private-key detector.
+        exclude: |
+          (?x)^(
+            backend/crates/testkit/fixtures/keys/TEST-ONLY-.*\.pem
+          )$
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-yaml

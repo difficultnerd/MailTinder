@@ -24,6 +24,10 @@ __pycache__/
 .env.*
 !.env.example
 *.pem
+# TEST-ONLY RSA keys for fake-google's OIDC fake (T-206). These are committed
+# test infrastructure, never secrets; see .gitleaks.toml and
+# .pre-commit-config.yaml for the matching allowlist/exclude.
+!backend/crates/testkit/fixtures/keys/TEST-ONLY-*.pem
 *.key
 *.p12
 *.jks
