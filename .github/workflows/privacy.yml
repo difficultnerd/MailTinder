@@ -16,11 +16,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install semgrep
-      - name: Sensitive-field logging rules
-        run: semgrep scan --error --metrics=off --config .semgrep/privacy.yml backend app
+      - name: Rule tests
+        run: semgrep --test --config .semgrep/ .semgrep/tests/
+      - name: Sensitive-field logging and project rules
+        run: semgrep scan --error --metrics=off --config .semgrep/privacy.yml --config .semgrep/mailtinder.yml backend app
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           toolchain: stable
           components: clippy
       - name: Clippy with logging macros disallowed
-        run: cargo clippy --manifest-path backend/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features --locked -- -D warnings

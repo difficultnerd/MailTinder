@@ -6,10 +6,11 @@ rules:
       A logging or print call mentions a sensitive identifier (email, token, password, secret,
       authorization, cookie, key, message body). Log an opaque ID or a length instead. If this
       is a false positive, add `// nosemgrep: privacy-log-sensitive-identifier` with a reason.
+      S5 bans tokens, cookies, message IDs, addresses, names, subjects, snippets, bodies and URLs from logs.
     paths:
       include: ["*.rs", "*.dart"]
     pattern-regex: >-
-      (?is)\b(trace|debug|info|warn|error|println|eprintln|print|eprint|dbg|debugPrint|log|logger\.\w+|_log\.\w+)!?\s*\([^;]*?\b\w*(email|password|passwd|secret|token|authorization|api_?key|cookie|bearer|(mail|message|msg)_?(body|content|text|subject))\w*\b
+      (?is)\b(trace|debug|info|warn|error|println|eprintln|print|eprint|dbg|debugPrint|log|logger\.\w+|_log\.\w+)!?\s*\([^;]*?\b\w*(email|password|passwd|secret|token|authorization|api_?key|cookie|bearer|(mail|message|msg)_?(body|content|text|subject)|subject|snippet|preview|from_(address|display|name)|sender_(address|name|display)|display_name|email_?address|list_unsubscribe|unsubscribe_(url|link|target)|message_?id|refresh|csrf|session_?(id|hash)|invite_?token|data_?key|url|href)\w*\b
 
   - id: privacy-rust-derive-debug-on-sensitive-struct
     languages: [generic]
@@ -20,7 +21,7 @@ rules:
     paths:
       include: ["*.rs"]
     pattern-regex: >-
-      (?is)#\[derive\([^)]*\bDebug\b[^)]*\)\]\s*(pub(\([^)]*\))?\s+)?struct\s+\w+\s*\{[^}]*\b\w*(email|password|passwd|secret|token|api_?key|(mail|message|msg)_?(body|content|text))\w*\s*:
+      (?is)#\[derive\([^)]*\bDebug\b[^)]*\)\]\s*(pub(\([^)]*\))?\s+)?struct\s+\w+\s*\{[^}]*\b\w*(email|password|passwd|secret|token|api_?key|(mail|message|msg)_?(body|content|text)|subject|snippet|preview|from_(address|display)|sender_(address|name|display)|display_name|email_?address|refresh|csrf|data_?key|url|link)\w*\s*:
 
   - id: privacy-dart-to-string-print-of-model
     languages: [generic]

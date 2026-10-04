@@ -21,6 +21,7 @@ GitHub template for personal projects: Rust backend (`backend/`), Flutter front 
 | Static analysis | Clippy, Dart analyzer, Semgrep | Clippy and analyzer: pre-push and CI `rust`, `dart`; Semgrep: CI `semgrep` |
 | Format | rustfmt, `dart format` | pre-commit; CI `rust`, `dart` |
 | Licences | cargo-deny (Rust), `tools/dart_license_check.py` (Dart) | CI `cargo-deny`, `dart-licenses` |
+| Privacy | `.semgrep/privacy.yml`, `.semgrep/mailtinder.yml`, `backend/clippy.toml` | CI `privacy-checks` |
 | Hook orchestration | pre-commit | `.pre-commit-config.yaml` |
 | Branch protection | `tools/apply_branch_protection.sh` | one-off, via `gh` |
 
@@ -30,7 +31,7 @@ Notes:
 
 - Dart has no maintained cargo-deny equivalent, so the licence check is a small stdlib-only Python script that classifies each resolved package's LICENSE file against an allowlist. Unknown or missing licences fail the job; add a reviewed `overrides` entry to accept one.
 - Dependabot also raises security alerts if enabled under Settings > Code security. Turn on Dependabot alerts and security updates there; the config file only covers version updates.
-- Branch protection requires all eight checks (`rust`, `dart`, `language-policy`, `gitleaks`, `semgrep`, `cargo-audit`, `cargo-deny`, `dart-licenses`), up-to-date branches, resolved conversations, no force pushes and no deletion, and applies to admins. It requires no review approvals, which suits a solo repo. On GitHub Free, branch protection works for public repos only.
+- Branch protection requires all nine checks (`rust`, `dart`, `language-policy`, `gitleaks`, `semgrep`, `cargo-audit`, `cargo-deny`, `dart-licenses`, `privacy-checks`), up-to-date branches, resolved conversations, no force pushes and no deletion, and applies to admins. It requires no review approvals, which suits a solo repo. On GitHub Free, branch protection works for public repos only.
 - No commit signing is configured in the core.
 - GitHub Actions are pinned to full commit SHAs (with the version in a trailing comment), and Dependabot proposes updates. Dependabot waits 7 days (`cooldown`) before proposing a newly published version.
 - Container and infrastructure scanning is out of scope for now.
@@ -43,7 +44,6 @@ Not active by default. Copy one into a repo with `optional/install.sh <layer>` (
 | Layer | Use when | Contents |
 |---|---|---|
 | `optional/zap` | Live web login flow or API | Scheduled ZAP baseline and API scans against a staging URL |
-| `optional/privacy` | No-data-retention commitment | Semgrep rules for logging sensitive fields, Clippy macro bans, `PRIVACY.md` |
 | `optional/gpg-signing` | Verified authorship required | PR signature check, script to require signed commits on `main`, setup guide |
 
 ## Layout

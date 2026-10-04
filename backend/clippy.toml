@@ -1,0 +1,8 @@
+# Forces all output through the structured logger (T-307), where redaction is applied in one place.
+disallowed-macros = [
+    { path = "std::println", reason = "use tracing; never print request data" },
+    { path = "std::eprintln", reason = "use tracing; never print request data" },
+    { path = "std::print", reason = "use tracing; never print request data" },
+    { path = "std::eprint", reason = "use tracing; never print request data" },
+    { path = "std::dbg", reason = "dbg! can leak sensitive values" },
+]
