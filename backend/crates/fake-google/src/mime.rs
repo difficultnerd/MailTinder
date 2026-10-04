@@ -35,12 +35,12 @@ fn part_payload(msg: &Message<'_>, part_id: usize) -> Value {
             out["parts"] = json!([part_payload(nested, 0)]);
         }
         Some(PartType::Text(t) | PartType::Html(t)) => {
-                    out["body"] = json!({
-                        "size": t.len(),
-                        "data": base64url_no_pad(t.as_bytes()),
-                    });
-                }
-                Some(PartType::Binary(b) | PartType::InlineBinary(b)) => {
+            out["body"] = json!({
+                "size": t.len(),
+                "data": base64url_no_pad(t.as_bytes()),
+            });
+        }
+        Some(PartType::Binary(b) | PartType::InlineBinary(b)) => {
             if is_attachment(part) {
                 out["body"] = json!({
                     "size": b.len(),

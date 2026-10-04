@@ -273,8 +273,8 @@ async fn read_events(State(st): State<AppState>) -> Result<Json<Value>, Json<Val
 
 async fn reset(State(st): State<AppState>) -> Result<Json<Value>, Json<Value>> {
     let mut st = st.0.lock().unwrap();
-        *st = FakeState::default();
-        Ok(Json(json!({ "ok": true })))
+    *st = FakeState::default();
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[allow(clippy::case_sensitive_file_extension_comparisons)]

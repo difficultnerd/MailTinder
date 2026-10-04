@@ -22,8 +22,8 @@ fn egress_error_display() {
         EgressError::AddressRefused(RefusedRange::Private).to_string(),
         "address refused: Private"
     );
-    // nosemgrep: mailtinder-no-permanent-delete -- asserting the Display string of an error variant, not a delete operation
     assert_eq!(
+        // nosemgrep: mailtinder-no-permanent-delete -- asserting the Display string of an error variant, not a delete operation
         EgressError::PermanentDeleteRefused.to_string(),
         "permanent delete refused"
     );
