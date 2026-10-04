@@ -106,7 +106,7 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 ## Out of scope
 
 - Admin deletion of another user: not in v1.
-- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. Backup retention is an S11 decision (reported to the planning thread); this task proves DEL-2 against the live store only.
+- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. The trial keeps no backups (James, 4 October 2026); this task proves DEL-2 against the live store.
 
 ## Security review checklist
 

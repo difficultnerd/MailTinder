@@ -89,6 +89,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-504](T-504-step-up-by-fresh-google-sign-in.md) | Step-up by fresh Google sign-in | M5 | strong | T-502b |
 | [T-505](T-505-invites-and-invite-requests.md) | Invites and invite requests | M5 | sonnet | T-107, T-303, T-404, T-504 |
 | [T-506](T-506-session-endpoint-and-sign-out.md) | Session endpoint and sign-out | M5 | sonnet | T-501, T-503, T-504 |
+| [T-507](T-507-admin-bootstrap-cli.md) | Admin bootstrap command line tool | M5 | sonnet | T-301, T-302, T-305, T-307, T-505 |
 | [T-601a](T-601a-mailboxes-list-and-link.md) | Mailboxes: list, link and reconnect | M6 | sonnet | T-405, T-503, T-504 |
 | [T-601b](T-601b-mailbox-disconnect.md) | Mailbox disconnect with app folder move | M6 | sonnet | T-304, T-405, T-601a |
 | [T-602a](T-602a-mail-query-count-and-label-ports.md) | MailProvider query, count and label additions | M6 | sonnet | T-203, T-205a, T-401 |

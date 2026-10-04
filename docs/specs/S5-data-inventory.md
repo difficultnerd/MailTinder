@@ -47,6 +47,7 @@ S6 section 5 is the cryptographic inventory; this lists what holds data or unloc
 | Key or secret | Class | Purpose | Held in | Retention and rotation | Test |
 | --- | --- | --- | --- | --- | --- |
 | KMS key encryption key | C3 | Wraps every `data_key` | Cloud KMS only | Yearly, automatic | DEL-2 |
+| System KMS key (`system-fields`) | C3 | Encrypts invite and invite request email addresses and `pre_auth` fields | Cloud KMS only | Yearly, automatic | INV-T1 |
 | Email lookup HMAC key | C3 | Keyed hash for invite and invite request lookup | Secret Manager | Yearly | INV-T1 |
 | Log pseudonymisation HMAC key | C3 | Pseudonymous user ID in logs | Secret Manager | Yearly | LOG-1 |
 | OAuth client secrets, Jev API key | C3 | Provider and vendor access | Secret Manager | On provider rotation; Jev quarterly | LOG-1 |
@@ -106,7 +107,7 @@ No analytics or error-reporting vendors in v1. The only AI processors are Vertex
 | ID | Test |
 | --- | --- |
 | DEL-1 | After account deletion, no document references the user ID |
-| DEL-2 | After deletion, a backup copy of an encrypted field cannot be decrypted |
+| DEL-2 | After deletion, a backup copy of an encrypted field cannot be decrypted. The trial keeps no Firestore backups or point-in-time recovery (James, 4 October 2026) |
 | DEL-3 | Disconnecting a mailbox revokes its token at the provider and removes its document |
 | SES-1 | Expired, signed-out and superseded sessions cannot be used; a new sign-in leaves one session record per user; `pre_auth` fields are cleared on the state change and do not outlive their TTL |
 | CFG-1 | `config/classifiers` holds only the allowed fields; turning a switch off stops that model's calls within one check |

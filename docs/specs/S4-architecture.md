@@ -16,7 +16,7 @@ Depends on: `S2`, `S3`, `S9`, `research/data-handling-and-in-account-ai.md`, `re
 | Job execution | Cloud Run service `unsub` (Rust) for one-click and mailto | Ingress internal only; invoked by Cloud Tasks |
 | Page handler (v2) | Cloud Run service `pagehandler` (container with headless Chromium) | v2 only, with the open-ended agent. Own service account with no roles; ingress internal; only `unsub` may invoke |
 | Data store | Firestore (Native mode) in `us-central1` (location is permanent once created) with TTL policies | Free tier: 1 GiB, 50,000 reads and 20,000 writes a day. TTL deletes within about 24 hours, so a sweeper is the control and TTL the backstop |
-| Encryption | Cloud KMS, one symmetric key wrapping each user's `data_key` (S6 section 5) | USD 0.06 a key version a month plus USD 0.03 per 10,000 operations |
+| Encryption | Cloud KMS, two symmetric keys: one wrapping each user's `data_key`, one (`system-fields`) for data that exists before a user (S6 section 5) | USD 0.06 a key version a month plus USD 0.03 per 10,000 operations |
 | Secrets | Secret Manager (OAuth client secrets, Jev API key, email lookup and log pseudonymisation HMAC keys) | Jev key: `api` only accessor, quarterly rotation |
 | Classifier bake-off | Vertex AI (Gemini Flash-Lite, `us-central1`) and TypeSafe Jev API | Opt-in pilot users only (section 5) |
 | Email (invites) | Gmail API send from the admin's own mailbox | Uses the send scope already approved for mailto unsubscribe; no third-party email service |
@@ -72,7 +72,7 @@ Each Cloud Run service has its own service account with only the roles it needs:
 | `worker` | Firestore user, KMS encrypter and decrypter on the one key, Secret Manager accessor on the OAuth client secrets and the log pseudonymisation HMAC key |
 | Cloud Tasks and Cloud Scheduler callers | Cloud Run invoker on their target only |
 
-Exactly three service accounts (`api`, `unsub`, `worker`) hold KMS encrypt and decrypt (3 October 2026, spec audit).
+Exactly three service accounts (`api`, `unsub`, `worker`) hold KMS encrypt and decrypt on the `data-key-kek` (3 October 2026, spec audit). Only `api` holds them on the `system-fields` key (James, 4 October 2026).
 
 ## 3. Key flows
 

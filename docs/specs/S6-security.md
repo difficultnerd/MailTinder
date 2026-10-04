@@ -72,7 +72,8 @@ Each user has one key, `data_key`, usable by the server without the user, so que
 
 | Key or secret | Algorithm | Protects (and may not protect) | Held by | Rotation and end of life |
 | --- | --- | --- | --- | --- |
-| KMS key encryption key | AES-256 (Cloud KMS software key) | Wraps every `data_key`; nothing else | Cloud KMS; encrypt and decrypt granted to the `api`, `unsub` and `worker` service accounts only | Yearly, automatic; old versions kept for unwrap |
+| KMS key encryption key (`data-key-kek`) | AES-256 (Cloud KMS software key) | Wraps every `data_key`; nothing else | Cloud KMS; encrypt and decrypt granted to the `api`, `unsub` and `worker` service accounts only | Yearly, automatic; old versions kept for unwrap |
+| System KMS key (`system-fields`) | AES-256 (Cloud KMS software key), direct encryption with associated data = record ID plus field name | Data that exists before a user does: invite and invite request email addresses, `pre_auth` sign-in fields. Never user data | Cloud KMS; encrypt and decrypt granted to `api` only; James's account for the admin tool (T-507) | Yearly, automatic; old versions kept for decrypt |
 | `data_key` (per user) | AES-256-GCM; associated data = user ID plus mailbox ID plus field name for refresh tokens, user ID plus field name or token type otherwise | Refresh tokens, the app folder file, all sealed tokens (below) and encrypted Firestore fields. Never mail content (none is stored) | Firestore, wrapped under KMS; usable by `api`, `unsub` and `worker` | On demand (re-encrypt); destroyed on deletion |
 | Email lookup HMAC key | HMAC-SHA-256 | Keyed hashes for invite and email lookup | Secret Manager, `api` | Yearly |
 | Log pseudonymisation HMAC key | HMAC-SHA-256 | Pseudonymous user IDs in logs (S5 C1 fields) | Secret Manager | Yearly |
@@ -85,7 +86,7 @@ Each user has one key, `data_key`, usable by the server without the user, so que
 
 **Sealed tokens (one scheme).** Every server-issued opaque token (feed cursors, undo tokens, classification tokens, prompt refs) is AES-256-GCM under the user's `data_key`, with a random 96-bit nonce and associated data = token type, user ID, session record ID and expiry. The token carries its type and expiry in clear (authenticated as associated data). The receiving route rebuilds the associated data from the type it expects, not the type the token claims, so a token of one type is rejected as another (ASVS V9.2.2); it rejects expired tokens (V9.2.1). The session record ID is stable across session rotation, so linking a mailbox or a step-up keeps the undo stack. No separate token key exists.
 
-**Deletion.** Account deletion destroys the wrapped `data_key` (crypto-shredding), after the steps that still need it (S2 AU-06).
+**Deletion.** Account deletion destroys the wrapped `data_key` (crypto-shredding), after the steps that still need it (S2 AU-06). The trial runs with no Firestore backups, point-in-time recovery or scheduled exports, so no older copy of the wrapped key survives (James, 4 October 2026).
 
 ## 6. Unsubscribe execution rules
 
@@ -119,3 +120,6 @@ Events logged (pseudonymous, C1 fields only): sign-in success and failure (with 
 3. **Cookie prefix deviation:** decided. `__session` without the `__Host-` prefix accepted for the trial only (James, 3 October 2026); replaced by `__Host-session` when the pre-production load balancer routes `/api` directly to Cloud Run.
 4. **Sign-in:** decided, Google OAuth only. The passkey lock is dropped for the trial and moves to v2 pre-CASA hardening (James, 3 October 2026). Accepted trial deviation: ASVS V6.3.3 relies on Google 2-Step Verification (`amr` checked where present), closed by the v2 passkey lock.
 5. **Threat model sign-off** once reviewed.
+6. **Pre-user data:** decided, a second KMS key `system-fields` (James, 4 October 2026).
+7. **Backups:** decided, none for the trial (James, 4 October 2026).
+8. **First admin:** decided, set by the `mt-admin` tool outside the API (James, 4 October 2026).

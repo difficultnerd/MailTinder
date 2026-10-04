@@ -68,7 +68,7 @@ impl EnvelopeKeyService {
 impl KeyService for EnvelopeKeyService { /* below */ }
 
 // crypto/system.rs
-pub struct KmsSystemKeyService { kms: Arc<dyn KmsApi> }  // a SECOND KMS key: ".../cryptoKeys/system-fields" [DEFAULT]
+pub struct KmsSystemKeyService { kms: Arc<dyn KmsApi> }  // a SECOND KMS key: ".../cryptoKeys/system-fields" (decided, James, 4 October 2026)
 impl SystemKeyService for KmsSystemKeyService { /* below */ }
 ```
 
@@ -92,7 +92,7 @@ Formats (all versioned for crypto agility, ASVS V11.2.2):
 7. `open(user, wrapped, aad, ct)`: same `aad.user` check; `key = unwrap`; `aead_open`.
 8. `CloudKms::encrypt`: `POST https://cloudkms.googleapis.com/v1/{key_name}:encrypt` with JSON `{"plaintext": b64(pt), "additionalAuthenticatedData": b64(aad), "plaintextCrc32c": "<crc32c(pt) as decimal string>", "additionalAuthenticatedDataCrc32c": "<crc32c(aad)>"}` (standard base64 with padding, as the API expects). Check the response: `verifiedPlaintextCrc32c == true`, `verifiedAdditionalAuthenticatedDataCrc32c == true`, and `crc32c(b64decode(ciphertext)) == ciphertextCrc32c`; any mismatch is `Unavailable` (corruption in transit; the caller may retry). Return the decoded `ciphertext`.
 9. `CloudKms::decrypt`: `POST .../{key_name}:decrypt` (the crypto key name, not a version: KMS picks the version from the ciphertext, so yearly rotation needs no code) with `{"ciphertext", "additionalAuthenticatedData", "ciphertextCrc32c", "additionalAuthenticatedDataCrc32c"}`; check `crc32c(plaintext) == plaintextCrc32c`. Error mapping: HTTP 400 `INVALID_ARGUMENT` (wrong AAD, corrupt ciphertext) gives `OpenFailed`; 403 and 404 give `Denied`; 429, 5xx, timeout give `Unavailable`.
-10. `KmsSystemKeyService` `[DEFAULT]`: `seal(aad, pt)` = `SCHEME_V1 || kms_system.encrypt(pt, encode_system_aad(aad))` (direct KMS encryption, plaintext at most 64 KiB, which KMS allows); `open` reverses. It uses a separate KMS key so S6's "the KEK wraps every data_key and nothing else" stays true. This key needs a decision from James (reported spec gap) and Terraform in T-1102.
+10. `KmsSystemKeyService`: `seal(aad, pt)` = `SCHEME_V1 || kms_system.encrypt(pt, encode_system_aad(aad))` (direct KMS encryption, plaintext at most 64 KiB, which KMS allows); `open` reverses. It uses a separate KMS key so S6's "the KEK wraps every data_key and nothing else" stays true. James chose this second key (James, 4 October 2026); T-1102a creates it.
 11. Crypto-shredding: there is no destroy call on the port. T-803 deletes `users/{id}.wrapped_data_key` (and the user document) after the steps that still need it, then calls `evict(user)`. Every value sealed under that user's `data_key` becomes unreadable, because the only copy of `data_key` was the wrapped one.
 12. Semgrep rules in `.semgrep/mailtinder.yml` (ASVS V11.3.1, V11.3.2, V11.4.1, V11.5.1), excluding `.semgrep/**`:
     - `mailtinder-crypto-approved-aead-only`: matches `Ecb`, `Cbc`, `Ctr<`, `Cfb`, `Ofb`, `Aes256::new`, `Pkcs1v15Encrypt`, `ChaCha20::new` (unauthenticated) anywhere under `backend/`.
@@ -140,7 +140,7 @@ All in `adapters-gcp/tests/crypto_envelope.rs` unless noted, using an `InMemoryK
 - KMS JSON uses standard base64 with padding; our stored formats use raw bytes (the store encodes them, T-201b). Do not mix them up.
 - Do not call KMS `:decrypt` with a key version name; use the crypto key name so rotation works.
 - `aad.user` must equal the `user` argument; a mismatch is a programming error that must fail closed, not be ignored.
-- Firestore backups: crypto-shredding is only complete if no backup still holds the deleted `users` document with its wrapped key, because the KEK is shared. Reported as a spec gap: T-1102 must not enable point-in-time recovery or scheduled exports that cover `users` beyond the 24-hour deletion window, or James must choose a per-user KMS key. Add a `// SHRED:` comment at `evict` pointing to this.
+- Firestore backups: crypto-shredding is only complete because no backup holds the deleted `users` document with its wrapped key (the KEK is shared). The trial keeps no backups, point-in-time recovery or exports (James, 4 October 2026). Add a `// SHRED:` comment at `evict` saying that enabling any of them breaks DEL-2.
 - Keep `cargo deny` green: no `aws-lc-sys`, no `openssl`, no `rsa`.
 
 ## Out of scope
@@ -160,7 +160,7 @@ All in `adapters-gcp/tests/crypto_envelope.rs` unless noted, using an `InMemoryK
 - Unwrapped keys exist only in `Zeroizing` memory, in a cache keyed by user plus wrapped-key hash, TTL by `Clock`, with `evict`.
 - `OpenFailed` gives no oracle (same error for key, AAD and tag failures); nothing secret is logged.
 - The system key is a separate KMS key and is only used for invite, invite request and `pre_auth` fields.
-- DEL-2 test exists and the backup caveat is written down for T-1102 and James.
+- DEL-2 test exists and the `// SHRED:` comment names the no-backups rule.
 - Only `api`, `unsub` and `worker` will hold KMS encrypt and decrypt (Terraform, T-1102); nothing in this code assumes broader access.
 
 ## Done when

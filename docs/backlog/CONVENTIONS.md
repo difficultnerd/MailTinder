@@ -21,6 +21,7 @@ backend/
     worker/                  Cloud Run service binary (sweeps)
     fake-google/             HTTP fake binary (Gmail, Drive, OAuth and OIDC)
     unsub-testbed/           local unsubscribe sites binary
+    admin-cli/               mt-admin binary, run by James (first invite, first admin)
 app/lib/
   main.dart
   api/                       ApiClient interface, HttpApiClient, FakeApiClient, models
@@ -159,7 +160,7 @@ Shared items that task files define. The owning task creates them; later tasks i
 
 | Item | Owner | Notes |
 | --- | --- | --- |
-| Crates `svc-common` (token minting, internal caller check, Needs Attention writer, job record encryption), `e2e` (WebDriver journeys, `fantoccini`), `smoke` (staging smoke binary) | T-503 creates `svc-common` with `mint.rs`; T-701 adds the other modules; T-1101a, T-1105 | `unsub` and `worker` never import `api` |
+| Crates `svc-common` (token minting, internal caller check, Needs Attention writer, job record encryption, `invites::upsert_pending_invite`), `admin-cli` (T-507), `e2e` (WebDriver journeys, `fantoccini`), `smoke` (staging smoke binary) | T-503 creates `svc-common` with `mint.rs`; T-701 adds the other modules; T-1101a, T-1105 | `unsub`, `worker` and `admin-cli` never import `api` |
 | `HeaderFacts` gains `list_unsubscribe_present`, `reply_to_mismatch`, `display_name_spoof`; derives `Default` | T-101; T-401 fills them | |
 | Hand-written redacting `Debug` for `MessageMeta`, `HeaderFacts`, `UnsubscribeOptions`, `MailtoTarget`, `SenderKey`, `MessageId`, `SortRule`, `SwipeRecord`; `MessageId` has no `Display` | T-101, T-104 | Deriving `Debug` would trip the privacy rules |
 | `SenderStats`, `Tunables`, `ClassifierId`, `MailboxIdentity`, `ProviderSubjectId`, `MailboxStatus`, `DomainError` | T-101 | T-602b imports `SenderStats` |

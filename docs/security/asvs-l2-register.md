@@ -339,7 +339,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | V6.3.1 | 1 | Verify that controls to prevent attacks such as credential stuffing and password brute force are implemented according to the application's security documentation. | Rate limits on sign-in and invite redemption; Google handles credential attacks | backend/auth | test `asvs_v6_3_1_*` | Planned |
-| V6.3.2 | 1 | Verify that default user accounts (e.g., "root", "admin", or "sa") are not present in the application or are disabled. | No default accounts; first admin set by Terraform | Terraform | review | Planned |
+| V6.3.2 | 1 | Verify that default user accounts (e.g., "root", "admin", or "sa") are not present in the application or are disabled. | No default accounts; first admin set by the `mt-admin` tool outside the API (T-507) | `backend/crates/admin-cli` | test | Planned |
 | V6.3.3 | 2 | Verify that either a multi-factor authentication mechanism or a combination of single-factor authentication mechanisms, must be used in order to access the application. For L3, one of the factors must be a hardware-based authentication mechanism which provides compromise and impersonation resistance against phishing attacks while verifying the intent to authenticate by requiring a user-initiated action (such as a button press on a FIDO hardware key or a mobile phone). Relaxing any of the considerations in this requirement requires a fully documented rationale and a comprehensive set of mitigating controls. | Relies on Google 2-Step Verification; `amr` checked and logged where present. Closed by the v2 passkey lock | backend/auth | test `asvs_v6_3_3_*` | Accepted deviation (trial only) |
 | V6.3.4 | 2 | Verify that, if the application includes multiple authentication pathways, there are no undocumented pathways and that security controls and authentication strength are enforced consistently. | One pathway (Google OAuth), same strength everywhere; no undocumented routes | backend/auth | test `asvs_v6_3_4_*` | Planned |
 
@@ -621,7 +621,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 ## V11.1 Cryptographic Inventory and Documentation
 
-**Planned control:** Cryptographic inventory in S6 section 5: KMS key, one per-user `data_key` (refresh tokens, app folder, sealed tokens, encrypted fields), email lookup and log pseudonymisation HMAC keys, session IDs, invite tokens, sealed tokens
+**Planned control:** Cryptographic inventory in S6 section 5: two KMS keys (`data-key-kek`, `system-fields`), one per-user `data_key` (refresh tokens, app folder, sealed tokens, encrypted fields), email lookup and log pseudonymisation HMAC keys, session IDs, invite tokens, sealed tokens
 
 **Verification:** Review
 
