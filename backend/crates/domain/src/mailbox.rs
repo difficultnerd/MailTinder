@@ -44,6 +44,7 @@ impl fmt::Debug for ProviderSubjectId {
 
 /// A mailbox identity is provider plus provider subject ID, never an email
 /// address (AU-03 AC7).
+// nosemgrep: privacy-rust-derive-debug-on-sensitive-struct -- subject is an opaque ProviderSubjectId, not raw PII
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MailboxIdentity {
     pub provider: Provider,
@@ -60,6 +61,7 @@ pub enum MailboxStatus {
 }
 
 /// A mailbox owned by exactly one user (INV-3).
+// nosemgrep: privacy-rust-derive-debug-on-sensitive-struct -- fields are opaque IDs (UserId, MailboxId, ProviderSubjectId)
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mailbox {
     pub id: MailboxId,

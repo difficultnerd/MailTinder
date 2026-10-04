@@ -64,7 +64,7 @@ fn inv_3_mailbox_owned_by_one_user_only() -> TestResult {
         user: owner,
         identity: identity()?,
         status: MailboxStatus::Connected,
-        linked_at: OffsetDateTime::now_utc(),
+        linked_at: OffsetDateTime::UNIX_EPOCH,
         is_primary: true,
     };
     assert!(mb.owned_by(&owner));
@@ -113,7 +113,7 @@ fn xc_01_debug_redacts_sender_subject_and_ids() -> TestResult {
     let meta = MessageMeta {
         mailbox: mailbox_id(),
         id: MessageId::new("CANARY-T101-msgid")?,
-        internal_date: OffsetDateTime::now_utc(),
+        internal_date: OffsetDateTime::UNIX_EPOCH,
         from_display: "CANARY-T101-display".to_owned(),
         from_address: "CANARY-T101-addr@example.com".to_owned(),
         sender: SenderKey::from_address("CANARY-T101-sender@example.com"),

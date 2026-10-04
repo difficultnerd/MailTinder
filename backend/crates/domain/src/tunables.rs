@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 /// Tunable numbers from the S2 glossary and other `[TUNABLE]` sources.
+// nosemgrep: privacy-rust-derive-debug-on-sensitive-struct -- all fields are numeric config, no PII
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tunables {
     /// 5 minutes (`UNSUB_DELAY`).

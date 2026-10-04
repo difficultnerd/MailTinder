@@ -78,6 +78,7 @@ pub enum EgressError {
     #[error("address refused: {0:?}")]
     AddressRefused(RefusedRange),
     #[error("permanent delete refused")]
+    // nosemgrep: mailtinder-no-permanent-delete -- this is an error variant reporting a refused delete, not a delete operation
     PermanentDeleteRefused,
     #[error("not permitted for this service")]
     NotPermitted,
