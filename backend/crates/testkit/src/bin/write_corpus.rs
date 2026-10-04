@@ -4,6 +4,7 @@
 //! goes to a temp or `target/` folder; nothing it writes is committed.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 fn main() -> Result<(), String> {
@@ -15,10 +16,11 @@ fn main() -> Result<(), String> {
         .map(PathBuf::from)?;
     let corpus = testkit::corpus::load()?;
     fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
+    let mut out = std::io::stdout();
     for c in &corpus.cases {
         let path = dir.join(format!("{}.eml", c.spec.id));
         fs::write(&path, &c.eml).map_err(|e| format!("write {}: {e}", path.display()))?;
-        println!("{}", path.display());
+        writeln!(out, "{}", path.display()).map_err(|e| format!("stdout: {e}"))?;
     }
     Ok(())
 }
