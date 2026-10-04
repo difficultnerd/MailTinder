@@ -28,6 +28,7 @@ mod needs_attention;
 mod rules;
 mod sender;
 mod sender_stats;
+pub mod swipe;
 mod tunables;
 mod unsubscribe_job;
 
@@ -58,5 +59,9 @@ pub use needs_attention::{
 pub use rules::{first_match, RuleAction, RuleKind, RuleMatch, SortRule};
 pub use sender::{SenderKey, SenderStats, REJECTS_KEPT, RELAY_DOMAINS};
 pub use sender_stats::BlockPrompt;
+pub use swipe::{
+    derive_swipe_ids, plan_swipe, MailboxChange, ManualUnsubscribePlan, SwipeIds, SwipeInput,
+    SwipeOutcome, SwipePlan, UnsubscribePlan, UnsubscribeTarget,
+};
 pub use tunables::Tunables;
 pub use unsubscribe_job::*;
