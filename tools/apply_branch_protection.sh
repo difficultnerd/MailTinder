@@ -12,8 +12,8 @@ set -euo pipefail
 repo="${1:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 branch="${2:-main}"
 
-# Names must match the job ids in .github/workflows/{ci,security,privacy}.yml.
-contexts='["rust","dart","language-policy","gitleaks","semgrep","cargo-audit","cargo-deny","dart-licenses","privacy-checks"]'
+# Names must match the job ids in .github/workflows/{ci,security,privacy}.yml. Add `e2e` when T-1101 adds that job.
+contexts='["rust","dart","language-policy","gitleaks","semgrep","cargo-audit","cargo-deny","dart-licenses","privacy-checks","ac-coverage","coverage"]'
 
 gh api --method PUT "repos/${repo}/branches/${branch}/protection" --input - <<JSON
 {

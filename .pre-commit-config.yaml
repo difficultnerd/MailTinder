@@ -63,3 +63,11 @@ repos:
         files: ^app/
         pass_filenames: false
         stages: [pre-push]
+
+      - id: ac-coverage
+        name: acceptance criteria coverage
+        entry: python3 tools/check_ac_coverage.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
