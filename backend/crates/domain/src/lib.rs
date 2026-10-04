@@ -30,6 +30,7 @@ mod sender;
 mod sender_stats;
 pub mod swipe;
 mod tunables;
+pub mod undo;
 mod unsubscribe_job;
 
 pub use class::{Classification, MessageClass, SwipeAction};
@@ -64,4 +65,8 @@ pub use swipe::{
     SwipeOutcome, SwipePlan, UnsubscribePlan, UnsubscribeTarget,
 };
 pub use tunables::Tunables;
+pub use undo::{
+    plan_undo, reverse_stats, undo_response, JobCancelOutcome, SwipeRecord, UndoPlan, UndoResponse,
+    UndoStack,
+};
 pub use unsubscribe_job::*;
