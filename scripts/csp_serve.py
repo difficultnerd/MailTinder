@@ -13,7 +13,6 @@ import argparse
 import fnmatch
 import json
 import mimetypes
-import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +31,19 @@ def load_headers(config_path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
     return out
 
 
+def index_files(root: Path) -> dict[str, Path]:
+    """Map every file under root to its absolute path (relative POSIX key).
+
+    The request path is looked up in this map, so user input is never used to
+    construct a filesystem path (CodeQL path-injection safe).
+    """
+    out: dict[str, Path] = {}
+    for p in root.rglob("*"):
+        if p.is_file():
+            out[p.relative_to(root).as_posix()] = p
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
@@ -45,6 +57,8 @@ def main() -> None:
     header_blocks = load_headers(Path(args.config))
     reports_path.parent.mkdir(parents=True, exist_ok=True)
     reports_lock = threading.Lock()
+    safe_files = index_files(root)
+    index_html = root / "index.html"
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:
@@ -58,32 +72,19 @@ def main() -> None:
                             value = value + "; report-uri /__csp-report"
                         self.send_header(key, value)
 
-        def _resolve(self, rel: str) -> Path:
-            """Resolve a request path to a file under root, or index.html.
-
-            Rejects traversal and unsafe characters before touching the
-            filesystem (CodeQL path-injection sanitizer).
-            """
-            if ".." in rel or not all(c.isalnum() or c in "._-/" for c in rel):
-                return root / "index.html"
-            candidate = (root / rel).resolve()  # codeql[py/path-injection] dev-only localhost test server
-            # Containment check CodeQL recognises: the resolved path must share
-            # the root as its common path, else fall back to index.html.
-            if os.path.commonpath([str(candidate), str(root)]) != str(root):
-                return root / "index.html"
-            return candidate
-
         def do_GET(self) -> None:
             rel = self.path.lstrip("/").split("?", 1)[0]
             if rel == "__csp-report":
                 self.send_response(404)
                 self.end_headers()
                 return
-            candidate = self._resolve(rel)  # codeql[py/path-injection] dev-only localhost test server
+            # Look up the request path in the precomputed safe map; never build
+            # a path from user input. Unknown paths fall back to index.html.
+            candidate = safe_files.get(rel, index_html)
             if not candidate.is_file():
-                candidate = root / "index.html"
+                candidate = index_html
             ctype = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
-            body = candidate.read_bytes()  # codeql[py/path-injection] dev-only localhost test server
+            body = candidate.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self._apply_headers("/" + rel)
