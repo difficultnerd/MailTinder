@@ -3,7 +3,10 @@
 use std::fmt;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use domain::UserId;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// KMS ciphertext of a user's `data_key`. Debug prints only the length.
 #[derive(Clone, PartialEq, Eq)]
@@ -12,6 +15,22 @@ pub struct WrappedKey(pub Vec<u8>);
 impl fmt::Debug for WrappedKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("WrappedKey").field(&self.0.len()).finish()
+    }
+}
+
+impl Serialize for WrappedKey {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&URL_SAFE_NO_PAD.encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for WrappedKey {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        let bytes = URL_SAFE_NO_PAD
+            .decode(s.as_bytes())
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self(bytes))
     }
 }
 

@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 url = { version = "2", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
 proptest = "1"
 
 [workspace.lints.rust]
