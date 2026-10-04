@@ -110,7 +110,7 @@ fn require_scope(
 }
 
 /// Apply the first matching failure rule; returns `Some(error)` if one fired.
-fn check_fail(state: &mut FakeState, method: &str, path: &str) -> Option<GmailError> {
+pub(crate) fn check_fail(state: &mut FakeState, method: &str, path: &str) -> Option<GmailError> {
     let idx = state
         .fail_rules
         .iter()
@@ -124,7 +124,12 @@ fn check_fail(state: &mut FakeState, method: &str, path: &str) -> Option<GmailEr
     Some(err)
 }
 
-fn record(state: &mut FakeState, method: &str, route: &str, query: Vec<(String, String)>) {
+pub(crate) fn record(
+    state: &mut FakeState,
+    method: &str,
+    route: &str,
+    query: Vec<(String, String)>,
+) {
     state.events.push(FakeEvent::Request {
         method: method.to_owned(),
         route: route.to_owned(),

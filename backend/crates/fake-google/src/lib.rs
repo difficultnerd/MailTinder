@@ -26,7 +26,9 @@ use base64::Engine as _;
 use time::OffsetDateTime;
 use url::Url;
 
+pub mod app_folder_control;
 pub mod control;
+pub mod drive;
 pub mod errors;
 pub mod gmail;
 pub mod mime;
@@ -82,6 +84,7 @@ pub fn build_router(
     Router::new()
         .nest("/gmail/v1/users/me", gmail::router())
         .nest("/__fake", control::router())
+        .merge(drive::router())
         .merge(oauth::router())
         .with_state(app_state)
 }
@@ -197,6 +200,51 @@ impl FakeGoogleHandle {
         mb: &FakeMailboxKey,
     ) -> Arc<dyn testkit::contract::mail_provider::MailSeeder> {
         Arc::new(seeder::FakeGoogleSeeder::new(
+            self.state.clone(),
+            mb.clone(),
+        ))
+    }
+
+    // --- Drive (T-205b) ---
+
+    /// `(id, name, len)` for every file in the mailbox's app-data space.
+    pub fn drive_files(&self, mb: &FakeMailboxKey) -> Vec<(String, String, usize)> {
+        let st = self.state.lock().unwrap();
+        st.mailboxes
+            .get(&mb.0)
+            .map(|m| {
+                m.drive
+                    .files
+                    .values()
+                    .map(|f| (f.id.clone(), f.name.clone(), f.bytes.len()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The raw bytes of a Drive file, if present.
+    pub fn drive_file_bytes(&self, mb: &FakeMailboxKey, id: &str) -> Option<Vec<u8>> {
+        let st = self.state.lock().unwrap();
+        st.mailboxes
+            .get(&mb.0)
+            .and_then(|m| m.drive.files.get(id))
+            .map(|f| f.bytes.clone())
+    }
+
+    /// Simulate the user deleting every app-data file (S10 4.2 scenario).
+    pub fn user_deletes_app_files(&self, mb: &FakeMailboxKey) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(m) = st.mailboxes.get_mut(&mb.0) {
+            m.drive.files.clear();
+        }
+    }
+
+    /// An `AppFolderControl` for this mailbox, for the contract suite.
+    pub fn app_folder_control(
+        &self,
+        mb: &FakeMailboxKey,
+    ) -> Arc<dyn testkit::contract::app_folder_store::AppFolderControl> {
+        Arc::new(app_folder_control::FakeAppFolderControl::new(
             self.state.clone(),
             mb.clone(),
         ))

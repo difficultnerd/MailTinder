@@ -62,6 +62,25 @@ pub struct Label {
     pub kind: String, // "system" or "user"
 }
 
+/// A Drive file in the hidden `appDataFolder` (T-205b).
+#[derive(Clone, Debug)]
+pub struct DriveFile {
+    pub id: String,
+    pub name: String,
+    pub parents: Vec<String>,
+    pub bytes: Vec<u8>,
+    pub version: u64,
+    pub modified_time: OffsetDateTime,
+    pub trashed: bool,
+}
+
+/// One mailbox's Drive app-data space.
+#[derive(Default)]
+pub struct DriveSpace {
+    pub files: BTreeMap<String, DriveFile>,
+    pub next_id: u64,
+}
+
 /// One mailbox's state.
 #[derive(Default)]
 pub struct MailboxState {
@@ -70,6 +89,7 @@ pub struct MailboxState {
     pub next_id: u64,
     pub next_user_label: u64,
     pub sent: Vec<Vec<u8>>,
+    pub drive: DriveSpace,
 }
 
 /// A recorded event.

@@ -37,6 +37,8 @@ pub fn router() -> Router<AppState> {
         .route("/identity/revoke-all", post(revoke_all))
         .route("/identity/revocations", get(read_revocations))
         .route("/identity/service-token", post(service_token))
+        .route("/drive/user-deletes", post(drive_user_deletes))
+        .route("/drive/files/{email}", get(drive_files))
 }
 
 #[derive(Deserialize)]
@@ -408,4 +410,42 @@ fn reserved(email: &str) -> bool {
         || d.ends_with(".example.com")
         || d.ends_with(".example.net")
         || d.ends_with(".example.org")
+}
+
+#[derive(Deserialize)]
+struct DriveUserDeletesBody {
+    email: String,
+}
+
+/// `POST /__fake/drive/user-deletes {email}` — simulate the user deleting
+/// every app-data file (S10 4.2 scenario).
+async fn drive_user_deletes(
+    State(st): State<AppState>,
+    Json(body): Json<DriveUserDeletesBody>,
+) -> Result<Json<Value>, Json<Value>> {
+    let mut st = st.0.lock().unwrap();
+    if let Some(m) = st.mailboxes.get_mut(&body.email) {
+        m.drive.files.clear();
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// `GET /__fake/drive/files/{email}` — ids, names and sizes (no contents).
+async fn drive_files(
+    State(st): State<AppState>,
+    Path(email): Path<String>,
+) -> Result<Json<Value>, Json<Value>> {
+    let st = st.0.lock().unwrap();
+    let files: Vec<Value> = st
+        .mailboxes
+        .get(&email)
+        .map(|m| {
+            m.drive
+                .files
+                .values()
+                .map(|f| json!({ "id": f.id, "name": f.name, "size": f.bytes.len() }))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({ "files": files })))
 }
