@@ -10,15 +10,16 @@ license = "UNLICENSED"
 publish = false
 
 [workspace.dependencies]
-# Internal crates
-domain = { path = "crates/domain" }
-ports = { path = "crates/ports" }
-obs = { path = "crates/obs" }
-egress = { path = "crates/egress" }
-testkit = { path = "crates/testkit" }
-adapters-gmail = { path = "crates/adapters-gmail" }
-adapters-gcp = { path = "crates/adapters-gcp" }
-adapters-models = { path = "crates/adapters-models" }
+# Internal crates. Version must be set explicitly so cargo-deny can resolve
+# `.workspace = true` usages (path-only entries are treated as wildcards).
+domain = { path = "crates/domain", version = "0.1.0" }
+ports = { path = "crates/ports", version = "0.1.0" }
+obs = { path = "crates/obs", version = "0.1.0" }
+egress = { path = "crates/egress", version = "0.1.0" }
+testkit = { path = "crates/testkit", version = "0.1.0" }
+adapters-gmail = { path = "crates/adapters-gmail", version = "0.1.0" }
+adapters-gcp = { path = "crates/adapters-gcp", version = "0.1.0" }
+adapters-models = { path = "crates/adapters-models", version = "0.1.0" }
 # External crates (CONVENTIONS "Rust conventions"); versions are the current major lines
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
 axum = "0.8"
@@ -35,6 +36,7 @@ getrandom = "0.2"
 aes-gcm = "0.10"
 sha2 = "0.10"
 proptest = "1"
+toml = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

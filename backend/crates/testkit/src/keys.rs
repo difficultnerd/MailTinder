@@ -59,12 +59,7 @@ impl FakeKeyService {
                 },
             )
             .map_err(|_| KeyError::OpenFailed)?;
-        let mut dek = [0u8; 32];
-        if pt.len() != 32 {
-            return Err(KeyError::Malformed);
-        }
-        dek.copy_from_slice(&pt);
-        Ok(dek)
+        pt.try_into().map_err(|_| KeyError::Malformed)
     }
 }
 

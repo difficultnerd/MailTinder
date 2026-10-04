@@ -18,6 +18,7 @@ pub mod app_folder;
 pub mod classifier;
 pub mod clock;
 pub mod contract;
+pub mod corpus;
 pub mod egress;
 pub mod fake_ports;
 pub mod identity;

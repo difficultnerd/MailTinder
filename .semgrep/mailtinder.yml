@@ -7,7 +7,7 @@ rules:
       batchDelete and threads.delete, and Graph permanentDelete, must never be called.
     paths:
       include: ["*.rs", "*.dart"]
-      exclude: ["backend/crates/testkit/**", "backend/crates/fake-google/**", ".semgrep/**"]
+      exclude: ["**/backend/crates/testkit/**", "**/backend/crates/fake-google/**", ".semgrep/**"]
     pattern-regex: >-
       (?i)(batchDelete|permanentDelete|threads\.delete|messages\.delete|(\.delete\(|Method::DELETE)[^;]{0,300}/(messages|threads)/)
 
@@ -19,6 +19,6 @@ rules:
       CONVENTIONS). Only the real adapters may call these.
     paths:
       include: ["*.rs"]
-      exclude: ["**/system_clock.rs", "**/os_rng.rs", "backend/crates/adapters-*/**", "backend/crates/egress/**", ".semgrep/**"]
+      exclude: ["**/system_clock.rs", "**/os_rng.rs", "**/backend/crates/adapters-*/**", "**/backend/crates/egress/**", ".semgrep/**"]
     pattern-regex: >-
       (SystemTime::now|OffsetDateTime::now_utc|OffsetDateTime::now_local|Utc::now|thread_rng|rand::random|OsRng)

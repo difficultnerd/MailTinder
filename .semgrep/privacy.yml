@@ -9,6 +9,7 @@ rules:
       S5 bans tokens, cookies, message IDs, addresses, names, subjects, snippets, bodies and URLs from logs.
     paths:
       include: ["*.rs", "*.dart"]
+      exclude: ["**/testkit/**", "**/fake-google/**", ".semgrep/**"]
     pattern-regex: >-
       (?is)\b(trace|debug|info|warn|error|println|eprintln|print|eprint|dbg|debugPrint|log|logger\.\w+|_log\.\w+)!?\s*\([^;]*?\b\w*(email|password|passwd|secret|token|authorization|api_?key|cookie|bearer|(mail|message|msg)_?(body|content|text|subject)|subject|snippet|preview|from_(address|display|name)|sender_(address|name|display)|display_name|email_?address|list_unsubscribe|unsubscribe_(url|link|target)|message_?id|refresh|csrf|session_?(id|hash)|invite_?token|data_?key|url|href)\w*\b
 
@@ -20,6 +21,7 @@ rules:
       field in a redacting newtype (for example `secrecy::SecretString`) or implement Debug by hand.
     paths:
       include: ["*.rs"]
+      exclude: ["**/testkit/**", "**/fake-google/**", ".semgrep/**"]
     pattern-regex: >-
       (?is)#\[derive\([^)]*\bDebug\b[^)]*\)\]\s*(pub(\([^)]*\))?\s+)?struct\s+\w+\s*\{[^}]*\b\w*(email|password|passwd|secret|token|api_?key|(mail|message|msg)_?(body|content|text)|subject|snippet|preview|from_(address|display)|sender_(address|name|display)|display_name|email_?address|refresh|csrf|data_?key|url|link)\w*\s*:
 

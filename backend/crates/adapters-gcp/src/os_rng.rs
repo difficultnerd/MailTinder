@@ -24,6 +24,10 @@ impl Rng for OsRng {
             // See `bytes32`; a hard stop is the only safe response.
             std::process::abort();
         }
+        // Stamp the RFC 4122 v4 version and variant bits; a random 128-bit
+        // value is not a valid UUID until both are set (T-206).
+        buf[6] = (buf[6] & 0x0f) | 0x40;
+        buf[8] = (buf[8] & 0x3f) | 0x80;
         Uuid::from_bytes(buf)
     }
 }

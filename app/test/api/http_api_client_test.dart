@@ -89,9 +89,9 @@ void main() {
       onUnauthenticated: () {},
     );
 
-    await apiClient.send('POST', 'swipes', idempotencyKey: 'idemp-xyz-987');
+    await apiClient.send('POST', 'swipes', idempotencyKey: 'idemp-key-one');
 
-    expect(capturedKey, equals('idemp-xyz-987'));
+    expect(capturedKey, equals('idemp-key-one'));
   });
 
   test('problem json parsed into ApiException', () async {

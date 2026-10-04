@@ -18,11 +18,11 @@ default-src 'none';
 script-src 'self' 'wasm-unsafe-eval';
 style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:;
-font-src 'self';
-connect-src 'self';
+font-src 'self' https://fonts.gstatic.com;
+connect-src 'self' https://fonts.gstatic.com;
 worker-src 'self' blob:;
 manifest-src 'self';
-base-uri 'none';
+base-uri 'self';
 object-src 'none';
 form-action 'none';
 frame-ancestors 'none';
@@ -43,13 +43,19 @@ trusted-types flutter-js flutter-engine
 - `require-trusted-types-for 'script'` with `trusted-types flutter-js
   flutter-engine`: the engine and `flutter.js` create Trusted Types policies
   under these names. No catch-all `*` is used.
-- `font-src 'self'`: the Roboto font is bundled with the app, so no font is
-  fetched from a CDN at start-up.
-- `connect-src 'self'`: the app talks only to its own origin (the `/api/**`
-  rewrite). No external API host is allowed.
-- `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'none'`,
+- `font-src 'self' https://fonts.gstatic.com`: the Roboto font is bundled, so no
+  font is fetched at start-up; the engine falls back to Noto Sans (loaded from
+  `fonts.gstatic.com`) for glyphs Roboto lacks (e.g. CJK/emoji). Exactly that
+  origin is allowed as the documented fallback-font decision below.
+- `connect-src 'self' https://fonts.gstatic.com`: the app talks to its own
+  origin (`/api/**`) plus exactly the fallback font CDN above.
+- `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`,
   `form-action 'none'`, `default-src 'none'`: deny-by-default for framing,
-  plugins, base URL and forms.
+  plugins and forms. `base-uri` is `'self'` (not `'none'`) because Flutter
+  always emits a static `<base href="/">` element in its `index.html` template;
+  `'self'` permits only the app's own base URL while still blocking a
+  cross-origin base in an injection scenario. The base element is a constant,
+  never attacker-controlled.
 
 ## What was tried and dropped
 
@@ -62,12 +68,13 @@ trusted-types flutter-js flutter-engine
 
 ## Fallback fonts
 
-Not triggered in the smoke test. If non-Latin glyphs (for example subjects in
-other scripts) trigger a fetch from `https://fonts.gstatic.com/`, the decision
-is to allow exactly that origin in `font-src` and `connect-src` and record it
-here, because Google is already the user's mail provider and self-hosting the
-whole Noto set costs tens of megabytes. Prefer `fontFallbackBaseUrl` pointing
-at self-hosted files if it is cheap to set.
+Triggered by the release-build smoke test (14k+ Noto Sans / Noto Sans SC
+glyphs fetched from `fonts.gstatic.com` at runtime). The decision above is in
+force: exactly `https://fonts.gstatic.com` is allowed in `font-src` and
+`connect-src`. It is safe because Google is already the user's mail provider,
+and self-hosting the whole Noto set costs tens of megabytes. If it ever
+becomes cheap, prefer `fontFallbackBaseUrl` pointing at self-hosted files and
+drop the origin from both directives.
 
 ## Re-check on Flutter upgrade
 

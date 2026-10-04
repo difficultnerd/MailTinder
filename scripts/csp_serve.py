@@ -64,7 +64,11 @@ def main() -> None:
                 self.end_headers()
                 return
             candidate = (root / rel).resolve()
-            if not candidate.is_file() or not str(candidate).startswith(str(root)):
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                candidate = root / "index.html"
+            if not candidate.is_file():
                 candidate = root / "index.html"
             ctype = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
             body = candidate.read_bytes()
