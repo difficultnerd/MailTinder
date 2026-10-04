@@ -10,7 +10,8 @@
     clippy::return_self_not_must_use,
     clippy::many_single_char_names,
     clippy::single_match,
-    clippy::single_match_else
+    clippy::single_match_else,
+    clippy::too_many_lines
 )]
 
 pub mod app_folder;
@@ -21,6 +22,7 @@ pub mod egress;
 pub mod fake_ports;
 pub mod identity;
 pub mod keys;
+pub mod mailbox;
 pub mod null_mail;
 pub mod rng;
 pub mod scheduler;
@@ -34,7 +36,8 @@ pub use egress::{EgressRecord, FakeHttpEgress, Route};
 pub use fake_ports::{fake_ports, Fakes};
 pub use identity::FakeIdentityProvider;
 pub use keys::{FakeKeyService, FakeSystemKeyService};
-pub use null_mail::NullMailProvider;
+pub use mailbox::state::SeedMessage;
+pub use mailbox::{FakeMailbox, MailOp, SentRecord};
 pub use rng::SeededRng;
 pub use scheduler::{FakeJobScheduler, SchedulerEvent, TaskState};
 pub use secrets::FakeSecrets;

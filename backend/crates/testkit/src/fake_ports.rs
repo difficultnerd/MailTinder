@@ -12,7 +12,7 @@ use crate::clock::{VirtualClock, T0};
 use crate::egress::FakeHttpEgress;
 use crate::identity::FakeIdentityProvider;
 use crate::keys::{FakeKeyService, FakeSystemKeyService};
-use crate::null_mail::NullMailProvider;
+use crate::mailbox::FakeMailbox;
 use crate::rng::SeededRng;
 use crate::scheduler::FakeJobScheduler;
 use crate::secrets::FakeSecrets;
@@ -32,10 +32,11 @@ pub struct Fakes {
     pub secrets: Arc<FakeSecrets>,
     pub gemini: Arc<FakeClassifier>,
     pub jev: Arc<FakeClassifier>,
+    pub mailbox: Arc<FakeMailbox>,
 }
 
 /// Build a `Ports` struct and its `Fakes`. Seed 42, clock at `T0`, gmail is
-/// `NullMailProvider` (T-203 switches it to `FakeMailbox`).
+/// gmail is a `FakeMailbox`.
 pub fn fake_ports() -> (Ports, Fakes) {
     let clock = Arc::new(VirtualClock::new(T0));
     let rng = Arc::new(SeededRng::new(42));
@@ -57,11 +58,12 @@ pub fn fake_ports() -> (Ports, Fakes) {
         "jev@1.13.0",
         Err(ClassifierError::Disabled),
     ));
+    let mailbox = Arc::new(FakeMailbox::new());
 
     let ports = Ports {
         clock: Arc::clone(&clock) as Arc<dyn ports::Clock>,
         rng: Arc::clone(&rng) as Arc<dyn ports::Rng>,
-        gmail: Arc::new(NullMailProvider),
+        gmail: Arc::clone(&mailbox) as Arc<dyn ports::MailProvider>,
         app_folder: Arc::clone(&app_folder) as Arc<dyn ports::AppFolderStore>,
         store: Arc::clone(&store) as Arc<dyn ServerStore>,
         keys: Arc::clone(&keys) as Arc<dyn ports::KeyService>,
@@ -89,6 +91,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
         secrets,
         gemini,
         jev,
+        mailbox,
     };
 
     (ports, fakes)
