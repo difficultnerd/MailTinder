@@ -26,6 +26,7 @@ mod message;
 mod needs_attention;
 mod sender;
 mod tunables;
+mod unsubscribe_job;
 
 pub use class::{Classification, MessageClass, SwipeAction};
 pub use error::DomainError;
@@ -52,3 +53,4 @@ pub use needs_attention::{
 };
 pub use sender::{SenderKey, SenderStats, REJECTS_KEPT, RELAY_DOMAINS};
 pub use tunables::Tunables;
+pub use unsubscribe_job::*;
