@@ -49,6 +49,7 @@ class _MailTinderAppState extends State<MailTinderApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: Copy.productName,
+      theme: ThemeData(fontFamily: 'Roboto'),
       navigatorKey: _navigatorKey,
       onGenerateRoute: (settings) =>
           onGenerateRoute(settings, widget.session, widget.api),
