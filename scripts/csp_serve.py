@@ -57,17 +57,28 @@ def main() -> None:
                             value = value + "; report-uri /__csp-report"
                         self.send_header(key, value)
 
+        def _resolve(self, rel: str) -> Path:
+            """Resolve a request path to a file under root, or index.html.
+
+            Rejects traversal and unsafe characters before touching the
+            filesystem (CodeQL path-injection sanitizer).
+            """
+            if ".." in rel or not all(c.isalnum() or c in "._-/" for c in rel):
+                return root / "index.html"
+            candidate = (root / rel).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return root / "index.html"
+            return candidate
+
         def do_GET(self) -> None:
             rel = self.path.lstrip("/").split("?", 1)[0]
             if rel == "__csp-report":
                 self.send_response(404)
                 self.end_headers()
                 return
-            candidate = (root / rel).resolve()
-            try:
-                candidate.relative_to(root)
-            except ValueError:
-                candidate = root / "index.html"
+            candidate = self._resolve(rel)
             if not candidate.is_file():
                 candidate = root / "index.html"
             ctype = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
