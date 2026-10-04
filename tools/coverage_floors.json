@@ -1,0 +1,12 @@
+{
+  "rust": {
+    "domain": 90,
+    "default": 75,
+    "exclude_crates": ["testkit", "fake-google", "unsub-testbed"],
+    "exclude_files": ["src/main.rs"]
+  },
+  "flutter": {
+    "lib": 75,
+    "exclude_files": ["lib/main.dart"]
+  }
+}

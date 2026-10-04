@@ -52,3 +52,28 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: tools/check_language_policy.sh
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          cache: true
+      - run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
+        working-directory: backend
+      - run: flutter pub get && flutter test --coverage
+        working-directory: app
+      - run: python3 -m unittest discover -s tools -p 'test_check_coverage_floors.py'
+      - run: python3 tools/check_coverage_floors.py --rust backend/lcov.info --flutter app/coverage/lcov.info

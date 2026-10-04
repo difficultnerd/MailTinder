@@ -1,5 +1,6 @@
 # Rust
 backend/target/
+backend/lcov.info
 
 # Dart / Flutter
 app/.dart_tool/
@@ -11,6 +12,7 @@ app/pubspec_overrides.yaml
 app/ios/Pods/
 app/android/.gradle/
 app/android/local.properties
+app/coverage/
 
 # Python (tooling only)
 __pycache__/
