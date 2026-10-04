@@ -11,6 +11,26 @@ GitHub template for personal projects: Rust backend (`backend/`), Flutter front 
 5. Add a `LICENSE` file for the new project (none is shipped).
 6. Edit `backend/deny.toml` and `tools/dart_license_policy.json` if your licence policy differs.
 
+## Local checks (pre-push gate)
+
+CI is the source of truth, but a local gate catches problems before you push so
+CI runs are "belt and braces". `tools/ci-local.sh` mirrors the CI checks:
+
+```sh
+./tools/setup-local-checks.sh   # one-time: installs cargo-deny, gitleaks, semgrep venv
+./tools/ci-local.sh             # run all quick local checks
+./tools/ci-local.sh --full      # also run heavy checks (coverage, csp-smoke)
+./tools/ci-local.sh fmt clippy  # run only named checks
+```
+
+It runs `rustfmt`, `clippy -D warnings`, `cargo test`, `cargo-deny`,
+`semgrep` (privacy + mailtinder rules), `gitleaks`, `dart format` /
+`flutter analyze` / `flutter test`, and `ac-coverage`. Any check whose tool
+isn't installed is skipped with a note; the script exits non-zero if a
+requested check fails. Tools install into `tools/.bin` and
+`tools/.venv-semgrep` (both gitignored). Rust (`cargo`/`rustfmt`/`clippy`) and
+Flutter/Dart must already be on `PATH`.
+
 ## Core toolchain
 
 | Concern | Tool | Where it runs |
