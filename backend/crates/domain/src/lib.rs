@@ -25,7 +25,9 @@ mod mailbox;
 mod mailbox_status;
 mod message;
 mod needs_attention;
+mod rules;
 mod sender;
+mod sender_stats;
 mod tunables;
 mod unsubscribe_job;
 
@@ -53,6 +55,8 @@ pub use needs_attention::{
     needs_attention_expired, NeedsAttentionExit, NeedsAttentionId, NeedsAttentionReason,
     NewNeedsAttention,
 };
+pub use rules::{first_match, RuleAction, RuleKind, RuleMatch, SortRule};
 pub use sender::{SenderKey, SenderStats, REJECTS_KEPT, RELAY_DOMAINS};
+pub use sender_stats::BlockPrompt;
 pub use tunables::Tunables;
 pub use unsubscribe_job::*;
