@@ -15,6 +15,7 @@
 
 mod class;
 mod error;
+mod gamification;
 mod header_rules;
 mod ids;
 mod invite;
@@ -27,6 +28,9 @@ mod tunables;
 
 pub use class::{Classification, MessageClass, SwipeAction};
 pub use error::DomainError;
+pub use gamification::{
+    mail_stopped_per_year, newly_unlocked, yearly_rate, AchievementId, AchievementProgress,
+};
 pub use header_rules::{
     HeaderRules, UnsubscribeRoute, BULK_REASON_MAX_CHARS, ESP_NAMES,
     PERSONAL_HIGH_CONFIDENCE_MAX_SCORE,
