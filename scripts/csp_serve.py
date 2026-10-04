@@ -66,8 +66,7 @@ def main() -> None:
             """
             if ".." in rel or not all(c.isalnum() or c in "._-/" for c in rel):
                 return root / "index.html"
-            # codeql[py/path-injection] -- dev-only localhost test server; path sanitized below
-            candidate = (root / rel).resolve()
+            candidate = (root / rel).resolve()  # codeql[py/path-injection] dev-only localhost test server
             # Containment check CodeQL recognises: the resolved path must share
             # the root as its common path, else fall back to index.html.
             if os.path.commonpath([str(candidate), str(root)]) != str(root):
@@ -80,13 +79,11 @@ def main() -> None:
                 self.send_response(404)
                 self.end_headers()
                 return
-            # codeql[py/path-injection] -- dev-only localhost test server; _resolve sanitizes
-            candidate = self._resolve(rel)
+            candidate = self._resolve(rel)  # codeql[py/path-injection] dev-only localhost test server
             if not candidate.is_file():
                 candidate = root / "index.html"
             ctype = mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
-            # codeql[py/path-injection] -- dev-only localhost test server; candidate is under root
-            body = candidate.read_bytes()
+            body = candidate.read_bytes()  # codeql[py/path-injection] dev-only localhost test server
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self._apply_headers("/" + rel)
