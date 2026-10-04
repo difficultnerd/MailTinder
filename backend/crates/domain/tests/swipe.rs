@@ -435,3 +435,26 @@ fn classification_strategy() -> impl Strategy<Value = Classification> {
             },
         )
 }
+
+#[test]
+fn swipe_debug_redacts_targets() {
+    let opts = Some(UnsubscribeOptions {
+        one_click_https: Some(test_url("https://unsub.example.com/one")),
+        https: None,
+        mailto: None,
+    });
+    let m = meta(facts(opts, true, Some("list-1"), true));
+    let stats = SenderStats::default();
+    let p = plan(SwipeAction::Reject, &m, &stats);
+    let unsub = p.unsubscribe.unwrap();
+    let s = format!("{unsub:?}");
+    assert!(s.contains("UnsubscribePlan"));
+    assert!(!s.contains("unsub.example.com"));
+    let t = format!("{:?}", unsub.target);
+    assert!(t.contains("OneClick"));
+    let manual = domain::ManualUnsubscribePlan {
+        link: Some(test_url("https://x.example.com")),
+    };
+    let ms = format!("{manual:?}");
+    assert!(ms.contains("ManualUnsubscribePlan"));
+}

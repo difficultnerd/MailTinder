@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 359301f319e878de05c50e618a8ea18503b7fa591c33f8088f8bcd757c304d6a # shrinks to facts = HeaderFacts { list_unsubscribe: false, list_unsubscribe_present: true, list_id: false, feedback_id: false, precedence_bulk: false, auto_submitted: false, from_authenticated: true, esp_hint: None, is_reply_or_thread: false, reply_to_mismatch: false, display_name_spoof: false }, model = Classification { class: List, bulk_score: 0, bulk_reason: "", confidence: None, probabilities: None }, action = Reject
+cc b0ae3bb4d26a70160b290c31041de6db17df47a60b6bcb0680b5741d93f0a224 # shrinks to facts = HeaderFacts { list_unsubscribe: true, list_unsubscribe_present: false, list_id: false, feedback_id: false, precedence_bulk: false, auto_submitted: false, from_authenticated: true, esp_hint: None, is_reply_or_thread: false, reply_to_mismatch: false, display_name_spoof: false }

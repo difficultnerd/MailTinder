@@ -334,3 +334,14 @@ proptest! {
         prop_assert!(s.rejects_counted.is_empty());
     }
 }
+
+#[test]
+fn rules_debug_redacts_sender() {
+    let rule = reject_rule("a@example.com", Some("list-1"), None, true);
+    let s = format!("{rule:?}");
+    assert!(s.contains("SortRule"));
+    assert!(!s.contains("a@example.com"));
+    let m = format!("{:?}", rule.matcher);
+    assert!(m.contains("RuleMatch"));
+    assert!(!m.contains("a@example.com"));
+}

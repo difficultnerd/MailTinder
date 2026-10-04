@@ -321,3 +321,44 @@ proptest! {
         prop_assert_eq!(stats, start_stats);
     }
 }
+
+#[test]
+fn undo_debug_redacts_and_reverses_file_stats() {
+    // Formatting a SwipeRecord with {:?} exercises the redacting Debug impl.
+    let rec = SwipeRecord {
+        mailbox: mid(),
+        message: MessageId::new("m1").unwrap_or_else(|_| panic!("id")),
+        sender: SenderKey::from_address("a@example.com"),
+        action: SwipeAction::Reject,
+        outcome: SwipeOutcome::Trashed,
+        previous_labels: LabelSet::from_ids(vec!["INBOX".to_owned()]),
+        job_id: None,
+        rule_id: None,
+        counted_reject_at: None,
+        at: T0,
+    };
+    let s = format!("{rec:?}");
+    assert!(s.contains("SwipeRecord"));
+    assert!(!s.contains("a@example.com"));
+
+    // Reversing a File swipe decrements the category count and removes at 0.
+    let cat = domain::CategoryId(Uuid::new_v4());
+    let mut stats = SenderStats::default();
+    stats.record_file(cat);
+    assert_eq!(stats.files.get(&cat.0), Some(&1));
+    let file_rec = SwipeRecord {
+        mailbox: mid(),
+        message: MessageId::new("m1").unwrap_or_else(|_| panic!("id")),
+        sender: SenderKey::from_address("a@example.com"),
+        action: SwipeAction::File { category: cat },
+        outcome: SwipeOutcome::Filed,
+        previous_labels: LabelSet::from_ids(vec!["INBOX".to_owned()]),
+        job_id: None,
+        rule_id: None,
+        counted_reject_at: None,
+        at: T0,
+    };
+    reverse_stats(&file_rec, &mut stats);
+    assert!(stats.files.is_empty());
+    assert_eq!(stats.last_filed, None);
+}

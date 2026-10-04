@@ -271,3 +271,39 @@ fn guard_reason_matches_class_after_clamp() {
     // Confidence and probabilities stay from the candidate.
     assert_eq!(guarded.classification.confidence, candidate.confidence);
 }
+
+#[test]
+fn guard_1_header_rules_list_without_header_clamps() {
+    // A header-rules result that (incorrectly) says List with no covered
+    // header and no header present: the guard clamps to BulkNoHeader.
+    let facts = HeaderFacts {
+        list_unsubscribe: None,
+        list_unsubscribe_present: false,
+        list_id: None,
+        feedback_id: None,
+        precedence_bulk: false,
+        auto_submitted: false,
+        from_authenticated: true,
+        esp_hint: None,
+        is_reply_or_thread: false,
+        reply_to_mismatch: false,
+        display_name_spoof: false,
+    };
+    let hr = Classification {
+        class: MessageClass::List,
+        bulk_score: 0,
+        bulk_reason: "list".to_owned(),
+        confidence: None,
+        probabilities: None,
+    };
+    let candidate = Classification {
+        class: MessageClass::List,
+        bulk_score: 90,
+        bulk_reason: "model".to_owned(),
+        confidence: Some(0.9),
+        probabilities: None,
+    };
+    let guarded = header_guard(&facts, &hr, Some(&candidate));
+    assert_eq!(guarded.classification.class, MessageClass::BulkNoHeader);
+    assert!(guarded.notes.contains(&GuardNote::ListWithoutCoveredHeader));
+}
