@@ -7,8 +7,14 @@ use ports::{
 
 #[test]
 fn egress_error_display() {
-    assert_eq!(EgressError::SchemeNotAllowed.to_string(), "scheme not allowed");
-    assert_eq!(EgressError::CredentialsInUrl.to_string(), "credentials in url");
+    assert_eq!(
+        EgressError::SchemeNotAllowed.to_string(),
+        "scheme not allowed"
+    );
+    assert_eq!(
+        EgressError::CredentialsInUrl.to_string(),
+        "credentials in url"
+    );
     assert_eq!(EgressError::PortNotAllowed.to_string(), "port not allowed");
     assert_eq!(EgressError::IpLiteralHost.to_string(), "ip literal host");
     assert_eq!(EgressError::HostNotAllowed.to_string(), "host not allowed");
@@ -17,13 +23,22 @@ fn egress_error_display() {
         "address refused: Private"
     );
     // nosemgrep: mailtinder-no-permanent-delete -- asserting the Display string of an error variant, not a delete operation
-    assert_eq!(EgressError::PermanentDeleteRefused.to_string(), "permanent delete refused");
-    assert_eq!(EgressError::NotPermitted.to_string(), "not permitted for this service");
+    assert_eq!(
+        EgressError::PermanentDeleteRefused.to_string(),
+        "permanent delete refused"
+    );
+    assert_eq!(
+        EgressError::NotPermitted.to_string(),
+        "not permitted for this service"
+    );
     assert_eq!(EgressError::DnsFailed.to_string(), "dns failure");
     assert_eq!(EgressError::Connect.to_string(), "connect failure");
     assert_eq!(EgressError::Tls.to_string(), "tls failure");
     assert_eq!(EgressError::Timeout.to_string(), "timeout");
-    assert_eq!(EgressError::ResponseTooLarge.to_string(), "response too large");
+    assert_eq!(
+        EgressError::ResponseTooLarge.to_string(),
+        "response too large"
+    );
 }
 
 #[test]
@@ -31,16 +46,25 @@ fn key_error_display() {
     assert_eq!(KeyError::Unavailable.to_string(), "key service unavailable");
     assert_eq!(KeyError::OpenFailed.to_string(), "open failed");
     assert_eq!(KeyError::Malformed.to_string(), "malformed ciphertext");
-    assert_eq!(KeyError::UnsupportedVersion(2).to_string(), "unsupported scheme version 2");
+    assert_eq!(
+        KeyError::UnsupportedVersion(2).to_string(),
+        "unsupported scheme version 2"
+    );
     assert_eq!(KeyError::Denied.to_string(), "denied");
 }
 
 #[test]
 fn id_error_display() {
     assert_eq!(IdError::InvalidGrant.to_string(), "invalid grant");
-    assert_eq!(IdError::InvalidIdToken("x").to_string(), "invalid id token: x");
+    assert_eq!(
+        IdError::InvalidIdToken("x").to_string(),
+        "invalid id token: x"
+    );
     assert_eq!(IdError::AccessDenied.to_string(), "access denied");
-    assert_eq!(IdError::Unavailable.to_string(), "identity provider unavailable");
+    assert_eq!(
+        IdError::Unavailable.to_string(),
+        "identity provider unavailable"
+    );
 }
 
 #[test]
@@ -55,7 +79,10 @@ fn mail_error_display() {
     assert_eq!(MailError::Unauthorized.to_string(), "unauthorized");
     assert_eq!(MailError::Forbidden.to_string(), "forbidden");
     assert_eq!(MailError::NotFound.to_string(), "not found");
-    assert_eq!(MailError::RateLimited { retry_after_s: 3 }.to_string(), "rate limited");
+    assert_eq!(
+        MailError::RateLimited { retry_after_s: 3 }.to_string(),
+        "rate limited"
+    );
     assert_eq!(MailError::Transient.to_string(), "transient");
     assert_eq!(MailError::Invalid("bad".into()).to_string(), "invalid: bad");
 }

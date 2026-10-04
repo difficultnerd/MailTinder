@@ -2,9 +2,7 @@
 
 use obs::Sensitive;
 use ports::keys::WrappedKey;
-use ports::{
-    AuthRequest, ClassifierInput, IdClaims, Prompt, SecretName, TokenSet,
-};
+use ports::{AuthRequest, ClassifierInput, IdClaims, Prompt, SecretName, TokenSet};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -37,10 +35,19 @@ fn wrapped_key_deserialize_base64url() {
 
 #[test]
 fn secret_name_secret_id() {
-    assert_eq!(SecretName::GoogleOAuthClientSecret.secret_id(), "google-oauth-client-secret");
+    assert_eq!(
+        SecretName::GoogleOAuthClientSecret.secret_id(),
+        "google-oauth-client-secret"
+    );
     assert_eq!(SecretName::JevApiKey.secret_id(), "jev-api-key");
-    assert_eq!(SecretName::EmailLookupHmacKey.secret_id(), "email-lookup-hmac-key");
-    assert_eq!(SecretName::LogPseudonymHmacKey.secret_id(), "log-pseudonym-hmac-key");
+    assert_eq!(
+        SecretName::EmailLookupHmacKey.secret_id(),
+        "email-lookup-hmac-key"
+    );
+    assert_eq!(
+        SecretName::LogPseudonymHmacKey.secret_id(),
+        "log-pseudonym-hmac-key"
+    );
 }
 
 #[test]
