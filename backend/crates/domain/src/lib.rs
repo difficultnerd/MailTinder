@@ -15,6 +15,7 @@
 
 mod class;
 mod error;
+pub mod feed;
 mod gamification;
 mod header_rules;
 mod ids;
