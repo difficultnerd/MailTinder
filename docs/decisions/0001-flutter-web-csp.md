@@ -22,7 +22,7 @@ font-src 'self' https://fonts.gstatic.com;
 connect-src 'self' https://fonts.gstatic.com;
 worker-src 'self' blob:;
 manifest-src 'self';
-base-uri 'self';
+base-uri 'none';
 object-src 'none';
 form-action 'none';
 frame-ancestors 'none';
@@ -49,13 +49,12 @@ trusted-types flutter-js flutter-engine
   origin is allowed as the documented fallback-font decision below.
 - `connect-src 'self' https://fonts.gstatic.com`: the app talks to its own
   origin (`/api/**`) plus exactly the fallback font CDN above.
-- `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`,
+- `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'none'`,
   `form-action 'none'`, `default-src 'none'`: deny-by-default for framing,
-  plugins and forms. `base-uri` is `'self'` (not `'none'`) because Flutter
-  always emits a static `<base href="/">` element in its `index.html` template;
-  `'self'` permits only the app's own base URL while still blocking a
-  cross-origin base in an injection scenario. The base element is a constant,
-  never attacker-controlled.
+  plugins, base URL and forms. The Flutter `index.html` template's default
+  `<base href="/">` element is REMOVED from the template, so `base-uri 'none'`
+  produces no violation; the app is served at the root, where omitting the base
+  element is equivalent.
 
 ## What was tried and dropped
 
