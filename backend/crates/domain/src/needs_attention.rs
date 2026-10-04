@@ -33,7 +33,7 @@ pub enum NeedsAttentionReason {
 }
 
 /// A new Needs Attention item. `Debug` prints only the reason and whether a
-/// link is present, so a URL never lands in a log.
+/// link is present, so a URL never lands in a log (S5).
 #[derive(Clone, PartialEq, Eq)]
 pub struct NewNeedsAttention {
     pub reason: NeedsAttentionReason,
@@ -61,6 +61,9 @@ impl NewNeedsAttention {
     }
 }
 
+// The spec mandates that Debug prints only the reason and link presence, so
+// the timestamps are deliberately omitted.
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for NewNeedsAttention {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NewNeedsAttention")
@@ -91,11 +94,12 @@ mod tests {
     use time::Duration;
 
     fn now() -> OffsetDateTime {
-        OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp")
+        OffsetDateTime::from_unix_timestamp(1_700_000_000)
+            .unwrap_or_else(|_| panic!("valid timestamp"))
     }
 
     fn https_link() -> Url {
-        Url::parse("https://example.com/unsub").expect("valid url")
+        Url::parse("https://example.com/unsub").unwrap_or_else(|_| panic!("valid url"))
     }
 
     #[test]
@@ -145,8 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn un_01_ac6_sign_in_required_reason_serialises() {
-        let json = serde_json::to_string(&NeedsAttentionReason::SignInRequired).expect("serialise");
+    fn un_01_ac6_sign_in_required_reason_serialises() -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string(&NeedsAttentionReason::SignInRequired)?;
         assert_eq!(json, "\"sign_in_required\"");
+        Ok(())
     }
 }

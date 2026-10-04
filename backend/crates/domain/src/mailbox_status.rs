@@ -19,17 +19,18 @@ pub enum MailboxEvent {
 /// returns `current` unchanged.
 pub fn next_status(current: MailboxStatus, event: MailboxEvent) -> MailboxStatus {
     match (current, event) {
-        (MailboxStatus::Connected, MailboxEvent::TokenInvalid) => MailboxStatus::NeedsSignIn,
-        (MailboxStatus::NeedsSignIn, MailboxEvent::OAuthSucceeded) => MailboxStatus::Connected,
-        (MailboxStatus::ConsentBlocked, MailboxEvent::OAuthSucceeded) => MailboxStatus::Connected,
-        (MailboxStatus::Connected, MailboxEvent::ConsentBlocked) => MailboxStatus::ConsentBlocked,
-        (MailboxStatus::NeedsSignIn, MailboxEvent::ConsentBlocked) => MailboxStatus::ConsentBlocked,
-        (MailboxStatus::ConsentBlocked, MailboxEvent::ConsentBlocked) => {
-            MailboxStatus::ConsentBlocked
+        (MailboxStatus::Connected | MailboxStatus::NeedsSignIn, MailboxEvent::TokenInvalid) => {
+            MailboxStatus::NeedsSignIn
         }
-        (MailboxStatus::Connected, MailboxEvent::OAuthSucceeded) => MailboxStatus::Connected,
-        (MailboxStatus::NeedsSignIn, MailboxEvent::TokenInvalid) => MailboxStatus::NeedsSignIn,
-        (MailboxStatus::ConsentBlocked, MailboxEvent::TokenInvalid) => {
+        (
+            MailboxStatus::NeedsSignIn | MailboxStatus::ConsentBlocked | MailboxStatus::Connected,
+            MailboxEvent::OAuthSucceeded,
+        ) => MailboxStatus::Connected,
+        (
+            MailboxStatus::Connected | MailboxStatus::NeedsSignIn | MailboxStatus::ConsentBlocked,
+            MailboxEvent::ConsentBlocked,
+        )
+        | (MailboxStatus::ConsentBlocked, MailboxEvent::TokenInvalid) => {
             MailboxStatus::ConsentBlocked
         }
     }
@@ -60,18 +61,19 @@ mod tests {
     }
 
     #[test]
-    fn st_03_ac1_mailbox_status_values() {
+    fn st_03_ac1_mailbox_status_values() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            serde_json::to_string(&MailboxStatus::Connected).expect("serialise"),
+            serde_json::to_string(&MailboxStatus::Connected)?,
             "\"connected\""
         );
         assert_eq!(
-            serde_json::to_string(&MailboxStatus::NeedsSignIn).expect("serialise"),
+            serde_json::to_string(&MailboxStatus::NeedsSignIn)?,
             "\"needs_sign_in\""
         );
         assert_eq!(
-            serde_json::to_string(&MailboxStatus::ConsentBlocked).expect("serialise"),
+            serde_json::to_string(&MailboxStatus::ConsentBlocked)?,
             "\"consent_blocked\""
         );
+        Ok(())
     }
 }

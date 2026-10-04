@@ -126,6 +126,9 @@ impl InviteState {
     }
 }
 
+// The spec mandates that Debug prints only the status and times, so the
+// hashes are deliberately omitted.
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for InviteState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InviteState")
@@ -165,9 +168,8 @@ pub fn check_redemption(
         }
         _ => return Err(RedeemRefusal::InviteInvalid),
     };
-    let presented = match presented_token_hash {
-        Some(hash) => hash,
-        None => return Err(RedeemRefusal::InviteInvalid),
+    let Some(presented) = presented_token_hash else {
+        return Err(RedeemRefusal::InviteInvalid);
     };
     if invite.token_hash != *presented {
         return Err(RedeemRefusal::InviteInvalid);
@@ -186,7 +188,8 @@ mod tests {
     use time::Duration;
 
     fn now() -> OffsetDateTime {
-        OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp")
+        OffsetDateTime::from_unix_timestamp(1_700_000_000)
+            .unwrap_or_else(|_| panic!("valid timestamp"))
     }
 
     fn hash(byte: u8) -> [u8; 32] {
@@ -207,18 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn au_01_ac2_resend_voids_old_token() {
+    fn au_01_ac2_resend_voids_old_token() -> Result<(), Box<dyn std::error::Error>> {
         let t = Tunables::default();
         let invite = pending(&t);
-        let resent = invite
-            .apply(
-                InviteEvent::Resend {
-                    new_token_hash: hash(9),
-                    now: now() + Duration::days(1),
-                },
-                &t,
-            )
-            .expect("resend from pending");
+        let resent = invite.apply(
+            InviteEvent::Resend {
+                new_token_hash: hash(9),
+                now: now() + Duration::days(1),
+            },
+            &t,
+        )?;
         assert_eq!(resent.status, InviteStatus::Pending);
         assert_eq!(resent.token_hash, hash(9));
         assert_eq!(resent.last_sent_at, now() + Duration::days(1));
@@ -248,19 +249,19 @@ mod tests {
             ),
             Ok(())
         );
+        Ok(())
     }
 
     #[test]
-    fn au_01_ac4_revoked_invite_refused() {
+    fn au_01_ac4_revoked_invite_refused() -> Result<(), Box<dyn std::error::Error>> {
         let t = Tunables::default();
-        let invite = pending(&t)
-            .apply(InviteEvent::Revoke, &t)
-            .expect("revoke from pending");
+        let invite = pending(&t).apply(InviteEvent::Revoke, &t)?;
         assert_eq!(invite.status, InviteStatus::Revoked);
         assert_eq!(
             check_redemption(Some(&invite), Some(&hash(1)), &hash(2), true, now()),
             Err(RedeemRefusal::InviteInvalid)
         );
+        Ok(())
     }
 
     #[test]
@@ -324,11 +325,9 @@ mod tests {
     }
 
     #[test]
-    fn invite_used_cannot_be_resent_or_revoked() {
+    fn invite_used_cannot_be_resent_or_revoked() -> Result<(), Box<dyn std::error::Error>> {
         let t = Tunables::default();
-        let used = pending(&t)
-            .apply(InviteEvent::Use { now: now() }, &t)
-            .expect("use from pending");
+        let used = pending(&t).apply(InviteEvent::Use { now: now() }, &t)?;
         assert_eq!(used.status, InviteStatus::Used);
         assert_eq!(
             used.apply(
@@ -344,6 +343,7 @@ mod tests {
             used.apply(InviteEvent::Revoke, &t),
             Err(DomainError::TransitionNotAllowed)
         );
+        Ok(())
     }
 
     #[test]
