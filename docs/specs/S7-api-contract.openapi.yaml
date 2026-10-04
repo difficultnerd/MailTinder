@@ -46,7 +46,7 @@ paths:
               additionalProperties: false
               required: [intent]
               properties:
-                intent: {type: string, enum: [sign_in, join, link, reconnect, step_up], description: 'step_up sends prompt=login and max_age=0; the callback checks auth_time is within 5 minutes'}
+                intent: {type: string, enum: [sign_in, join, link, reconnect, step_up], description: 'step_up sends prompt=login and max_age=300; the callback checks auth_time is within 5 minutes and sets recent_auth_at from auth_time'}
                 invite_token: {type: [string, 'null'], minLength: 43, maxLength: 64}
                 mailbox_id: {type: [string, 'null'], format: uuid}
       responses:
@@ -166,7 +166,9 @@ paths:
                       required: [user_id, email_address, created_at, is_admin, mailbox_count, signed_in, last_seen_at]
                       properties:
                         user_id: {type: string, format: uuid}
-                        email_address: {$ref: '#/components/schemas/EmailAddress'}
+                        email_address:
+                          $ref: '#/components/schemas/EmailAddress'
+                          description: Earliest linked mailbox still present
                         created_at: {type: string, format: date-time}
                         is_admin: {type: boolean}
                         mailbox_count: {type: integer, minimum: 0}
@@ -725,7 +727,7 @@ paths:
     post:
       tags: [admin]
       operationId: resendInvite
-      summary: API-ADM-3 Re-send an invite (AU-01 AC2); needs step-up
+      summary: API-ADM-3 Re-send an invite (AU-01 AC2); needs step-up; 404 for a used or revoked invite
       parameters:
         - $ref: '#/components/parameters/Csrf'
         - {name: invite_id, in: path, required: true, schema: {type: string, format: uuid}}
@@ -742,7 +744,7 @@ paths:
     delete:
       tags: [admin]
       operationId: revokeInvite
-      summary: API-ADM-4 Revoke an invite (AU-01 AC4); needs step-up
+      summary: API-ADM-4 Revoke an invite (AU-01 AC4); needs step-up; 404 for a used or already revoked invite
       parameters:
         - $ref: '#/components/parameters/Csrf'
         - {name: invite_id, in: path, required: true, schema: {type: string, format: uuid}}
@@ -1023,7 +1025,7 @@ paths:
             schema: {$ref: '#/components/schemas/Empty'}
       responses:
         '200':
-          description: Terminal state reached, job missing, or job not queued. Cloud Tasks stops.
+          description: Terminal state reached, job missing, job already terminal, or a running job redelivered with a retry count not above its recorded attempts (a duplicate). Cloud Tasks stops. A running job is reclaimed by a delivery with a higher X-CloudTasks-TaskRetryCount.
           content:
             application/json:
               schema:
@@ -1208,7 +1210,7 @@ components:
     Mailbox:
       type: object
       additionalProperties: false
-      required: [mailbox_id, provider, email_address, status, is_primary]
+      required: [mailbox_id, provider, email_address, status, is_primary, linked_at]
       properties:
         mailbox_id: {type: string, format: uuid}
         provider: {type: string, enum: [gmail, graph], description: v1 accepts gmail only; graph is v2}
@@ -1245,7 +1247,7 @@ components:
     Card:
       type: object
       additionalProperties: false
-      required: [mailbox_id, message_id, received_at, sender_name, sender_address, subject, preview, bulk_score, bulk_reason, class, has_one_click, suggestion, keep_prompt, skip_count, provider_web_url, classification_token]
+      required: [mailbox_id, message_id, received_at, sender_name, sender_address, subject, preview, bulk_score, bulk_reason, class, unsubscribe_method, has_one_click, suggestion, keep_prompt, skip_count, provider_web_url, classification_token]
       properties:
         mailbox_id: {type: string, format: uuid}
         message_id: {$ref: '#/components/schemas/MessageId'}
@@ -1257,7 +1259,8 @@ components:
         bulk_score: {type: integer, minimum: 0, maximum: 100}
         bulk_reason: {type: string, maxLength: 200}
         class: {type: string, enum: [list, bulk_no_header, notice, personal, suspect]}
-        has_one_click: {type: boolean}
+        unsubscribe_method: {type: string, enum: [one_click, mailto, manual, none], description: 'What a reject will do, from header rules; drives the optimistic toast. manual is an https-only header (link goes to Needs Attention); none is trash only.'}
+        has_one_click: {type: boolean, description: True only when unsubscribe_method is one_click}
         suggestion:
           oneOf:
             - {$ref: '#/components/schemas/Suggestion'}
@@ -1400,8 +1403,8 @@ components:
         sender_display: {type: string, maxLength: 256}
         reason_code:
           type: string
-          enum: [https_only_unsubscribe, one_click_redirect, one_click_address_refused, unsubscribe_failed, unsubscribe_ignored, job_expired, captcha, login_required, page_unclear, page_failed]
-          description: v1 uses the first six; captcha, login_required and the page_* codes are reserved for the v2 page handler.
+          enum: [https_only_unsubscribe, one_click_redirect, one_click_address_refused, unsubscribe_failed, unsubscribe_ignored, job_expired, sign_in_required, captcha, login_required, page_unclear, page_failed]
+          description: v1 uses the first seven (sign_in_required means the mailbox's refresh token was revoked or invalid when the job ran); captcha, login_required and the page_* codes are reserved for the v2 page handler.
         link:
           oneOf:
             - {$ref: '#/components/schemas/HttpsUrl'}
@@ -1417,7 +1420,7 @@ components:
         mailbox_id: {type: string, format: uuid}
         sender_display: {type: string, maxLength: 256}
         action: {type: string, enum: [trashed_by_rule, unsubscribe, filed, filed_by_rule, blocked, reported_spam]}
-        outcome: {type: string, enum: [sent, failed, cancelled, expired, done]}
+        outcome: {type: string, enum: [sent, needs_attention, failed, cancelled, expired, done]}
         rule_id: {type: [string, 'null'], format: uuid}
     Model:
       type: string
@@ -1450,7 +1453,7 @@ components:
             required: [model, classifier_id, enabled, changed_at]
             properties:
               model: {$ref: '#/components/schemas/Model'}
-              classifier_id: {type: string, maxLength: 64}
+              classifier_id: {type: string, maxLength: 64, examples: ['gemini@flash-lite', 'jev@1.13.0'], description: 'S3 ClassifierId: header_rules@1, gemini@<model>, jev@<version>'}
               enabled: {type: boolean}
               changed_at: {type: string, format: date-time}
         participants: {type: integer, minimum: 0}
@@ -1562,7 +1565,7 @@ components:
                       required: [from_ms, to_ms, count]
                       properties:
                         from_ms: {type: integer, minimum: 0}
-                        to_ms: {type: [integer, 'null'], minimum: 0, description: null means timeout bin}
+                        to_ms: {type: integer, minimum: 1, maximum: 2000, description: Exclusive upper bound; timed-out calls are in no bin and are counted in timeout_rate}
                         count: {$ref: '#/components/schemas/NullableCount'}
               timeout_rate: {$ref: '#/components/schemas/Ci'}
               error_rate: {$ref: '#/components/schemas/Ci'}
@@ -1609,7 +1612,9 @@ components:
             properties:
               model_a: {$ref: '#/components/schemas/Method'}
               model_b: {$ref: '#/components/schemas/Method'}
-              rate: {$ref: '#/components/schemas/Ci'}
+              rate:
+                $ref: '#/components/schemas/Ci'
+                description: Five-class agreement, the share of paired cards where both models predicted the same S3 class
         by_segment:
           type: array
           items:

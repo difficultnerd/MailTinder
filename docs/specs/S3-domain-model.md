@@ -25,7 +25,7 @@ Nothing that identifies message content is stored on the server except inside a 
 | `InviteRequest` | `request_id`, `email_address` (encrypted plus keyed hash), `created_at`, `status` | Deleted on decline |
 | `UnsubscribeJob` | `job_id`, `user_id`, `mailbox_id`, `list_key_hash`, `method` (v1: one_click, mailto; page in v2), `target` (encrypted), `due_at`, `status`, `attempts` (Cloud Tasks retry count, recorded only), `outcome` (result code and time, written by `unsub`), `expires_at` | No access token is stored: `unsub` mints one from the mailbox's refresh token when the job runs. Hard TTL (`JOB_TTL`) 1 hour after `due_at` for a non-terminal job. A terminal job keeps only its `outcome` (target cleared) until the next Feed load appends it to History, up to 30 days `[TUNABLE]` |
 | `NeedsAttentionItem` | `item_id`, `user_id`, `mailbox_id`, `sender_display` (encrypted), `link` (encrypted), `reason_code`, `created_at`, `status` | Hard TTL 30 days |
-| `Session` | `session_hash`, `session_record_id` (random, stable across session ID rotation; sealed tokens bind to it, S6 section 5), `recent_auth_at` (time of the last Google sign-in, from `auth_time`; checked for step-up), `state` (`pre_auth`, `pending_invite_request`, `authenticated`), `user_id`, `csrf_token`, `created_at`, `last_seen_at`, `recent_auth_at` (last fresh Google sign-in, for step-up), `expires_at` (TTL); `pre_auth` fields (OAuth `state`, `nonce`, PKCE verifier, invite token hash, pending email, encrypted) | Opaque cookie maps to this; idle 15 minutes and absolute 12 hours. One session per user: a new sign-in deletes the old record. Admin "end this user's session" deletes it too |
+| `Session` | `session_hash`, `session_record_id` (random, stable across session ID rotation; sealed tokens bind to it, S6 section 5), `state` (`pre_auth`, `pending_invite_request`, `authenticated`), `user_id`, `csrf_token`, `created_at`, `last_seen_at`, `recent_auth_at` (last fresh Google sign-in, for step-up), `expires_at` (TTL); `pre_auth` fields (OAuth `state`, `nonce`, PKCE verifier, invite token hash, pending email, encrypted) | Opaque cookie maps to this; idle 15 minutes and absolute 12 hours. One session per user: a new sign-in deletes the old record. Admin "end this user's session" deletes it too |
 
 Security events are not a Firestore entity. They are structured log entries in the locked log bucket (S5 Logs, S6 section 7): pseudonymous user ID, action, outcome, request ID, time; no addresses, subjects or URLs; 90-day retention.
 
@@ -35,7 +35,7 @@ Security events are not a Firestore entity. They are structured log entries in t
 | --- | --- |
 | `SortRule` | `rule_id`, `kind` (reject_list, block_person, file), `match` (sender address, optional List-Id, optional Feedback-ID), `action`, `category_id`, `enabled`, `created_at`, `source_swipe` |
 | `Category` | `category_id`, `name`, provider label or category ID per mailbox |
-| `SenderStats` | `sender_key`, counts of keep, reject, file per category, `last_seen`, `block_prompt_declined_until` |
+| `SenderStats` | `sender_key`, counts of seen, keep, reject (authenticated rejects only), file per category, `last_seen`, `block_prompt_declined_until`, `boss_defeated` (field list owned by backlog T-101) |
 | `HistoryEntry` | `entry_id`, `at`, `mailbox_id`, `sender_display`, `action`, `rule_id`, `outcome` |
 | `FeedCursor` | per mailbox: newest message seen, oldest message seen, skip counts |
 | `PendingDeliveryCheck` | `list_key`, `unsubscribed_at` |

@@ -80,13 +80,13 @@ Rules:
 | Widget | Every screen state in S9 and every overlay, driven by a fake API client | `flutter test`, `WidgetTester` |
 | Gesture parity | Each swipe direction and its button produce the same API call (S9 table) | Widget tests, one per pair |
 | Accessibility | Semantics labels on every control (XC-03), tap target size, text contrast, reduced motion | `meetsGuideline` (`androidTapTargetGuideline`, `labeledTapTargetGuideline`, `textContrastGuideline`), plus a test that sets `disableAnimations` and asserts no swipe animation runs |
-| Integration (web) | Real app in Chrome against the local backend stack | `integration_test` with `flutter drive -d web-server` and ChromeDriver |
+| Integration (web) | Real app in Chrome against the local backend stack, including full-page OAuth redirects through `fake-google` | Rust `e2e` crate driving Chrome over WebDriver (`fantoccini` with ChromeDriver), finding controls by their semantics labels (Flutter's `integration_test` cannot survive full-page redirects) |
 
 Rules:
 
-- The app talks to the backend through one `ApiClient` interface. Widget tests use a fake; integration tests use the real client against the local stack.
+- The app talks to the backend through one `ApiClient` interface. Widget tests use a fake; the WebDriver e2e run uses the real client against the local stack. Every control the e2e crate touches needs a stable semantics label, which XC-03 already requires.
 - Visual golden tests wait until the visual design phase (S9 says visuals come later). Functional states are asserted by finders and semantics, not pixels.
-- No test writes card data to `localStorage`, `sessionStorage` or IndexedDB; a web integration test asserts these stores hold no canary strings after a session (section 7.3).
+- No test writes card data to `localStorage`, `sessionStorage` or IndexedDB; the e2e run asserts these stores hold no canary strings after a session (section 7.3).
 
 ### 3.3 End-to-end harness
 
@@ -140,7 +140,7 @@ Location `[ASSUMES]`: `backend/testkit/fixtures/mail/`, one `.eml` per message p
 Rules:
 
 - Domains are reserved names only: `example.com`, `example.net`, `example.org` and anything under `.test` or `.invalid` (RFC 2606). A contract test fails on any other domain in the corpus.
-- DKIM signatures are made with test keys at corpus build time; a fake DNS resolver in `testkit` serves the matching public keys. No real DNS in tests.
+- The app does not verify DKIM signatures itself: it trusts Gmail's `Authentication-Results` header from `mx.google.com` and parses the `DKIM-Signature` `h=` tag to see which headers the signature covers. Each corpus message therefore carries a synthetic `Authentication-Results: mx.google.com; dkim=pass|fail header.d=...` and a `DKIM-Signature` with the `h=` list the case needs (the `b=` value is filler). Cases also include an `Authentication-Results` header from any other authserv-id, which must be ignored. No keys and no DNS in tests.
 - A generator in `testkit` (Rust, run by `cargo test` setup or a small binary) produces the `.eml` files from the manifest, so agents add cases by editing TOML, not by hand-crafting MIME.
 
 Required cases, drawn from spike E1 and the research:
@@ -155,11 +155,11 @@ Required cases, drawn from spike E1 and the research:
 | `mailto` only, DKIM `h=` covers `List-Unsubscribe`, DKIM pass | `list`, method mailto | S2 UN-03 |
 | `mailto` only, unsigned or not covered by DKIM (spoofed target address) | `bulk_no_header`: no mail is sent from the user's mailbox | Spec audit H5, S6 T9 |
 | https without one-click, DKIM `h=` covers `List-Unsubscribe`, DKIM pass | `list`; trash and reject rule; Needs Attention with "Open in browser"; the URL is never fetched in v1 (page handler is v2) | Spec audit Q3 |
-| `http://` (plain) unsubscribe link | Needs Attention, never fetched | Data handling research, encryption |
+| `http://` (plain) unsubscribe link | Link dropped (S6 6): never fetched, no job, and no Needs Attention link; treated as having no usable unsubscribe | S6 6 |
 | No header, account or security notice (Google, Apple, Microsoft, AWS style) | `notice` | E1: 6 of 7 headerless |
 | No header, relayed through a privacy relay (iCloud Hide My Email style) | `personal` or `notice`, never unsubscribe | E1 |
 | Transactional with one-click (signup verification, balance summary) | Not marketing; reject trashes but class reason says transactional | E1 |
-| Bulk look-alike with no header and a body unsubscribe link | `bulk_no_header`: trash and reject rule only; the body link is never parsed and no Needs Attention item is raised | S2 SW-03 AC5, spec audit M4 |
+| Bulk look-alike with no `List-Unsubscribe`, carrying `Precedence: bulk`, and a body unsubscribe link | `bulk_no_header`: trash and reject rule only; the body link is never parsed and no Needs Attention item is raised | S2 SW-03 AC5, spec audit M4 |
 | Phishing look-alike (display name spoof, mismatched Reply-To, failing auth) | `suspect`: report, no unsubscribe | D1 |
 | Personal one-to-one | `personal` | PB-01 |
 | Same sender, two different List-Ids, and one with none | Rule matches only the rejected List-Id | SR-01 AC3 |
@@ -210,9 +210,9 @@ All job tests use the fake `JobScheduler` (virtual time, records create and dele
 | Disconnect cancels | Disconnecting a mailbox cancels its queued jobs and deletes their tasks | AU-05 AC1 |
 | Primary mailbox disconnect | Disconnecting the primary mailbox first moves the app folder file to the next linked mailbox's Drive, which becomes primary; if the move fails, nothing is disconnected and the user sees the error | AU-05 AC4 |
 | App folder writes (option B) | Only `api` writes the app folder: `unsub` has no Drive scope in its token and no Drive host in its egress allowlist, and stores each outcome on the job record. The next Feed load appends every stored outcome to History exactly once (idempotent on job ID, including when two Feed loads race), then deletes the outcome. An outcome not collected is deleted after 30 days `[TUNABLE]` under the virtual clock. `api`'s own writes still use `If-Match` and retry on a 412 | INV-4, spec audit H7 and option B |
-| Account deletion order | In the request: app folder file deleted, jobs and Cloud Tasks cancelled, tokens revoked at Google, in that order (the fakes record call order); then both keys crypto-shredded and every server record swept within 24 hours under the virtual clock | AU-06, spec audit M7 |
+| Account deletion order | In the request: app folder file deleted, jobs and Cloud Tasks cancelled, tokens revoked at Google, in that order (the fakes record call order); then the user's `data_key` crypto-shredded and every server record swept within 24 hours under the virtual clock | AU-06, spec audit M7 |
 | Every outcome recorded | Each terminal state writes one History entry and one pseudonymous security event | UN-01 AC3, INV-4 |
-| Delivery check and stats | Mail from the same list after 5 business days is trashed by the rule and raises Needs Attention (UN-06); Australian business days computed by an injected calendar. Separately, an unsubscribe counts as working in Stats only when no mail from the list arrives within 14 days (ST-02). Cases on both sides of each boundary, and one where mail arrives on day 10 (Needs Attention raised, never counted as working) | UN-06, ST-02 |
+| Delivery check and stats | Business days are Monday to Friday in UTC with no holiday list `[DEFAULT]`, computed by an injected calendar. Mail from the list within the 5-business-day grace is trashed by the rule and raises nothing, but blocks "confirmed working". Mail after the grace is trashed and raises Needs Attention (UN-06). An unsubscribe counts as working in Stats only when no mail from the list arrives within 14 days (ST-02). Cases on both sides of each boundary, across a weekend, and with mail on day 2 (no Needs Attention, never counted as working) and day 10 (Needs Attention, never counted as working) | UN-06, ST-02 |
 | Mailto | Sent from the same mailbox with To, Subject and body from the URI; CR or LF in any URI field is refused | UN-03, ASVS V1 |
 
 ### 6.4 Structural checks for "no unrecoverable action"
@@ -265,7 +265,7 @@ Every corpus message carries canary tokens (section 5). After the full service i
 
 - Captured `tracing` output, error report payloads and metric events are scanned; any canary, any corpus email address, any unsubscribe URL fails the build.
 - The Firestore emulator is exported and scanned the same way; the only permitted canary-bearing fields are the encrypted ones, which must not contain the plaintext.
-- The browser's `localStorage`, `sessionStorage`, IndexedDB and Cache Storage are dumped at the end of the web integration run and scanned.
+- The browser's `localStorage`, `sessionStorage`, IndexedDB and Cache Storage are dumped over WebDriver at the end of the e2e run and scanned.
 
 This needs the template's `optional/privacy` layer installed (Clippy bans on `println!`, `eprintln!`, `dbg!`; privacy Semgrep rules). Decided in T4.
 
@@ -312,7 +312,7 @@ Both HTTP fakes are reached through a base URL setting that only test builds may
 | Scenario | Expected result |
 | --- | --- |
 | Valid response | Typed `Classification` stored in the sealed token for that model |
-| Response slower than the model timeout (2 seconds, CR-01 T-new-3 `[TUNABLE]`) | That model's failure recorded (`error_code`); the other model and the card are unaffected; the Feed page is not delayed |
+| Response slower than the model timeout (2 seconds, CR-01 T-new-3 `[TUNABLE]`) | That model's failure recorded (`error_code`); the other model and the card are unaffected; the Feed page waits no longer than the 2-second timeout |
 | 429 with `Retry-After`, 500, 503, connection reset; Vertex `RESOURCE_EXHAUSTED` | Same: failure recorded for that model only |
 | Malformed JSON, truncated body, wrong content type, oversized body | Rejected at parse or size cap; failure recorded |
 | Valid JSON failing validation: class outside the five S3 classes, unknown field (`deny_unknown_fields`), score outside 0 to 100, probability or log probability `NaN`, infinite or out of range, missing field; Gemini candidate blocked by safety settings or empty | Rejected; failure recorded |
@@ -382,7 +382,7 @@ The eight existing checks stay (`rust`, `dart`, `language-policy`, `gitleaks`, `
 | --- | --- | --- |
 | `privacy-checks` | Optional privacy layer, installed | Sensitive logging, banned macros |
 | `ac-coverage` | `tools/check_ac_coverage.py` | A task's AC or ASVS `test` row has no test |
-| `coverage` | `cargo llvm-cov` and `flutter test --coverage` | Below floor (T3) |
+| `coverage` | `cargo llvm-cov --all-features` and `flutter test --coverage`, with the same Firestore emulator steps as the `rust` job (T-301) | Below floor (T3) |
 | `e2e` | `scripts/e2e.sh` | Any journey, leak scan or CSP check fails |
 
 The `rust` job gains the Firestore emulator for the storage contract suite.
