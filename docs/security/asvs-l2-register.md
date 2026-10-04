@@ -339,7 +339,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | V6.3.1 | 1 | Verify that controls to prevent attacks such as credential stuffing and password brute force are implemented according to the application's security documentation. | Rate limits on sign-in and invite redemption; Google handles credential attacks | backend/auth | test `asvs_v6_3_1_*` | Planned |
-| V6.3.2 | 1 | Verify that default user accounts (e.g., "root", "admin", or "sa") are not present in the application or are disabled. | No default accounts; first admin set by Terraform | Terraform | review | Planned |
+| V6.3.2 | 1 | Verify that default user accounts (e.g., "root", "admin", or "sa") are not present in the application or are disabled. | No default accounts; first admin set by the `mt-admin` tool outside the API (T-507) | `backend/crates/admin-cli` | test | Planned |
 | V6.3.3 | 2 | Verify that either a multi-factor authentication mechanism or a combination of single-factor authentication mechanisms, must be used in order to access the application. For L3, one of the factors must be a hardware-based authentication mechanism which provides compromise and impersonation resistance against phishing attacks while verifying the intent to authenticate by requiring a user-initiated action (such as a button press on a FIDO hardware key or a mobile phone). Relaxing any of the considerations in this requirement requires a fully documented rationale and a comprehensive set of mitigating controls. | Relies on Google 2-Step Verification; `amr` checked and logged where present. Closed by the v2 passkey lock | backend/auth | test `asvs_v6_3_3_*` | Accepted deviation (trial only) |
 | V6.3.4 | 2 | Verify that, if the application includes multiple authentication pathways, there are no undocumented pathways and that security controls and authentication strength are enforced consistently. | One pathway (Google OAuth), same strength everywhere; no undocumented routes | backend/auth | test `asvs_v6_3_4_*` | Planned |
 
@@ -359,6 +359,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 ## V6.5 General Multi-factor authentication requirements
 
 **Not applicable:** No lookup secrets, out-of-band codes or TOTP; sign-in is Google OAuth only.
+
 **Verification:** Review
 
 | ID | L | Requirement | Control | Location | Verify | Status |
@@ -620,7 +621,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 ## V11.1 Cryptographic Inventory and Documentation
 
-**Planned control:** Cryptographic inventory in S6 section 5: KMS key, one per-user `data_key` (refresh tokens, app folder, sealed tokens, encrypted fields), email lookup and log pseudonymisation HMAC keys, session IDs, invite tokens, sealed tokens
+**Planned control:** Cryptographic inventory in S6 section 5: two KMS keys (`data-key-kek`, `system-fields`), one per-user `data_key` (refresh tokens, app folder, sealed tokens, encrypted fields), email lookup and log pseudonymisation HMAC keys, session IDs, invite tokens, sealed tokens
 
 **Verification:** Review
 
@@ -743,7 +744,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 | V13.2.1 | 2 | Verify that communications between backend application components that don't support the application's standard user session mechanism, including APIs, middleware, and data layers, are authenticated. Authentication must use individual service accounts, short-term tokens, or certificate-based authentication and not unchanging credentials such as passwords, API keys, or shared accounts with privileged access. | Per-service accounts; OIDC tokens between services; no shared keys | Terraform | review | Planned |
 | V13.2.2 | 2 | Verify that communications between backend application components, including local or operating system services, APIs, middleware, and data layers, are performed with accounts assigned the least necessary privileges. | Least-privilege IAM (S4 2): KMS for `api`, `unsub`, `worker` only; `api` also Vertex AI user and Secret Manager on Jev key, HMAC keys, OAuth secrets | Terraform | review | Planned |
 | V13.2.3 | 2 | Verify that if a credential has to be used for service authentication, the credential being used by the consumer is not a default credential (e.g., root/root or admin/admin). | No default credentials; Google identities only | Terraform | review | Planned |
-| V13.2.4 | 2 | Verify that an allowlist is used to define the external resources or systems with which the application is permitted to communicate (e.g., for outbound requests, data loads, or file access). This allowlist can be implemented at the application layer, web server, firewall, or a combination of different layers. | Per-service host allowlist at the `HttpEgress` port: `api` Gmail, Drive, Google OAuth, Vertex AI, `api.typesafe.ai`; `unsub` Gmail send, Drive, validated one-click target. v2: Graph, OneDrive, Microsoft OAuth, `pagehandler` | backend/egress | test `asvs_v13_2_4_*` | Planned |
+| V13.2.4 | 2 | Verify that an allowlist is used to define the external resources or systems with which the application is permitted to communicate (e.g., for outbound requests, data loads, or file access). This allowlist can be implemented at the application layer, web server, firewall, or a combination of different layers. | Per-service host allowlist at the `HttpEgress` port: `api` Gmail, Drive, Google OAuth, Vertex AI, `api.typesafe.ai`; `unsub` Gmail send, the Google OAuth token and certificate endpoints, validated one-click target (no Drive); `worker` the Google OAuth certificate endpoint. Google Cloud APIs and the metadata token endpoint go through the platform client, allowlisted by host plus path. v2: Graph, OneDrive, Microsoft OAuth, `pagehandler` | backend/egress | test `asvs_v13_2_4_*` | Planned |
 | V13.2.5 | 2 | Verify that the web or application server is configured with an allowlist of resources or systems to which the server can send requests or load data or files from. | Same allowlist; any other host refused before connecting | backend/egress | test `asvs_v13_2_5_*` | Planned |
 
 ## V13.3 Secret Management

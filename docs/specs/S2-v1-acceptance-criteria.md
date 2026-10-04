@@ -149,7 +149,7 @@ Every gesture has an equivalent button with the same behaviour and an accessible
 - **AC2.** Given the sender is classed as a mailing list with an unsubscribe mechanism, then an unsubscribe job is queued with due time now plus `UNSUB_DELAY`, and a rejected-sender sort rule is created (SR-01). In v1 the mechanism is one-click or mailto; an https link without one-click raises a Needs Attention item instead (UN-04 AC6).
 - **AC3.** Given the message is classed as suspected spam or phishing, then it is reported to the provider as spam and no unsubscribe is queued.
 - **AC4.** Given the sender is classed as personal, then only AC1 applies, and the reject is counted for PB-01.
-- **AC5.** Given the message has no List-Unsubscribe header, then no unsubscribe attempt of any kind is made (no body-link parsing, no page handler); AC1 applies and a reject_list rule is created. Spike E1: every headerless sender sampled was an account, billing or security notice or a relay.
+- **AC5.** Given the message has no List-Unsubscribe header, then no unsubscribe attempt of any kind is made (no body-link parsing, no page handler); AC1 applies, and a reject_list rule is created for `bulk_no_header` mail only; a `notice` is trash only (S3 message classes). Spike E1: every headerless sender sampled was an account, billing or security notice or a relay.
 
 ### SW-04 Up: super-like and file
 
@@ -230,7 +230,7 @@ The page handler (headless Chromium service) is deferred to v2 with the open-end
 
 ### PB-01 Block a person after repeated rejects
 
-- **AC1.** Given I have rejected personal mail from the same sender `PERSONAL_BLOCK_THRESHOLD` times, when I reject the next one, then I am asked "Block <name>?" with Block preselected.
+- **AC1.** Given I have already rejected personal mail from the same sender `PERSONAL_BLOCK_THRESHOLD` minus one times, when I reject it again (the third time with the default), then I am asked "Block <name>?" with Block preselected.
 - **AC2.** When I confirm, then a block rule is created that trashes future mail from that address (SR-01 AC2 behaviour) and is listed in History.
 - **AC3.** When I decline, then I am not asked again for that sender for 90 days `[TUNABLE]`.
 - **AC4.** Only rejects of messages with a DKIM signature aligned with the From domain, or a provider authentication pass, count toward `PERSONAL_BLOCK_THRESHOLD`. Other rejects are not counted and never raise a block prompt, so spoofed mail "from" a friend cannot get the friend blocked.

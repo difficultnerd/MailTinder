@@ -28,14 +28,14 @@ Mail content (bodies, subjects, snippets, headers) is C2 at least and is **never
 | `mailboxes/{id}`: refresh token (encrypted under `data_key`; associated data = user ID plus mailbox ID plus field name) | C3 | Access the mailbox across sessions; lets `unsub` mint an access token when a job runs | Until disconnected or revoked | Revoke at provider, then delete | DEL-3 |
 | `sessions/{id}`: session hash, session record ID (random, stable across session ID rotation; sealed tokens bind to it), state, user ID, CSRF token, `recent_auth_at` (last fresh Google sign-in, for step-up), expiry | C1 | Authenticated session; one per user (a new sign-in deletes the old one) | Idle 15 minutes, absolute 12 hours | Expiry, sign-out, new sign-in, admin end, deletion | SES-1 |
 | `sessions/{id}`: `pre_auth` fields (OAuth `state`, `nonce`, PKCE verifier, invite token hash, pending email, encrypted) | C2 | Complete the OAuth round trip; hold an invite request's verified email | Until the callback or 10 minutes `[TUNABLE]` | Cleared on state change; TTL | SES-1 |
-| `invites/{id}`: email (encrypted plus HMAC for lookup), invite token hash (SHA-256), status, `last_sent_at`, expiry (7 days after sending `[TUNABLE]`) | C2 | Invite check; the token makes redemption need the invite email itself | Until used, revoked or expired, then 30 days; re-send replaces the token hash | Sweeper | INV-T1 |
+| `invites/{id}`: email (encrypted plus HMAC for lookup), invite token hash (SHA-256), status, `last_sent_at`, expiry (7 days after sending `[TUNABLE]`) | C2 | Invite check; the token makes redemption need the invite email itself | Until used, revoked or expired, then 30 days (a separate `purge_at` field drives the sweeper); re-send replaces the token hash | Sweeper | INV-T1 |
 | `invite_requests/{id}`: email (encrypted plus HMAC), time | C2 | Admin approval | Until approved or declined | Decline deletes; approve converts | INV-T2 |
-| `jobs/{id}`: mailbox ID, list key HMAC, method, target (encrypted), due time, status, `outcome` (result code and time, written by `unsub`), `expires_at` | C2 | Delayed unsubscribe; carries the outcome until `api` appends it to History at the next Feed load | Non-terminal: TTL 1 hour after due (`JOB_TTL`). Terminal: target cleared, outcome kept until the next Feed load, at most 30 days `[TUNABLE]` | `api` after the History append, sweeper, Firestore TTL backstop | JOB-1 |
+| `jobs/{id}`: mailbox ID, list key HMAC (under the email lookup HMAC key), sender display name (encrypted, for the Needs Attention item), method, target (encrypted), due time, status, `outcome` (result code and time, written by `unsub`), `expires_at` | C2 | Delayed unsubscribe; carries the outcome until `api` appends it to History at the next Feed load | Non-terminal: TTL 1 hour after due (`JOB_TTL`). Terminal: target cleared, outcome kept until the next Feed load, at most 30 days `[TUNABLE]` | `api` after the History append, sweeper, Firestore TTL backstop | JOB-1 |
 | `needs_attention/{id}`: sender display and link (encrypted), reason code, `expires_at` | C2 | Human help request | Until resolved; TTL 30 days | User action, sweeper, TTL backstop | NA-T1 |
 | `rate_limits/{key}`: counters | C1 | Anti-automation | Window length | TTL | RL-1 |
 | `classifier_eval/{id}`: eval ID (UUID v5 of the user ID and the swipe's `Idempotency-Key`, S7), pseudonymous user ID, header-rules class and score, Gemini and Jev predictions (class, score, confidence, model version, latency, tokens, error code), swipe outcome, header-fact booleans, segment buckets (`provider`, `age_bucket`, `text_tokens_bucket`, `lang_is_english`), method versions (`input_version`, `question_version`, `price_version`) | C1 | Classifier bake-off (S4 section 5) | TTL 180 days `[TUNABLE]` | TTL; opt-out deletes the user's rows; account deletion | EXP-1 |
 | `bakeoff_snapshots/{id}`: saved report after small-cell suppression, its query, creation time | C1 (aggregate only, no pseudonymous IDs) | Reproducible published bake-off figures (CR-01a) | Until an admin deletes it | Admin delete; not affected by opt-out or account deletion, as it holds nothing per user | EXP-3 |
-| `users/{id}`: `experiments_consent_version`, `experiments_opted_in_at` | C1 | Bake-off consent: which consent text the user agreed to, and when | Life of account; cleared on opt-out | Opt-out; account deletion | EXP-2 |
+| `users/{id}`: `experiments_consent_version`, `experiments_opted_in_at` | C1 | Bake-off consent: which consent text the user agreed to, and when | Life of account; cleared on opt-out | Opt-out; account deletion | EXP-4 |
 | `config/classifiers`: kill switches (`gemini_enabled`, `jev_enabled`), `updated_at` | C1 (no user data) | Turn a bake-off model off within a minute without a deploy (S4 5.7) | Life of the service | Admin change (ADM-9) overwrites | CFG-1 |
 
 No other collections are permitted. A schema test fails the build if a new collection or field appears without an entry here.
@@ -47,6 +47,7 @@ S6 section 5 is the cryptographic inventory; this lists what holds data or unloc
 | Key or secret | Class | Purpose | Held in | Retention and rotation | Test |
 | --- | --- | --- | --- | --- | --- |
 | KMS key encryption key | C3 | Wraps every `data_key` | Cloud KMS only | Yearly, automatic | DEL-2 |
+| System KMS key (`system-fields`) | C3 | Encrypts invite and invite request email addresses and `pre_auth` fields | Cloud KMS only | Yearly, automatic | INV-T1 |
 | Email lookup HMAC key | C3 | Keyed hash for invite and invite request lookup | Secret Manager | Yearly | INV-T1 |
 | Log pseudonymisation HMAC key | C3 | Pseudonymous user ID in logs | Secret Manager | Yearly | LOG-1 |
 | OAuth client secrets, Jev API key | C3 | Provider and vendor access | Secret Manager | On provider rotation; Jev quarterly | LOG-1 |
@@ -84,7 +85,7 @@ Labels and categories the app creates stay with the user's mail. Trash moves are
 
 | Field allowed | Class |
 | --- | --- |
-| Request ID, pseudonymous user ID (HMAC of user ID under the log pseudonymisation key), route template, status code, latency, action type, outcome code, rate-limit hit | C1 |
+| Request ID, pseudonymous user ID (HMAC of user ID under the log pseudonymisation key), route template, status code, latency, action type, outcome code, rate-limit hit, `amr` on sign-in events, provider, unsubscribe method | C1 |
 
 Everything else is banned from logs, including tokens, cookies, message IDs, addresses, names, subjects, snippets, bodies, URLs and page content. Retention 90 days in a locked log bucket. Security events (S6 section 7) live here, not in Firestore. Enforced by a redacting wrapper type in Rust, the template's `optional/privacy` Semgrep rules (extended with these field names) and a log-scanning test over integration test output.
 
@@ -106,7 +107,7 @@ No analytics or error-reporting vendors in v1. The only AI processors are Vertex
 | ID | Test |
 | --- | --- |
 | DEL-1 | After account deletion, no document references the user ID |
-| DEL-2 | After deletion, a backup copy of an encrypted field cannot be decrypted |
+| DEL-2 | After deletion, a backup copy of an encrypted field cannot be decrypted. The trial keeps no Firestore backups or point-in-time recovery (James, 4 October 2026) |
 | DEL-3 | Disconnecting a mailbox revokes its token at the provider and removes its document |
 | SES-1 | Expired, signed-out and superseded sessions cannot be used; a new sign-in leaves one session record per user; `pre_auth` fields are cleared on the state change and do not outlive their TTL |
 | CFG-1 | `config/classifiers` holds only the allowed fields; turning a switch off stops that model's calls within one check |
@@ -117,5 +118,6 @@ No analytics or error-reporting vendors in v1. The only AI processors are Vertex
 | LOG-1 | Integration test logs contain no value from the fixture mail corpus |
 | EXP-1 | `classifier_eval` rows contain no value from the fixture mail corpus and no address; every field matches the allowed schema (buckets, booleans, version strings only); opt-out deletes them |
 | EXP-3 | A `bakeoff_snapshots` document contains no pseudonymous user ID, eval ID or cell below the minimum size |
+| EXP-4 | Opting in sets `experiments_consent_version` and `experiments_opted_in_at`; opting out clears both |
 | EXP-2 | Input sent to Gemini or Jev contains no recipient address, URL, message ID or unsubscribe URL from the fixture corpus |
 | JEV-1 | A user who has not consented causes zero outbound calls to the Jev or Vertex AI endpoints |

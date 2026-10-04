@@ -32,7 +32,8 @@ Depends on: `docs/change-requests/CR-01-pluggable-classifier-jev-pilot.md` (Gemi
 | Unknown fields | Rejected with `400 invalid_request` (serde `deny_unknown_fields`) (ASVS V2) |
 | Strings | UTF-8, trimmed, length-limited per field in the OpenAPI schema |
 | Times | RFC 3339 UTC, for example `2026-10-03T14:09:18Z` |
-| IDs | Server-issued records use UUID v4. Provider message IDs are passed through as opaque strings |
+| IDs | Server-issued records use UUID v4, except mailbox IDs: UUID v5 of provider plus provider subject, so uniqueness on (`provider`, `provider_subject_id`) needs no extra collection. Provider message IDs are passed through as opaque strings |
+| Unmatched routes | An unknown path or an unsupported method on a known path returns a `404 not_found` problem. No `405` is sent |
 | Opaque tokens | Cursors, undo tokens, classification tokens and prompt references are sealed by the server (section 2.1). Clients treat them as opaque strings |
 | Pagination | Cursor based: `limit` (default 20, maximum 50) and `cursor` in, `next_cursor` out (`null` at the end) |
 | Caching | Every `/api` response sets `Cache-Control: no-store` and `Pragma: no-cache` so Firebase Hosting's CDN and the browser keep nothing |
@@ -41,9 +42,9 @@ Depends on: `docs/change-requests/CR-01-pluggable-classifier-jev-pilot.md` (Gemi
 
 ### 2.1 Keys and sealed tokens (ASVS V9, V11)
 
-One key per user, `data_key` (AES-256), wrapped by a Cloud KMS key and unwrapped by the server when needed (James, 3 October 2026: no passkey lock for the trial). It encrypts provider refresh tokens, sealed tokens, encrypted Firestore fields, the app folder file and job access tokens. Because it is server-usable, queued unsubscribe jobs run without a live session. S6 section 5 owns the inventory.
+One key per user, `data_key` (AES-256), wrapped by a Cloud KMS key and unwrapped by the server when needed (James, 3 October 2026: no passkey lock for the trial). It encrypts provider refresh tokens, sealed tokens, encrypted Firestore fields and the app folder file. No access token is ever stored. Because it is server-usable, queued unsubscribe jobs run without a live session. S6 section 5 owns the inventory.
 
-- **Sealed tokens.** One scheme for every token type: AES-256-GCM under `data_key`, with associated data holding the token type (`cursor`, `undo`, `classification`, `prompt_ref`), the user ID, the session record ID and the expiry. Type and expiry travel in clear and are authenticated; each route checks the type it expects before opening. A token presented as another type, for another user or session, or after expiry fails to open and is treated as `400 invalid_request` (or `410 undo_expired` for undo). This stops one token type being replayed as another (ASVS V9.2.2).
+- **Sealed tokens.** One scheme for every token type: AES-256-GCM under `data_key`, with associated data holding the token type (`cursor`, `undo`, `classification`, `prompt_ref`), the user ID, the session record ID and the expiry. Type and expiry travel in clear and are authenticated; each route checks the type it expects before opening. A token presented as another type, for another user or session, or after expiry fails to open and is treated as `400 invalid_request` (or `410 undo_expired` for undo; a classification token that fails to open only skips the eval record, section 5.5). This stops one token type being replayed as another (ASVS V9.2.2).
 - **Session record ID.** Each session record has a random `session_record_id` (UUID) that stays the same when the cookie value rotates, so rotation on step-up or mailbox linking does not void the undo stack. It is never the cookie value or `session_hash`.
 - No JWT or other bearer token is issued to the browser.
 
@@ -105,7 +106,7 @@ Authorisation code flow with PKCE (S256), `state` and `nonce`, exact redirect UR
 | `reconnect` | `authenticated` | Refreshes the tokens of a mailbox in `needs_sign_in` state |
 | `step_up` | `authenticated` | Fresh sign-in for section 3.6 |
 
-The callback never puts personal data in the redirect URL. It redirects to `/#/auth/result?outcome=<code>`, where `outcome` is one of:
+The callback never puts personal data in the redirect URL. It redirects to `/#/auth/result?outcome=<code>`, where `outcome` is one of the codes below. S9 owns the screen copy; where a quoted string here differs from S9, S9 wins.
 
 | Outcome | Screen (S9) | Story |
 | --- | --- | --- |
@@ -129,7 +130,7 @@ On every outcome other than `signed_in`, `joined`, `linked` and `reconnected`, n
 
 ### 3.5 Unsubscribe jobs without a session
 
-Jobs hold a short-lived access token minted at queue time and, when that expires, the `unsub` service mints a new one from the stored refresh token under `data_key`. A job never needs the user to be signed in, so S3's `awaiting_session` state is not used by this contract.
+A job stores no access token. When a job runs, the `unsub` service mints one from the mailbox's stored refresh token (decrypted under `data_key`, through `svc-common`) and keeps it in memory for that run only. If the refresh token is revoked or invalid, the job ends `failed` with a `sign_in_required` Needs Attention item (S2 UN-01 AC6). A job never needs the user to be signed in, so S3's `awaiting_session` state is not used by this contract.
 
 ### 3.6 Step-up authentication (ASVS V7.5.1)
 
@@ -139,11 +140,11 @@ One rule: account, mailbox and admin changes need a fresh Google sign-in within 
 - link a mailbox (API-AUTH-1 `link`) or disconnect one (API-MBX-2);
 - every admin write (`POST`, `PUT`, `PATCH`, `DELETE` under `/admin`), including kill switches and snapshots.
 
-Without it they return `403 step_up_required`. The app shows the step-up overlay (S9 section 1.1), keeps the waiting request, calls API-AUTH-1 with `intent: "step_up"`, and the server sends the user to Google with `prompt=login` and `max_age=0`. The callback accepts the ID token only if `auth_time` is within the last 5 minutes and its `sub` belongs to one of the user's linked mailboxes; then it sets `recent_auth_at`, rotates the session and redirects with `stepped_up`. The app resends the waiting request unchanged, with the same `Idempotency-Key` where the route takes one. Nothing about the waiting action is stored server side. A `join` or `link` callback also sets `recent_auth_at`.
+Without it they return `403 step_up_required`. The app shows the step-up overlay (S9 section 1.1), keeps the waiting request, calls API-AUTH-1 with `intent: "step_up"`, and the server sends the user to Google with `prompt=login` and `max_age=300` (S4 section 3.1, S6 section 4, ASVS V6.8.4). The callback accepts the ID token only if `auth_time` is within the last 5 minutes and its `sub` belongs to one of the user's linked mailboxes; then it sets `recent_auth_at` from the ID token's `auth_time` (never the server clock), rotates the session and redirects with `stepped_up`. The app resends the waiting request unchanged, with the same `Idempotency-Key` where the route takes one. Nothing about the waiting action is stored server side. A `join` or `link` callback also sets `recent_auth_at`.
 
 ### 3.7 Roles
 
-Two roles: `user` and `admin`. `admin` is a flag on the `User` record set by Terraform or a one-off script, never through the API (ASVS V8). Every `/api/v1/admin/**` route checks it server side and logs refusals (AU-01 AC3).
+Two roles: `user` and `admin`. `admin` is a flag on the `User` record set by the `mt-admin` tool (backlog T-507), run by James outside the API (ASVS V8). The tool also prints the first invite link. Every `/api/v1/admin/**` route checks it server side and logs refusals (AU-01 AC3).
 
 ## 4. Errors (ASVS V16)
 
@@ -258,7 +259,7 @@ Stories with no endpoint of their own: XC-01 to XC-05 are cross-cutting rules th
 { "intent": "sign_in", "invite_token": null, "mailbox_id": null }
 ```
 
-`provider` is `google` in v1; `microsoft` returns `400 invalid_request` until v2. `intent` is one of section 3.4's intents. `invite_token` (from the URL fragment) only with `join`; `mailbox_id` only with `reconnect`. From no session or `pre_auth`, creates or rotates a `pre_auth` record holding `state`, `nonce`, the PKCE verifier, the intent and the invite token hash; from `authenticated`, the same values sit on the session record. `link`, `reconnect` and `step_up` need an `authenticated` session (`link` also needs step-up). For `step_up` the authorisation URL carries `prompt=login`, `max_age=0` and a `login_hint` of the primary mailbox, and requests no new scopes. Scopes come from S8 only (AU-04 AC5).
+`provider` is `google` in v1; `microsoft` returns `400 invalid_request` until v2. `intent` is one of section 3.4's intents. `invite_token` (from the URL fragment) only with `join`; `mailbox_id` only with `reconnect`. From no session or `pre_auth`, creates or rotates a `pre_auth` record holding `state`, `nonce`, the PKCE verifier, the intent and the invite token hash; from `authenticated`, the same values sit on the session record. `link`, `reconnect` and `step_up` need an `authenticated` session (`link` also needs step-up). For `step_up` the authorisation URL carries `prompt=login`, `max_age=300` and a `login_hint` of the primary mailbox, and requests no new scopes. Scopes come from S8 only (AU-04 AC5).
 
 **API-AUTH-2** `GET /auth/{provider}/callback?code&state` (or `error`)
 Validates `state` against the session, exchanges the code, verifies the ID token (section 3.4), applies the intent's rules (section 3.4), stores refresh tokens under `data_key`, rotates the session and `302`s to `/#/auth/result?outcome=...`. A `state` mismatch gives `outcome=failed` and a security event.
@@ -345,7 +346,8 @@ Response:
 | `bulk_score` | integer 0 to 100 | Badge grade |
 | `bulk_reason` | string, at most 200 | Shown on badge tap |
 | `class` | enum `list`, `bulk_no_header`, `notice`, `personal`, `suspect` | S3 message classes; tells the app what the reject toast will say |
-| `has_one_click` | boolean | Lets the toast say "Unsubscribing in 5 minutes" before the swipe returns. False for an https-only header, where the toast says the link is in Needs Attention |
+| `unsubscribe_method` | enum `one_click`, `mailto`, `manual`, `none` | What a reject will do, from header rules: `one_click` and `mailto` queue an unsubscribe, so the toast says "Unsubscribing in 5 minutes"; `manual` (https-only header) means the link goes to Needs Attention; `none` means no usable header, so trash only. Drives the optimistic toast |
+| `has_one_click` | boolean | True only when `unsubscribe_method` is `one_click`. Kept for the bake-off segments (`header_facts`); the toast uses `unsubscribe_method` |
 | `suggestion` | object or null | Filing suggestion, below. Shipped with the card so the filing sheet meets the 200 ms target (FL-01 AC3) without a round trip |
 | `keep_prompt` | object or null | `{ "category_id": "uuid", "category_name": "Receipts" }` when FL-04 AC1 applies |
 | `skip_count` | integer 0 to 2 | |
@@ -358,7 +360,7 @@ All string fields are plain text. The app must render them as text, never as HTM
 
 `suggestion`: `{ "category_id": "uuid or null", "name": "Tax invoices", "alternates": [{ "category_id": "uuid", "name": "..." }], "confidence": "learned" }`. `confidence` is `learned` (one-tap confirm, FL-03 AC1), `suggested`, or `none` (go straight to naming, FL-02). At most two alternates. The browser may override with Gemini Nano output; that never reaches the server except as the name the user confirms.
 
-During the bake-off, `bulk_score`, `bulk_reason`, `class` and `has_one_click` all come from header rules (CR-01 1.4). Destructive and outbound actions depend on header facts only, whichever classifier later drives the badge (S4 section 5.2).
+During the bake-off, `bulk_score`, `bulk_reason`, `class`, `unsubscribe_method` and `has_one_click` all come from header rules (CR-01 1.4). Destructive and outbound actions depend on header facts only, whichever classifier later drives the badge (S4 section 5.2).
 
 ### 5.5 Swipes and undo
 
@@ -366,7 +368,7 @@ During the bake-off, `bulk_score`, `bulk_reason`, `class` and `has_one_click` al
 
 Headers: `Idempotency-Key: <uuid v4>` required. The app generates one per swipe and reuses it on retry.
 
-Swipes are optimistic. Hosting is in `us-central1`, so a round trip from Australia takes about 200 ms; the app removes the card and shows the toast at once (the toast text comes from `class` and `has_one_click` on the card), then sends API-SW-1 in the background. The app keeps rules for the gap:
+Swipes are optimistic. Hosting is in `us-central1`, so a round trip from Australia takes about 200 ms; the app removes the card and shows the toast at once (the toast text comes from `class` and `unsubscribe_method` on the card), then sends API-SW-1 in the background. The app keeps rules for the gap:
 - Swipe requests go out one at a time, in order, so undo and later swipes never overtake an earlier swipe.
 - If Undo is tapped before the ack arrives, the app waits for that ack (or its failure) and then sends API-SW-2 with the returned `undo_token`.
 - On a network error the app retries with the same `Idempotency-Key`. On `409 message_changed` the card stays gone. On any other error the card returns to the top of the Feed with "Couldn't do that. Try again." (S9 section 3, XC-04), and nothing is recorded as done.
@@ -385,7 +387,7 @@ Swipes are optimistic. Hosting is in `us-central1`, so a round trip from Austral
 - `action`: `keep`, `skip`, `reject`, `file`.
 - `file` needs exactly one of `category_id` or `new_category_name` (1 to 100 characters, no `/` at the start or end, since Gmail treats `/` as nesting) (SW-04, FL-02 AC1).
 - The server re-reads the message from the provider before acting and classifies it itself. It never trusts a class, score or unsubscribe target from the client. If the message has moved, `409 message_changed`.
-- `classification_token` is required. The server opens it, checks it names the same user, mailbox and message (otherwise `400 invalid_request`), and uses its contents only to write the `classifier_eval` record (section 5.13). Header rules are re-run on the freshly read headers to decide the action. A token from an earlier session is not an error: the swipe proceeds and no `classifier_eval` record is written.
+- `classification_token` is required. If its clear type field is not `classification`, the server returns `400 invalid_request`. Any other failure to open it (an earlier session, expiry or tampering; AES-GCM cannot tell these apart) is not an error: the swipe proceeds and no `classifier_eval` record is written. A token that opens but names a different mailbox or message gives `400 invalid_request`. Its contents are used only to write the `classifier_eval` record (section 5.13). Header rules are re-run on the freshly read headers to decide the action.
 
 Response `200`:
 
@@ -473,7 +475,7 @@ The `file` form takes the sender from the named message, re-read from the provid
 
 **API-NA-1** `GET /needs-attention?cursor&limit` → `{ "items": [{ "item_id", "mailbox_id", "sender_display", "reason_code", "link", "created_at" }], "open_count", "next_cursor" }`.
 
-- `reason_code` in v1: `https_only_unsubscribe` (a DKIM-covered https link without one-click; v1 does not open it), `one_click_redirect` (the one-click target answered 3xx; no redirect is followed and the job is not retried), `one_click_address_refused` (the target resolved to a private, loopback, link-local, CGNAT or metadata address), `unsubscribe_failed` (one-click or mailto failed after Cloud Tasks retries), `unsubscribe_ignored`, `job_expired`. Reserved for v2 with the page handler: `captcha`, `login_required`, `page_unclear`, `page_failed`. The app maps each to the plain-words copy in S9 section 6.
+- `reason_code` in v1: `https_only_unsubscribe` (a DKIM-covered https link without one-click; v1 does not open it), `one_click_redirect` (the one-click target answered 3xx; no redirect is followed and the job is not retried), `one_click_address_refused` (the target resolved to a private, loopback, link-local, CGNAT or metadata address), `unsubscribe_failed` (one-click or mailto failed after Cloud Tasks retries), `unsubscribe_ignored`, `job_expired`, `sign_in_required` (the mailbox's refresh token was revoked or invalid when the job ran; the item offers "Sign in again", which calls API-AUTH-1 `reconnect`; S2 UN-01 AC6). Reserved for v2 with the page handler: `captcha`, `login_required`, `page_unclear`, `page_failed`. The app maps each to the plain-words copy in S9 section 6.
 - `link` is an `https` URL from the `List-Unsubscribe` header, never from the body, or `null`; the server drops any other scheme when it creates the item, so the app never opens `javascript:` or `data:` URLs. The app opens it with `rel="noopener noreferrer"`.
 - `open_count` drives the tab badge.
 
@@ -481,7 +483,7 @@ The `file` form takes the sender from the named message, re-read from the provid
 
 ### 5.9 History and stats
 
-**API-HIST-1** `GET /history?filter=all|unsubscribes|rule_actions|filing&cursor&limit` → `{ "entries": [{ "entry_id", "at", "mailbox_id", "sender_display", "action", "outcome", "rule_id" }], "next_cursor" }`. `action` is one of `trashed_by_rule`, `unsubscribe`, `filed`, `filed_by_rule`, `blocked`, `reported_spam`; `outcome` is `sent`, `failed`, `cancelled`, `expired`, `done` (UN-01 AC3, ST-01).
+**API-HIST-1** `GET /history?filter=all|unsubscribes|rule_actions|filing&cursor&limit` → `{ "entries": [{ "entry_id", "at", "mailbox_id", "sender_display", "action", "outcome", "rule_id" }], "next_cursor" }`. `action` is one of `trashed_by_rule`, `unsubscribe`, `filed`, `filed_by_rule`, `blocked`, `reported_spam`; `outcome` is `sent`, `needs_attention`, `failed`, `cancelled`, `expired`, `done` (UN-01 AC3, ST-01). `needs_attention` means the job ended with a Needs Attention item.
 
 **API-STAT-1** `GET /stats` (ST-02):
 
@@ -513,9 +515,9 @@ If step 1 cannot reach a provider, deletion still goes ahead, and the `202` body
 
 **API-ADM-2** `POST /admin/invites` `{ "email_address": "x@example.com" }` → `201` Invite, or `200` with the existing invite after re-sending it (AU-01 AC2). Address validated and normalised (lower-cased domain; local part kept as given). Invite email sent through the admin's own Gmail (S4).
 
-**API-ADM-3** `POST /admin/invites/{id}/resend` → `200` Invite.
+**API-ADM-3** `POST /admin/invites/{id}/resend` → `200` Invite. A used or revoked invite returns `404 not_found`.
 
-**API-ADM-4** `DELETE /admin/invites/{id}` → `204`. Sets `revoked` (AU-01 AC4).
+**API-ADM-4** `DELETE /admin/invites/{id}` → `204`. Sets `revoked` (AU-01 AC4). A used or already revoked invite returns `404 not_found`.
 
 **API-ADM-5** `GET /admin/invite-requests?cursor&limit` → `{ "requests": [{ "request_id", "email_address", "created_at" }], "next_cursor" }`.
 
@@ -523,7 +525,7 @@ If step 1 cannot reach a provider, deletion still goes ahead, and the `202` body
 
 **API-ADM-7** `POST /admin/invite-requests/{id}/decline` → `204`. Deletes the request; the requester is not told (AU-02 AC3).
 
-**API-ADM-16** `GET /admin/users?cursor&limit` → `{ "users": [{ "user_id", "email_address", "created_at", "is_admin", "mailbox_count", "signed_in", "last_seen_at" }], "next_cursor" }`. Feeds the admin user list (S9 section 7.6) and the target of API-ADM-15. `email_address` is the address the user joined with.
+**API-ADM-16** `GET /admin/users?cursor&limit` → `{ "users": [{ "user_id", "email_address", "created_at", "is_admin", "mailbox_count", "signed_in", "last_seen_at" }], "next_cursor" }`. Feeds the admin user list (S9 section 7.6) and the target of API-ADM-15. `email_address` is the earliest linked mailbox still present (usually the one the user joined with, which may since have been disconnected).
 
 **API-ADM-15** `DELETE /admin/users/{user_id}/sessions` → `204`. Ends that user's session, for a suspected compromise. Queued unsubscribe jobs keep running, because they need no session (section 3.5). Written to the security log.
 
@@ -537,7 +539,7 @@ Called only by Google Cloud services. No session, no CSRF; each checks a Google-
 - `200` when the job reached a terminal state (`sent`, `needs_attention`, `cancelled`). Cloud Tasks stops.
 - `503` for a retryable failure while `attempts < 3`. Cloud Tasks retries with backoff (queue config: `maxAttempts` 4, `minBackoff` 30 s, `maxBackoff` 5 min `[TUNABLE]`).
 - A missing job (undo raced the task) returns `200` and does nothing.
-- Idempotent: a job not in `queued` state returns `200` without acting, so a duplicate delivery never sends twice (UN-01 AC1).
+- Idempotent, using Cloud Tasks' `X-CloudTasks-TaskRetryCount` as the attempt number. A `queued` job is claimed (`running`). A `running` job is reclaimed only by a delivery whose retry count is higher than its recorded `attempts`, so a retry after a `503` or a crash can finish it. A terminal job, or a `running` one redelivered with the same count, returns `200` without acting, so a duplicate delivery never sends twice (UN-01 AC1).
 
 **API-INT-2** `POST /internal/v1/sweep`: moves overdue jobs to `expired` and creates Needs Attention items, deletes expired Needs Attention items and sessions, and deletes terminal jobs whose outcome no Feed load has collected within 30 days (S3). Every 15 minutes `[TUNABLE]`. Returns counts only.
 
@@ -578,7 +580,7 @@ On API-SW-1 the server opens the token and writes one `classifier_eval` record w
 - Opting in needs `consent_version` equal to the current version, otherwise `409 consent_outdated`. While both models are off, opting in returns `409 experiment_unavailable`.
 - Opting out takes effect at once: no further Gemini or Jev calls for this user, and the user's `classifier_eval` records are deleted before the response returns (CR-01 section 2). Opting out always works.
 - If the consent text version changes, the user is treated as opted out until they accept the new version.
-- The consent text (S9 section 7.4a, version `2026-10-03`) is: "Try an experimental classifier. Card text (sender, subject and the first part of the message) is sent to Google (Vertex AI, United States) and TypeSafe AI (United States) to compare two classifiers. Neither trains on it. TypeSafe has not yet committed to how long it keeps this data and has no data processing agreement or security attestation in place. Anonymous accuracy figures from your swipes may be published. Anonymous totals already published or saved stay as they are if you later opt out." Opt-out deletes raw `classifier_eval` records but not snapshots (API-ADM-11), which hold aggregates only.
+- The consent text (S9 section 7.8, version `2026-10-03`; S9 owns the wording and wins if the two differ) is: "Try an experimental classifier. Card text (sender, subject and the first part of the message) is sent to Google (Vertex AI, United States) and TypeSafe AI (United States) to compare two classifiers. Neither trains on it. TypeSafe has not yet committed to how long it keeps this data and has no data processing agreement or security attestation in place. Anonymous accuracy figures from your swipes may be published. Anonymous totals already published or saved stay as they are if you later opt out." Opt-out deletes raw `classifier_eval` records but not snapshots (API-ADM-11), which hold aggregates only.
 - Returns `200` with the API-EXP-1 body. Opt-in and opt-out go to the security log (pseudonymous).
 
 **API-ADM-8** `GET /admin/experiments/classifier`
@@ -586,7 +588,7 @@ On API-SW-1 the server opens the token and writes one `classifier_eval` record w
 ```json
 {
   "models": [
-    { "model": "gemini", "classifier_id": "gemini-flash-lite@<version>", "enabled": true, "changed_at": "2026-10-03T21:00:00Z" },
+    { "model": "gemini", "classifier_id": "gemini@flash-lite", "enabled": true, "changed_at": "2026-10-03T21:00:00Z" },
     { "model": "jev", "classifier_id": "jev@1.13.0", "enabled": true, "changed_at": "2026-10-03T21:00:00Z" }
   ],
   "participants": 12
@@ -647,13 +649,13 @@ Response (shape; numbers illustrative):
 
 Rules for every section:
 
-- **Methods.** `models` always lists `header_rules`, `gemini` and `jev` (CR-01a G1). For header rules, confidence is `bulk_score / 100`, cost is 0 and latency is measured in process. `paired` covers each pair of the three. `trend` has one row per model per day.
+- **Methods.** `models` always lists `header_rules`, `gemini` and `jev` (CR-01a G1). `classifier_id` follows S3 (`header_rules@1`, `gemini@<model>`, `jev@<version>`). For header rules, confidence is `bulk_score / 100`, which is the probability that the message is bulk, not confidence in the predicted class; calibration for header rules reads it that way. Cost is 0 and latency is measured in process. `agreement` is five-class agreement: the share of paired cards where both models predicted the same S3 class. `paired` covers each pair of the three. `trend` has one row per model per day.
 - **Labels.** CR-01 1.6: a left swipe not undone is `junk`; a right or up swipe is `wanted`; an undo flips the label; skips are not labels. `ground_truth_version` names the mapping, which is fixed in code.
 - **Intervals.** Every rate is an object `{ value, lower, upper, n }` with a Wilson 95% interval. F1 is reported without an interval.
 - **Paired comparison.** Only cards where both models gave a valid answer count (`n_paired`). McNemar's exact (binomial) test on `only_a_correct` and `only_b_correct`. The accuracy difference (`a` minus `b`) has a 95% percentile bootstrap interval resampled by participant; `resamples` and `seed` are in the response so a run can be repeated. With fewer than 5 participants `[TUNABLE]` the cluster bootstrap is meaningless: `accuracy_difference.lower` and `upper` are `null` and `bootstrap.method` is `insufficient_participants`, and the write-up must lean on McNemar and say the data is mostly one inbox.
 - **Participants.** `participants.count` and `top_contributor_share` (labels from the largest contributor divided by all labels). Both are `null` when `labelled_swipes` is below `min_cell_size`.
 - **Segments.** `by_segment` covers, for each model, the header-rules class, each `header_facts` boolean, `provider`, `age_bucket`, `text_tokens_bucket` and `lang_is_english` (CR-01a G4).
-- **Latency histogram.** Fixed bins in ms: 0, 100, 250, 500, 1000, 2000, timeout `[TUNABLE]`.
+- **Latency histogram.** Fixed bins in ms: 0 to 100, 100 to 250, 250 to 500, 500 to 1,000 and 1,000 to 2,000 `[TUNABLE]`, each including its lower bound and excluding its upper, so the last ends below the 2,000 ms timeout. Timed-out calls are in no bin; they are counted in `timeout_rate`.
 - **Suppression.** Any count below `min_cell_size` (10 `[TUNABLE]`) is `null`, and any rate built on it is `null` with its bounds, everywhere including segments, paired counts and trend days. No per-user rows, no pseudonymous IDs, no event-level export.
 - **Complementary suppression** (S10 STAT-5). Suppressing one cell is not enough when a total and its other parts are shown: the hidden value is the difference. Within every group that sums to a published total (a segment dimension's values for one model, a confusion row, the four paired counts, a day's trend rows), if exactly one cell is suppressed, the next smallest cell in that group is suppressed too, and the rule repeats until no suppressed cell can be derived by subtraction. Rates are suppressed with their counts. The same pass runs before CSV output and before a snapshot is stored.
 
@@ -737,3 +739,4 @@ Historical record. As of 3 October 2026 every item below has been applied by its
    - S3: drop the `Passkey` entity, the session list fields and `awaiting_session`; Session gains `recent_auth_at`; one session per user.
    - S9: drop passkey enrolment, unlock, the Security passkey list and the session list; add the `step_up_wrong_account` and `not_registered` copy.
 3. **S10** items are owned by the test strategy thread (same knock-ons file).
+4. **Backlog knock-ons** (4 October 2026, `docs/change-requests/backlog-knock-ons-S7-S10.md`): the 13 S7 items are applied in this file and the OpenAPI. History `outcome` gains `needs_attention` rather than mapping it to `failed`. S10 items are owned by the test strategy thread.
