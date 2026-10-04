@@ -17,6 +17,7 @@ mod class;
 mod error;
 pub mod feed;
 mod gamification;
+pub mod guard;
 mod header_rules;
 mod ids;
 mod invite;
@@ -33,6 +34,7 @@ pub use error::DomainError;
 pub use gamification::{
     mail_stopped_per_year, newly_unlocked, yearly_rate, AchievementId, AchievementProgress,
 };
+pub use guard::{header_guard, GuardNote, Guarded};
 pub use header_rules::{
     HeaderRules, UnsubscribeRoute, BULK_REASON_MAX_CHARS, ESP_NAMES,
     PERSONAL_HIGH_CONFIDENCE_MAX_SCORE,
