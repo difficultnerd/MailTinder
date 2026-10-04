@@ -15,18 +15,46 @@
 
 mod class;
 mod error;
+// pub mod feed;
+// mod gamification;
+mod header_rules;
 mod ids;
+// mod invite;
 mod mailbox;
+// mod mailbox_status;
 mod message;
+// mod needs_attention;
 mod sender;
 mod tunables;
+// mod unsubscribe_job;
 
 pub use class::{Classification, MessageClass, SwipeAction};
 pub use error::DomainError;
+// pub use gamification::{
+//     mail_stopped_per_year, newly_unlocked, yearly_rate, AchievementId, AchievementProgress,
+// };
+
+pub use header_rules::{
+    HeaderRules, UnsubscribeRoute, BULK_REASON_MAX_CHARS, ESP_NAMES,
+    PERSONAL_HIGH_CONFIDENCE_MAX_SCORE,
+};
 pub use ids::{
     CategoryId, ClassifierId, JobId, MailboxId, MessageId, RuleId, UserId, HEADER_RULES_ID,
 };
+// pub use invite::{
+//     check_redemption, InviteEvent, InviteId, InviteRequestId, InviteState, InviteStatus,
+//     RedeemRefusal,
+// };
+
 pub use mailbox::{Mailbox, MailboxIdentity, MailboxStatus, Provider, ProviderSubjectId};
+// pub use mailbox_status::{next_status, MailboxEvent};
+
 pub use message::{HeaderFacts, LabelSet, MailtoTarget, MessageMeta, UnsubscribeOptions};
+// pub use needs_attention::{
+//     needs_attention_expired, NeedsAttentionExit, NeedsAttentionId, NeedsAttentionReason,
+//     NewNeedsAttention,
+// };
+
 pub use sender::{SenderKey, SenderStats, REJECTS_KEPT, RELAY_DOMAINS};
 pub use tunables::Tunables;
+// pub use unsubscribe_job::*;
