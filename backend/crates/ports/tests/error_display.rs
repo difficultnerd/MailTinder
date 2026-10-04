@@ -7,24 +7,23 @@ use ports::{
 
 #[test]
 fn egress_error_display() {
-    let cases = [
-        (EgressError::SchemeNotAllowed, "scheme not allowed"),
-        (EgressError::CredentialsInUrl, "credentials in url"),
-        (EgressError::PortNotAllowed, "port not allowed"),
-        (EgressError::IpLiteralHost, "ip literal host"),
-        (EgressError::HostNotAllowed, "host not allowed"),
-        (EgressError::AddressRefused(RefusedRange::Private), "address refused: Private"),
-        (EgressError::PermanentDeleteRefused, "permanent delete refused"),
-        (EgressError::NotPermitted, "not permitted for this service"),
-        (EgressError::DnsFailed, "dns failure"),
-        (EgressError::Connect, "connect failure"),
-        (EgressError::Tls, "tls failure"),
-        (EgressError::Timeout, "timeout"),
-        (EgressError::ResponseTooLarge, "response too large"),
-    ];
-    for (e, want) in cases {
-        assert_eq!(e.to_string(), want);
-    }
+    assert_eq!(EgressError::SchemeNotAllowed.to_string(), "scheme not allowed");
+    assert_eq!(EgressError::CredentialsInUrl.to_string(), "credentials in url");
+    assert_eq!(EgressError::PortNotAllowed.to_string(), "port not allowed");
+    assert_eq!(EgressError::IpLiteralHost.to_string(), "ip literal host");
+    assert_eq!(EgressError::HostNotAllowed.to_string(), "host not allowed");
+    assert_eq!(
+        EgressError::AddressRefused(RefusedRange::Private).to_string(),
+        "address refused: Private"
+    );
+    // nosemgrep: mailtinder-no-permanent-delete -- asserting the Display string of an error variant, not a delete operation
+    assert_eq!(EgressError::PermanentDeleteRefused.to_string(), "permanent delete refused");
+    assert_eq!(EgressError::NotPermitted.to_string(), "not permitted for this service");
+    assert_eq!(EgressError::DnsFailed.to_string(), "dns failure");
+    assert_eq!(EgressError::Connect.to_string(), "connect failure");
+    assert_eq!(EgressError::Tls.to_string(), "tls failure");
+    assert_eq!(EgressError::Timeout.to_string(), "timeout");
+    assert_eq!(EgressError::ResponseTooLarge.to_string(), "response too large");
 }
 
 #[test]
