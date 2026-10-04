@@ -1,0 +1,334 @@
+# Synthetic mail corpus (S10 section 5). One [[case]] per required S10 case.
+# Rules: reserved domains only (example.com/net/org, *.test, *.invalid); no real email.
+# No canaries live here — the builder appends CANARY-<id>-<field> itself.
+# `expected.class` uses the S3 names: list, bulk_no_header, notice, personal, suspect.
+
+[[case]]
+id = "one-click-covered"
+source = "E1: 33 of 40 senders"
+from_display = "Acme News"
+from_address = "updates@example.com"
+subject = "Your weekly digest"
+list_id = "weekly.example.com"
+list_unsubscribe = "<https://u.example.com/weekly>"
+one_click_post = true
+feedback_id = "news:weekly"
+dkim = "pass_covers_both"
+body_text = "Here is this week's roundup."
+body_html = "<p>Here is this week's roundup.</p>"
+date = "2026-10-02T09:00:00+00:00"
+labels = ["INBOX", "UNREAD"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "one-click list", from_authenticated = true }
+
+[[case]]
+id = "one-click-plus-mailto"
+source = "E1: 19 of 33"
+from_display = "Acme News"
+from_address = "updates@example.com"
+subject = "Your weekly digest (with mailto)"
+list_id = "weekly.example.com"
+list_unsubscribe = "<https://u.example.com/weekly>, <mailto:unsub@example.com?subject=stop>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "Another week, another digest."
+date = "2026-10-02T09:01:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "one-click preferred", from_authenticated = true }
+
+[[case]]
+id = "esp-pass-dmarc-fail"
+source = "E1: about 6% of one-click senders"
+from_display = "Acme Deals"
+from_address = "offers@example.com"
+subject = "Deal of the day"
+list_id = "deals.example.com"
+list_unsubscribe = "<https://u.example.com/deals>"
+one_click_post = true
+dkim = "esp_pass_dmarc_fail"
+dkim_domain = "example.net"
+body_text = "Big savings today."
+date = "2026-10-02T10:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "one-click allowed (ESP signature)", from_authenticated = false }
+
+[[case]]
+id = "one-click-not-covered"
+source = "Spec audit H5"
+from_display = "Acme Mail"
+from_address = "mail@example.com"
+subject = "Not signed correctly"
+list_unsubscribe = "<https://u.example.com/x>"
+one_click_post = true
+dkim = "pass_not_covering"
+body_text = "The signature does not cover the unsubscribe headers."
+date = "2026-10-02T11:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 60, bulk_score_max = 100, method = "none", reason = "uncovered unsubscribe headers", from_authenticated = true }
+
+[[case]]
+id = "dkim-fail"
+source = "Spec audit H5"
+from_display = "Acme Mail"
+from_address = "mail@example.com"
+subject = "Bad signature"
+list_unsubscribe = "<https://u.example.com/x>"
+one_click_post = true
+dkim = "fail"
+body_text = "The DKIM signature failed."
+date = "2026-10-02T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "failed DKIM", from_authenticated = false }
+
+[[case]]
+id = "mailto-covered"
+source = "S2 UN-03"
+from_display = "Acme Briefing"
+from_address = "briefing@example.com"
+subject = "Mailto unsubscribe only"
+list_id = "briefing.example.com"
+list_unsubscribe = "<mailto:unsub@example.com?subject=stop>"
+dkim = "pass_covers_list_unsub"
+body_text = "Unsubscribe by replying."
+date = "2026-10-02T13:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "mailto", reason = "mailto list", from_authenticated = true }
+
+[[case]]
+id = "mailto-uncovered"
+source = "Spec audit H5, S6 T9"
+from_display = "Acme Mail"
+from_address = "mail@example.com"
+subject = "Unsigned mailto"
+list_unsubscribe = "<mailto:stop@example.com?subject=end>"
+dkim = "unsigned"
+body_text = "Cannot be trusted."
+date = "2026-10-02T14:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "unsigned; spoofed mailto target", from_authenticated = false }
+
+[[case]]
+id = "https-only-covered"
+source = "Spec audit Q3"
+from_display = "Acme Pages"
+from_address = "pages@example.com"
+subject = "Manage preferences"
+list_id = "pages.example.com"
+list_unsubscribe = "<https://prefs.example.com/7f2a>"
+dkim = "pass_covers_list_unsub"
+body_text = "Manage your email preferences on the web."
+date = "2026-10-02T15:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "needs_attention_https", reason = "https link, no one-click", from_authenticated = true }
+
+[[case]]
+id = "http-plain-link"
+source = "S6 6"
+from_display = "Acme Less"
+from_address = "less@example.com"
+subject = "Plain http unsubscribe"
+list_unsubscribe = "<http://u.example.com/stop>"
+dkim = "pass_covers_list_unsub"
+body_text = "Click the plain http link to stop."
+date = "2026-10-02T16:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "http link dropped", from_authenticated = true }
+
+[[case]]
+id = "notice-no-header"
+source = "E1: 6 of 7 headerless"
+from_display = "Account Security"
+from_address = "security@account.example.com"
+subject = "Unusual sign-in detected"
+body_text = "We noticed a sign-in from a new device. If this was you, no action is needed."
+date = "2026-10-02T17:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "notice", bulk_score_min = 0, bulk_score_max = 40, method = "none", reason = "account notice", from_authenticated = true }
+
+[[case]]
+id = "relay-no-header"
+source = "E1"
+from_display = "Someone"
+from_address = "a1b2c3d4@relay.example.com"
+subject = "A message via relay"
+body_text = "Private relay delivery."
+date = "2026-10-02T18:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 40, method = "none", reason = "relayed personal", from_authenticated = false }
+
+[[case]]
+id = "transactional-one-click"
+source = "E1"
+from_display = "Acme Signups"
+from_address = "verify@example.com"
+subject = "Verify your email"
+list_unsubscribe = "<https://u.example.com/verify>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "Please verify your account to finish signing up."
+date = "2026-10-02T19:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 40, bulk_score_max = 80, method = "one_click", reason = "transactional one-click", from_authenticated = true }
+
+[[case]]
+id = "bulk-body-link-only"
+source = "S2 SW-03 AC5, spec audit M4"
+from_display = "Acme Bulk"
+from_address = "bulk@example.com"
+subject = "Great offers inside"
+precedence = "bulk"
+body_text = "Click here to unsubscribe from our newsletter."
+body_html = "<p><a href=\"https://u.example.com/stop\">Unsubscribe</a></p>"
+date = "2026-10-02T20:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "no unsubscribe header; body link ignored", from_authenticated = true }
+
+[[case]]
+id = "phishing-lookalike"
+source = "D1"
+from_display = "Acme Support"
+from_address = "support@example.com"
+reply_to = "attacker@example.net"
+subject = "Your account is suspended"
+body_text = "Click here to confirm your details."
+date = "2026-10-02T21:00:00+00:00"
+labels = ["INBOX"]
+dkim = "fail"
+expected = { class = "suspect", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "display-name spoof, mismatched reply-to, failed auth", from_authenticated = false }
+
+[[case]]
+id = "personal-one-to-one"
+source = "PB-01"
+from_display = "Maya Chen"
+from_address = "maya@example.com"
+subject = "Lunch next week?"
+body_text = "Are you free for lunch next Tuesday?"
+date = "2026-10-02T22:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 30, method = "none", reason = "personal one-to-one", from_authenticated = true }
+
+[[case]]
+id = "same-sender-list-a"
+source = "SR-01 AC3"
+from_display = "Acme Both"
+from_address = "both@example.com"
+subject = "List A update"
+list_id = "list-a.example.com"
+list_unsubscribe = "<https://u.example.com/a>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "List A item."
+date = "2026-10-01T08:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "list A", from_authenticated = true }
+
+[[case]]
+id = "same-sender-list-b"
+source = "SR-01 AC3"
+from_display = "Acme Both"
+from_address = "both@example.com"
+subject = "List B update"
+list_id = "list-b.example.com"
+list_unsubscribe = "<https://u.example.com/b>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "List B item."
+date = "2026-10-01T09:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "list B", from_authenticated = true }
+
+[[case]]
+id = "same-sender-no-list"
+source = "SR-01 AC3"
+from_display = "Acme Both"
+from_address = "both@example.com"
+subject = "Personal note"
+body_text = "Just checking in."
+date = "2026-10-01T10:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 40, method = "none", reason = "no list id; personal", from_authenticated = true }
+
+[[case]]
+id = "receipt-same-sender-no-lu"
+source = "SR-01 AC3, spec audit M5"
+from_display = "Acme Store"
+from_address = "orders@example.com"
+subject = "Your receipt"
+body_text = "Thanks for your purchase."
+date = "2026-10-01T11:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 40, method = "none", reason = "receipt, no List-Unsubscribe", from_authenticated = true }
+
+[[case]]
+id = "spoofed-personal"
+source = "PB-01, SR-01, S6 T16, spec audit M6"
+from_display = "Maya Chen"
+from_address = "maya@example.com"
+subject = "URGENT: wire transfer"
+body_text = "Please send the funds urgently."
+dkim = "fail"
+date = "2026-10-01T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "suspect", bulk_score_min = 60, bulk_score_max = 100, method = "none", reason = "known-sender spoof, failed auth", from_authenticated = false }
+
+[[case]]
+id = "forged-lower-ar"
+source = "T-406 trust rule"
+from_display = "Acme Forger"
+from_address = "forged@example.com"
+subject = "Lower forged auth results"
+list_unsubscribe = "<https://u.example.com/f>"
+one_click_post = true
+dkim = "forged_lower_ar"
+body_text = "A lower Authentication-Results claims pass; the trusted one says none."
+date = "2026-09-30T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "bulk_no_header", bulk_score_min = 70, bulk_score_max = 100, method = "none", reason = "forged lower AR ignored; fail closed", from_authenticated = false }
+
+[[case]]
+id = "remote-images"
+source = "FD-01 AC2"
+from_display = "Acme Trackers"
+from_address = "track@example.com"
+subject = "Open rates"
+list_id = "track.example.com"
+list_unsubscribe = "<https://u.example.com/t>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "Read this."
+body_html = "<p>Read this.</p><img src=\"https://img.example.com/p.gif\">"
+remote_images = true
+date = "2026-09-29T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "list", bulk_score_min = 60, bulk_score_max = 100, method = "one_click", reason = "list with remote pixel", from_authenticated = true }
+
+[[case]]
+id = "hostile-headers"
+source = "ASVS V1, FD-01 AC2"
+from_display = "Acme Hostile"
+from_address = "hostile@example.com"
+subject = "Welcome to our service</script><script>alert(1)\u202e\u2066"
+list_unsubscribe = "<https://u.example.com/h>"
+one_click_post = true
+dkim = "pass_covers_both"
+extra_headers = [["X-Mailer", "esp-sample"], ["X-Weird", "=?UTF-8?B?44GT44KT44Gr44Gh44Gv?="]]
+body_text = "<b>bold</b> and RTL \u202e and zero-width \u200b."
+body_repeat = 500
+header_padding_bytes = 1048576
+date = "2026-09-28T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 100, method = "none", reason = "hostile content rendered as text", from_authenticated = true }
+
+[[case]]
+id = "hostile-long-preview"
+source = "ASVS V1, FD-01 AC2"
+from_display = "Acme Long"
+from_address = "long@example.com"
+subject = "A very long preview"
+list_unsubscribe = "<https://u.example.com/L>"
+one_click_post = true
+dkim = "pass_covers_both"
+body_text = "Padding for a ten thousand character preview. "
+body_repeat = 700
+date = "2026-09-27T12:00:00+00:00"
+labels = ["INBOX"]
+expected = { class = "personal", bulk_score_min = 0, bulk_score_max = 100, method = "none", reason = "long preview truncated", from_authenticated = true }

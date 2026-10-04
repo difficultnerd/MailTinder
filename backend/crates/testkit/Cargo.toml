@@ -28,5 +28,9 @@ tokio.workspace = true
 [lints]
 workspace = true
 
+[[bin]]
+name = "write-corpus"
+path = "src/bin/write_corpus.rs"
+
 [dev-dependencies]
 tokio.workspace = true
