@@ -1,0 +1,12 @@
+# Files excluded from semgrep scanning.
+#
+# testkit and fake-google model realistic PII on purpose (fake from/to/subject
+# fields for adapter and privacy-layer tests); the derive-Debug and sensitive
+# identifier rules in .semgrep/privacy.yml flag those structs. They are test
+# support code that never ships, so ignore the whole crates here.
+backend/crates/testkit/**
+backend/crates/fake-google/**
+
+# Third-party / generated:
+build/**
+.node_modules/**

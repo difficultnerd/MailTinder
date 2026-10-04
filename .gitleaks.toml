@@ -6,5 +6,9 @@ useDefault = true
 description = "Project-wide allowlist"
 paths = [
   '''(^|/)\.gitleaks\.toml$''',
+  # Dart unit-test fixtures under app/test use fake keys/tokens/idempotency
+  # literals; they are never real credentials. gitleaks scans full history,
+  # so allow the whole test tree (current and historical copies).
+  '''app/test/.*\.dart$''',
 ]
 # Add known-safe fixtures here, with a comment explaining why each is safe.

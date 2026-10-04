@@ -20,6 +20,9 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # Mozilla CA root bundle (webpki-roots) ships under CDLA-Permissive-2.0;
+    # it is a permissive data license for certificate roots.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
