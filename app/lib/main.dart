@@ -1,14 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
-void main() => runApp(const App());
+import 'api/http_api_client.dart';
+import 'app.dart';
+import 'state/session_model.dart';
 
-class App extends StatelessWidget {
-  const App({super.key});
+void main() {
+  final origin = Uri.base;
+  late final SessionModel sessionModel;
 
-  @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: Scaffold(body: Center(child: Text('Hello'))),
-    );
-  }
+  final apiClient = HttpApiClient(
+    client: http.Client(),
+    origin: origin,
+    onUnauthenticated: () {
+      sessionModel.wipe();
+      sessionModel.refresh();
+    },
+  );
+
+  sessionModel = SessionModel(api: apiClient);
+
+  runApp(MailTinderApp(session: sessionModel, api: apiClient));
 }
