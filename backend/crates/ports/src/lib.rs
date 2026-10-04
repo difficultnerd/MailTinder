@@ -12,6 +12,7 @@ pub mod egress;
 pub mod identity;
 pub mod keys;
 pub mod mail;
+pub mod ports;
 pub mod rng;
 pub mod scheduler;
 pub mod secrets;
@@ -42,6 +43,7 @@ pub use keys::{Aad, KeyError, KeyService, SystemAad, SystemKeyService, WrappedKe
 pub use mail::{
     ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
 };
+pub use ports::Ports;
 pub use rng::Rng;
 pub use scheduler::{CancelOutcome, JobScheduler, SchedError, TaskName};
 pub use secrets::{SecretError, SecretName, Secrets};

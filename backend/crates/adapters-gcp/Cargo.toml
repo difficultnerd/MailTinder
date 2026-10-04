@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 domain.workspace = true
 ports.workspace = true
+time.workspace = true
+uuid.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true
