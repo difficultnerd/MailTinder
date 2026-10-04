@@ -63,10 +63,7 @@ struct AuthQuery {
     login_hint: Option<String>,
 }
 
-async fn authorise(
-    State(st): State<AppState>,
-    Query(q): Query<AuthQuery>,
-) -> Response {
+async fn authorise(State(st): State<AppState>, Query(q): Query<AuthQuery>) -> Response {
     let now = st.1.now();
     let mut st = st.0.lock().unwrap();
     let state = q.state.clone().unwrap_or_default();
@@ -136,10 +133,7 @@ async fn authorise(
     };
     st.grants.insert(code.clone(), grant);
 
-    redirect_302(&format!(
-        "{}?code={}&state={}",
-        q.redirect_uri, code, state
-    ))
+    redirect_302(&format!("{}?code={}&state={}", q.redirect_uri, code, state))
 }
 
 fn redirect_302(location: &str) -> Response {
@@ -404,10 +398,7 @@ struct RevokeForm {
     token: String,
 }
 
-async fn revoke(
-    State(st): State<AppState>,
-    body: axum::body::Body,
-) -> Response {
+async fn revoke(State(st): State<AppState>, body: axum::body::Body) -> Response {
     let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
         Ok(b) => b.to_vec(),
         Err(_) => return json_400("invalid_token"),

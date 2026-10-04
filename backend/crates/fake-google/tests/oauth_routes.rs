@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use fake_google::{
-    ClientReg, FakeGoogle, FakeGoogleHandle, NextLogin, TokenScenario, oidc::ISSUER,
+    oidc::ISSUER, ClientReg, FakeGoogle, FakeGoogleHandle, NextLogin, TokenScenario,
 };
 use time::OffsetDateTime;
 
@@ -55,12 +55,22 @@ async fn happy_path(h: &FakeGoogleHandle) -> (String, String) {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid%20email&state=s1&nonce=n1&code_challenge={challenge}&code_challenge_method=S256",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 302);
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
     assert!(loc.starts_with(REDIRECT));
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
 
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let tok = client
@@ -76,7 +86,12 @@ async fn happy_path(h: &FakeGoogleHandle) -> (String, String) {
         .send()
         .await
         .unwrap();
-    assert_eq!(tok.status().as_u16(), 200, "token exc body: {:?}", tok.text().await);
+    assert_eq!(
+        tok.status().as_u16(),
+        200,
+        "token exc body: {:?}",
+        tok.text().await
+    );
     let body: serde_json::Value = tok.json().await.unwrap();
     let access = body["access_token"].as_str().unwrap().to_owned();
     let id_token = body["id_token"].as_str().unwrap().to_owned();
@@ -87,13 +102,22 @@ fn decode_id_token(token: &str) -> serde_json::Value {
     use base64::Engine as _;
     let parts: Vec<&str> = token.split('.').collect();
     let payload_b64 = parts[1];
-    let padded = format!("{payload_b64}{}", "=".repeat((4 - payload_b64.len() % 4) % 4));
-    let bytes = base64::engine::general_purpose::URL_SAFE.decode(padded).unwrap();
+    let padded = format!(
+        "{payload_b64}{}",
+        "=".repeat((4 - payload_b64.len() % 4) % 4)
+    );
+    let bytes = base64::engine::general_purpose::URL_SAFE
+        .decode(padded)
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 /// Verify a token with the JWKS and the injected clock.
-fn verify_id_token(token: &str, auth_key: jsonwebtoken::DecodingKey, _now: i64) -> jsonwebtoken::TokenData<serde_json::Value> {
+fn verify_id_token(
+    token: &str,
+    auth_key: jsonwebtoken::DecodingKey,
+    _now: i64,
+) -> jsonwebtoken::TokenData<serde_json::Value> {
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
     validation.set_audience(&[CLIENT_ID]);
     validation.leeway = 60;
@@ -109,7 +133,12 @@ async fn fake_oidc_happy_path_code_pkce_id_token_validates() {
     let m = h.add_mailbox("alice@example.com");
     let _ = m;
     let keys = jsonwebtoken::DecodingKey::from_rsa_pem(
-        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem")).unwrap().as_slice(),
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem"
+        ))
+        .unwrap()
+        .as_slice(),
     )
     .unwrap();
     let decoded = verify_id_token(&id_token, keys, T0.unix_timestamp());
@@ -132,7 +161,10 @@ async fn fake_oidc_plain_or_missing_pkce_is_400() {
             "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={challenge_q}",
             h.base_url().to_string().trim_end_matches('/')
         );
-        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
         let resp = client.get(&auth_url).send().await.unwrap();
         assert_eq!(resp.status().as_u16(), 400, "case: {challenge_q}");
     }
@@ -146,7 +178,10 @@ async fn fake_oidc_redirect_uri_must_match_exactly() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri=http://127.0.0.1:9999/callback/&response_type=code&scope=openid&state=s&nonce=n&code_challenge=x&code_challenge_method=S256",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 400);
 }
@@ -160,10 +195,20 @@ async fn fake_oidc_code_is_single_use_and_reuse_revokes_grant() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={challenge}&code_challenge_method=S256",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
 
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let form = |code: &str| {
@@ -197,10 +242,20 @@ async fn fake_oidc_wrong_verifier_is_invalid_grant() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={challenge}&code_challenge_method=S256",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let tok = client
         .post(&token_url)
@@ -278,7 +333,12 @@ async fn fake_oidc_each_token_scenario_produces_its_defect() {
     let header = decode_id_token(&id);
     let _ = header; // payload has no alg; just check structure
     let _main_key = jsonwebtoken::DecodingKey::from_rsa_pem(
-        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem")).unwrap().as_slice(),
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem"
+        ))
+        .unwrap()
+        .as_slice(),
     )
     .unwrap();
     // It still decodes structurally (payload) but signature would fail vs main key.
@@ -317,10 +377,20 @@ async fn fake_oidc_refresh_returns_new_access_token_accepted_by_gmail_routes() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid%20email%20https://www.googleapis.com/auth/gmail.modify&state=s&nonce=n&code_challenge={challenge}&code_challenge_method=S256&prompt=consent",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
 
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let tok = client
@@ -356,8 +426,16 @@ async fn fake_oidc_refresh_returns_new_access_token_accepted_by_gmail_routes() {
     let access2 = body2["access_token"].as_str().unwrap().to_owned();
 
     // Use the refreshed access token on a Gmail route.
-    let gurl = format!("{}/gmail/v1/users/me/messages", h.base_url().to_string().trim_end_matches('/'));
-    let resp3 = client.get(&gurl).bearer_auth(&access2).send().await.unwrap();
+    let gurl = format!(
+        "{}/gmail/v1/users/me/messages",
+        h.base_url().to_string().trim_end_matches('/')
+    );
+    let resp3 = client
+        .get(&gurl)
+        .bearer_auth(&access2)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp3.status().as_u16(), 200);
 }
 
@@ -371,10 +449,20 @@ async fn fake_oidc_revoked_refresh_is_invalid_grant() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={challenge}&code_challenge_method=S256&prompt=consent",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let tok = client
         .post(&token_url)
@@ -394,7 +482,12 @@ async fn fake_oidc_revoked_refresh_is_invalid_grant() {
 
     // Revoke it.
     let revoke_url = format!("{}/revoke", h.base_url().to_string().trim_end_matches('/'));
-    let r = client.post(&revoke_url).form(&[("token", &refresh)]).send().await.unwrap();
+    let r = client
+        .post(&revoke_url)
+        .form(&[("token", &refresh)])
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status().as_u16(), 200);
 
     // Refresh now fails.
@@ -435,7 +528,10 @@ async fn fake_oidc_access_denied_redirects_with_error() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={verifier}&code_challenge_method=S256",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     assert_eq!(resp.status().as_u16(), 302);
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
@@ -459,10 +555,20 @@ async fn fake_oidc_auth_time_present_with_prompt_login() {
         "{}/o/oauth2/v2/auth?client_id={CLIENT_ID}&redirect_uri={REDIRECT}&response_type=code&scope=openid&state=s&nonce=n&code_challenge={challenge}&code_challenge_method=S256&prompt=login&max_age=3600",
         h.base_url().to_string().trim_end_matches('/')
     );
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     let resp = client.get(&auth_url).send().await.unwrap();
     let loc = resp.headers()["location"].to_str().unwrap().to_owned();
-    let code = loc.split("code=").nth(1).unwrap().split('&').next().unwrap().to_owned();
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
     let token_url = format!("{}/token", h.base_url().to_string().trim_end_matches('/'));
     let tok = client
         .post(&token_url)
@@ -491,7 +597,12 @@ async fn fake_oidc_service_token_verifies_against_jwks() {
     let parts: Vec<&str> = jwt.split('.').collect();
     assert_eq!(parts.len(), 3);
     let keys = jsonwebtoken::DecodingKey::from_rsa_pem(
-        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem")).unwrap().as_slice(),
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pub.pem"
+        ))
+        .unwrap()
+        .as_slice(),
     )
     .unwrap();
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);

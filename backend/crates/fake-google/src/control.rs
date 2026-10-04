@@ -284,7 +284,6 @@ async fn reset(State(st): State<AppState>) -> Result<Json<Value>, Json<Value>> {
     Ok(Json(json!({ "ok": true })))
 }
 
-
 #[derive(Deserialize)]
 struct ClientBody {
     client_id: String,
@@ -397,9 +396,9 @@ async fn service_token(
     Ok(Json(json!({ "id_token": token })))
 }
 
-
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-fn reserved(email: &str) -> bool {    let domain = email.rsplit('@').next().unwrap_or("");
+fn reserved(email: &str) -> bool {
+    let domain = email.rsplit('@').next().unwrap_or("");
     let d = domain.to_lowercase();
     d == "example.com"
         || d == "example.net"

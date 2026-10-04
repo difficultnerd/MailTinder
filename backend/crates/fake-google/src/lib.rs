@@ -22,9 +22,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use base64::Engine as _;
 use time::OffsetDateTime;
 use url::Url;
-use base64::Engine as _;
 
 pub mod control;
 pub mod errors;

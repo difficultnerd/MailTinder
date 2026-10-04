@@ -15,8 +15,10 @@ pub const ID_TOKEN_TTL_S: i64 = 3600;
 pub const JWKS_PUBLIC_N: &str = "kRhN6syf45RiA3HhsRjZE15ST4aOUrHWB3Z1ygF6--KXZMQfjPMKz012kHiK3k-T74HydEaHSDCvVRVTWi5R_M1w8mQZItZTiItwsb_QQhfQYSwVABrdpLSwkxc95E6tIIMGTdAmfj75dxk7ZsKXxv7k7IotTWxq_2BiKie3_P5J7TDfSvlolv4dA2wUOw2dYn-9q_6azTRapsXq1rVc5-tjyOFTkFLXEiqfaF9KAAncokGQbc6_lU0v6U0Bqhcsomc26w_xS3cMhJQcj4qnCyjll5Dx6n-XUv5Rp_VtJRJ595iJtIKMTMprBg5Gb30TzqvEqeWuMUnL7uSTXypxvw";
 pub const JWKS_PUBLIC_E: &str = "AQAB";
 
-const MAIN_KEY: &[u8] = include_bytes!("../../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pem");
-const OTHER_KEY: &[u8] = include_bytes!("../../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256-other.pem");
+const MAIN_KEY: &[u8] =
+    include_bytes!("../../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256.pem");
+const OTHER_KEY: &[u8] =
+    include_bytes!("../../../crates/testkit/fixtures/keys/TEST-ONLY-fake-google-rs256-other.pem");
 
 /// The claims placed in an ID token.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -60,7 +62,10 @@ pub struct IdTokenOptions<'a> {
 
 /// Build an ID token, applying any queued `TokenScenario` (None = normal).
 pub fn build_id_token(opts: &IdTokenOptions<'_>, scenario: Option<TokenScenario>) -> String {
-    let aud = opts.aud.unwrap_or("fake-client.apps.example.test").to_owned();
+    let aud = opts
+        .aud
+        .unwrap_or("fake-client.apps.example.test")
+        .to_owned();
     let iss = opts.iss.unwrap_or(ISSUER).to_owned();
     let now = opts.now;
     let exp = now + opts.exp_offset;
@@ -134,7 +139,9 @@ pub fn build_id_token(opts: &IdTokenOptions<'_>, scenario: Option<TokenScenario>
     };
 
     let enc_key = match scenario {
-        Some(TokenScenario::AlgHs256) => EncodingKey::from_secret(secret.as_deref().unwrap_or_default()),
+        Some(TokenScenario::AlgHs256) => {
+            EncodingKey::from_secret(secret.as_deref().unwrap_or_default())
+        }
         Some(TokenScenario::SignedByUnknownKey) => {
             EncodingKey::from_rsa_pem(OTHER_KEY).expect("other key")
         }

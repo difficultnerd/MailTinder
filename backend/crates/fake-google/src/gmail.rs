@@ -35,7 +35,10 @@ use super::tokens::GMAIL_MODIFY;
 /// The shared state wrapper used by axum. `.0` is the shared fake state;
 /// `.1` is the injected clock (all times come from it).
 #[derive(Clone)]
-pub struct AppState(pub Arc<std::sync::Mutex<FakeState>>, pub Arc<dyn ports::Clock>);
+pub struct AppState(
+    pub Arc<std::sync::Mutex<FakeState>>,
+    pub Arc<dyn ports::Clock>,
+);
 
 impl AppState {
     /// The current time from the injected clock.
