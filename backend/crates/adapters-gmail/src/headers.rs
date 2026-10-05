@@ -4,6 +4,7 @@
 //! relies on the first `Authentication-Results` being Gmail's own and on
 //! counting `List-Unsubscribe` instances.
 
+use domain::text::sanitise_plain;
 use domain::HeaderFacts;
 
 use crate::auth_results::assess_auth;
@@ -97,17 +98,16 @@ pub fn parse_from(value: &str) -> Option<ParsedFrom> {
     Some(ParsedFrom { display, address })
 }
 
-/// Decode an RFC 2047 encoded word if present, then strip control characters.
-///
-/// T-402 replaces the strip with `domain::text::sanitise_plain`.
+/// Decode an RFC 2047 encoded word if present, then make it safe plain text
+/// (T-402): control, bidirectional and zero-width characters removed.
 pub fn decode_header_text(value: &str) -> String {
     let decoded = if value.contains("=?") && value.contains("?=") {
         rfc2047_decoder::decode(value.as_bytes()).unwrap_or_else(|_| value.to_owned())
     } else {
         value.to_owned()
     };
-    // T-402: strip control, bidi and zero-width characters via sanitise_plain.
-    decoded.chars().filter(|c| !c.is_control()).collect()
+    // No length cut here: the caller bounds the field (subject 998, name 256).
+    sanitise_plain(&decoded, usize::MAX)
 }
 
 /// Build the [`HeaderFacts`] a card needs from the raw headers.

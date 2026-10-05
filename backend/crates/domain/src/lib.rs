@@ -29,6 +29,7 @@ mod rules;
 mod sender;
 mod sender_stats;
 pub mod swipe;
+pub mod text;
 mod tunables;
 pub mod undo;
 mod unsubscribe_job;

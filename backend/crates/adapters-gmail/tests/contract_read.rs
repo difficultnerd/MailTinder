@@ -271,9 +271,8 @@ async fn gmail_preview_prefers_text_plain_and_never_fetches_attachment() {
     }
 }
 
-/// HTML stripping lands with T-402; disabled until then.
+/// A text/html body is reduced to plain text (T-402).
 #[tokio::test]
-#[ignore = "T-402 lands html_to_text"]
 async fn gmail_preview_html_part_is_stripped() {
     let handle = support::start().await;
     let mb = handle.add_mailbox("html@example.com");

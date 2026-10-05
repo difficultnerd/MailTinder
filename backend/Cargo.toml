@@ -41,6 +41,8 @@ proptest = "1"
 toml = "0.8"
 mail-parser = "0.9"
 jsonwebtoken = "9"
+html5ever = "0.27"
+unicode-segmentation = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use base64::Engine as _;
+use domain::text::{html_to_text, sanitise_plain};
 use domain::{LabelSet, MailtoTarget, MessageId, MessageMeta, Provider, SenderKey};
 use futures::StreamExt as _;
 use ports::{
@@ -137,7 +138,7 @@ impl MailProvider for GmailProvider {
             .first("From")
             .and_then(parse_from)
             .unwrap_or_else(empty_from);
-        let subject = truncate(
+        let subject = sanitise_plain(
             &decode_header_text(headers.first("Subject").unwrap_or("")),
             SUBJECT_MAX_CHARS,
         );
@@ -179,8 +180,12 @@ impl MailProvider for GmailProvider {
         let decoded = decode_body(data);
         let used = &decoded[..decoded.len().min(PREVIEW_MAX_BYTES)];
         let text = String::from_utf8_lossy(used);
-        // T-402: text/html goes through `domain::text::html_to_text` here.
-        Ok(sanitise(&text, PREVIEW_MAX_CHARS))
+        let preview = if part.mime_type.eq_ignore_ascii_case("text/html") {
+            html_to_text(&text, PREVIEW_MAX_CHARS)
+        } else {
+            sanitise_plain(&text, PREVIEW_MAX_CHARS)
+        };
+        Ok(preview)
     }
 
     async fn inbox_count(&self, mb: &MailboxCtx) -> Result<u64, MailError> {
@@ -231,18 +236,6 @@ fn empty_from() -> ParsedFrom {
         display: String::new(),
         address: String::new(),
     }
-}
-
-/// The first `max` characters of `s`.
-fn truncate(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
-/// Strip control characters and bound the length.
-///
-/// T-402 replaces this with `domain::text::sanitise_plain`.
-fn sanitise(s: &str, max: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
 /// Decode a base64url body (no padding required).
@@ -412,11 +405,5 @@ mod tests {
     fn gmail_preview_decodes_base64url_without_padding() {
         // "hello" -> aGVsbG8 (no padding).
         assert_eq!(decode_body("aGVsbG8"), b"hello");
-    }
-
-    #[test]
-    fn gmail_preview_sanitise_strips_control_and_bounds_length() {
-        assert_eq!(sanitise("a\u{0}b\nc", 300), "abc");
-        assert_eq!(sanitise("abcdef", 3), "abc");
     }
 }
