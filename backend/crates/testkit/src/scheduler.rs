@@ -8,6 +8,8 @@ use domain::JobId;
 use ports::{CancelOutcome, JobScheduler, SchedError, TaskName};
 use time::OffsetDateTime;
 
+use crate::contract::job_scheduler::SchedulerControl;
+
 /// The state of a scheduled task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskState {
@@ -88,6 +90,19 @@ impl FakeJobScheduler {
 impl Default for FakeJobScheduler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[async_trait]
+impl SchedulerControl for FakeJobScheduler {
+    async fn mark_running(&self, task: &TaskName) -> Result<(), String> {
+        self.start(task);
+        Ok(())
+    }
+
+    async fn mark_done(&self, task: &TaskName) -> Result<(), String> {
+        self.finish(task);
+        Ok(())
     }
 }
 

@@ -24,6 +24,7 @@ pub mod firestore;
 pub mod gcp_http;
 pub mod os_rng;
 pub mod system_clock;
+pub mod tasks;
 pub mod token_source;
 
 pub use crypto::envelope::EnvelopeKeyService;
@@ -33,4 +34,5 @@ pub use firestore::{FirestoreConfig, FirestoreStore};
 pub use gcp_http::{GcpError, GcpHttp, PLATFORM_HOSTS};
 pub use os_rng::OsRng;
 pub use system_clock::SystemClock;
+pub use tasks::{CloudTasksScheduler, TasksConfig};
 pub use token_source::{MetadataTokenSource, StaticTokenSource, TokenSource};
