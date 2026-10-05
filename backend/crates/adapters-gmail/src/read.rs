@@ -2,7 +2,7 @@
 //!
 //! `list_inbox`, `get_meta`, `get_preview` and `inbox_count` are real; the
 //! label-changing methods delegate to [`crate::modify`] (T-403) and
-//! `send_mailto` stays a stub until T-404.
+//! `send_mailto` delegates to [`crate::send`] (T-404).
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -231,8 +231,8 @@ impl MailProvider for GmailProvider {
         self.ensure_label_named(mb, name).await
     }
 
-    async fn send_mailto(&self, _mb: &MailboxCtx, _to: &MailtoTarget) -> Result<(), MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+    async fn send_mailto(&self, mb: &MailboxCtx, to: &MailtoTarget) -> Result<(), MailError> {
+        self.send_mailto_target(mb, to).await
     }
 }
 

@@ -13,6 +13,7 @@
     clippy::struct_excessive_bools
 )]
 
+pub mod address;
 mod class;
 mod error;
 pub mod feed;
@@ -23,6 +24,7 @@ mod ids;
 mod invite;
 mod mailbox;
 mod mailbox_status;
+pub mod mailto;
 mod message;
 mod needs_attention;
 mod rules;
@@ -34,6 +36,7 @@ mod tunables;
 pub mod undo;
 mod unsubscribe_job;
 
+pub use address::{AddressError, EmailAddress, ADDRESS_MAX_CHARS};
 pub use class::{Classification, MessageClass, SwipeAction};
 pub use error::DomainError;
 pub use gamification::{
@@ -53,6 +56,10 @@ pub use invite::{
 };
 pub use mailbox::{Mailbox, MailboxIdentity, MailboxStatus, Provider, ProviderSubjectId};
 pub use mailbox_status::{next_status, MailboxEvent};
+pub use mailto::{
+    MailtoError, MAILTO_BODY_MAX_CHARS, MAILTO_DEFAULT_TEXT, MAILTO_MAX_CHARS,
+    MAILTO_SUBJECT_MAX_CHARS,
+};
 pub use message::{HeaderFacts, LabelSet, MailtoTarget, MessageMeta, UnsubscribeOptions};
 pub use needs_attention::{
     needs_attention_expired, NeedsAttentionExit, NeedsAttentionId, NeedsAttentionReason,

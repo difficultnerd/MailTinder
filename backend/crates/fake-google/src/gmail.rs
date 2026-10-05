@@ -552,6 +552,9 @@ async fn send_message(
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     record(&mut st, "POST", "messages.send", vec![]);
+    if let Some(e) = check_fail(&mut st, "POST", "/gmail/v1/users/me/messages/send") {
+        return Err(e);
+    }
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(body.raw.as_bytes())
         .map_err(|_| GmailError::new(400, "invalidArgument"))?;
@@ -643,6 +646,9 @@ async fn create_label(
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     record(&mut st, "POST", "labels.create", vec![]);
+    if let Some(e) = check_fail(&mut st, "POST", "/gmail/v1/users/me/labels") {
+        return Err(e);
+    }
     // The race switch fires once, simulating another client creating the same
     // label between this client's list and its create: the label is made, the
     // response is 409.

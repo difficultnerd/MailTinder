@@ -34,9 +34,12 @@ mod errors;
 mod headers;
 mod modify;
 mod read;
+mod send;
 
 pub use client::GmailHttp;
 pub use read::GmailProvider;
+pub use send::INVITE_BODY_TEMPLATE;
+pub use send::INVITE_SUBJECT;
 
 #[cfg(test)]
 mod tests {
@@ -49,7 +52,12 @@ mod tests {
     #[test]
     fn xc_02_gmail_types_not_public() {
         let lib = include_str!("lib.rs");
-        let allowed = ["GmailProvider", "GmailHttp"];
+        let allowed = [
+            "GmailProvider",
+            "GmailHttp",
+            "INVITE_SUBJECT",
+            "INVITE_BODY_TEMPLATE",
+        ];
         for line in lib.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("pub use ") {

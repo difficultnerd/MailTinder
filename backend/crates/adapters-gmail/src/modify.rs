@@ -2,9 +2,9 @@
 //!
 //! Every change returns or accepts an exact [`LabelSet`], so an undo puts back
 //! the exact previous labels (S3 "Swipe and undo"), and no method can
-//! permanently delete a message (INV-5). `send_mailto` stays a stub until
-//! T-404. All bodies are `application/json`; base, headers, timeout and error
-//! mapping are the ones in [`crate::client`] (T-401).
+//! permanently delete a message (INV-5). The send path lives in
+//! [`crate::send`] (T-404). All bodies are `application/json`; base, headers,
+//! timeout and error mapping are the ones in [`crate::client`] (T-401).
 
 use domain::{LabelSet, MessageId};
 use ports::{MailError, MailboxCtx};
@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use crate::read::GmailProvider;
 
 /// The user label the unsubscribe mail is filed under (S2 UN-03 AC2, T-404).
-#[allow(dead_code)] // used by T-404's send path.
 pub const MAIL_TINDER_LABEL: &str = "Mail Tinder";
 /// The Gmail label-name limit.
 pub const LABEL_NAME_MAX_CHARS: usize = 225;

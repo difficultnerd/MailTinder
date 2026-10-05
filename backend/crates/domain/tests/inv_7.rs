@@ -1,6 +1,6 @@
 //! INV-7: core domain code does not import provider-specific types or I/O crates.
 const MANIFEST: &str = include_str!("../Cargo.toml");
-const ALLOWED: [&str; 7] = [
+const ALLOWED: [&str; 8] = [
     "serde",
     "uuid",
     "time",
@@ -8,6 +8,7 @@ const ALLOWED: [&str; 7] = [
     "thiserror",
     "html5ever",
     "unicode-segmentation",
+    "percent-encoding",
 ];
 const ALLOWED_DEV: [&str; 3] = ["proptest", "serde_json", "unicode-segmentation"];
 
