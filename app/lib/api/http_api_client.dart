@@ -9,6 +9,7 @@ import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
+import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
 import 'models/stats.dart';
@@ -557,6 +558,32 @@ class HttpApiClient implements ApiClient {
       onUnauthenticated();
     }
     throw exception;
+  }
+
+  @override
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send('GET', 'needs-attention', query: query);
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return NeedsAttentionPage.fromJson(data);
+  }
+
+  @override
+  Future<void> resolveNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/resolve', expect: const {204});
+  }
+
+  @override
+  Future<void> dismissNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/dismiss', expect: const {204});
   }
 
   /// Shared plumbing for every endpoint added by later tasks.

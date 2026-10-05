@@ -5,6 +5,7 @@ import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
+import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
 import 'models/stats.dart';
@@ -161,6 +162,18 @@ abstract class ApiClient {
 
   /// DELETE /api/v1/admin/bakeoff/snapshots/{id} (API-ADM-14). Needs step-up.
   Future<void> deleteSnapshot(String id);
+
+  /// GET /api/v1/needs-attention (API-NA-1).
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// POST /api/v1/needs-attention/{item_id}/resolve (API-NA-2).
+  Future<void> resolveNeedsAttention(String itemId);
+
+  /// POST /api/v1/needs-attention/{item_id}/dismiss (API-NA-3).
+  Future<void> dismissNeedsAttention(String itemId);
 }
 
 class ApiException implements Exception {

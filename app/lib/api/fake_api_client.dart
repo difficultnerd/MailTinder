@@ -8,6 +8,7 @@ import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
+import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
 import 'models/stats.dart';
@@ -103,6 +104,29 @@ class FakeApiClient implements ApiClient {
 
   /// The category id passed to the last [deleteCategory] call.
   String? lastDeletedCategoryId;
+
+  /// Pages returned by [listNeedsAttention], consumed in order. When empty,
+  /// an empty page with a zero count and no cursor is returned.
+  final List<NeedsAttentionPage> needsAttentionPages = [];
+
+  /// When set, [listNeedsAttention] awaits it first: lets a test hold the tab
+  /// in a `loading` state.
+  Completer<void>? needsAttentionGate;
+
+  /// When set, [listNeedsAttention] throws it (and clears it).
+  Object? nextNeedsAttentionError;
+
+  /// When set, [resolveNeedsAttention] throws it (and clears it).
+  Object? nextResolveError;
+
+  /// When set, [dismissNeedsAttention] throws it (and clears it).
+  Object? nextDismissError;
+
+  /// The item id passed to the last [resolveNeedsAttention] call.
+  String? lastResolvedItemId;
+
+  /// The item id passed to the last [dismissNeedsAttention] call.
+  String? lastDismissedItemId;
 
   @override
   Future<Session> getSession() async {
@@ -818,5 +842,53 @@ class FakeApiClient implements ApiClient {
       FakeCall('DELETE', '/api/v1/admin/bakeoff/snapshots/$id'),
     );
     snapshots.removeWhere((s) => s.snapshotId == id);
+  }
+
+  @override
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  }) async {
+    calls.add(
+      FakeCall('GET', '/api/v1/needs-attention', {
+        'cursor': cursor,
+        'limit': limit,
+      }),
+    );
+    final gate = needsAttentionGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    if (nextNeedsAttentionError != null) {
+      final err = nextNeedsAttentionError;
+      nextNeedsAttentionError = null;
+      throw err!;
+    }
+    if (needsAttentionPages.isNotEmpty) {
+      return needsAttentionPages.removeAt(0);
+    }
+    return const NeedsAttentionPage(items: [], openCount: 0, nextCursor: null);
+  }
+
+  @override
+  Future<void> resolveNeedsAttention(String itemId) async {
+    calls.add(FakeCall('POST', '/api/v1/needs-attention/$itemId/resolve'));
+    lastResolvedItemId = itemId;
+    if (nextResolveError != null) {
+      final err = nextResolveError;
+      nextResolveError = null;
+      throw err!;
+    }
+  }
+
+  @override
+  Future<void> dismissNeedsAttention(String itemId) async {
+    calls.add(FakeCall('POST', '/api/v1/needs-attention/$itemId/dismiss'));
+    lastDismissedItemId = itemId;
+    if (nextDismissError != null) {
+      final err = nextDismissError;
+      nextDismissError = null;
+      throw err!;
+    }
   }
 }
