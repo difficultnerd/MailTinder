@@ -1,3 +1,6 @@
+import 'dart:js_interop';
+import 'dart:typed_data';
+
 import 'package:web/web.dart' as web;
 
 import 'browser.dart';
@@ -43,6 +46,20 @@ class BrowserImpl implements Browser {
   @override
   void replaceAddress(String hashPath) {
     web.window.history.replaceState(null, '', '#$hashPath');
+  }
+
+  @override
+  void saveFile(List<int> bytes, String fileName, String mimeType) {
+    final blob = web.Blob(
+      [Uint8List.fromList(bytes).toJS].toJS,
+      web.BlobPropertyBag(type: mimeType),
+    );
+    final url = web.URL.createObjectURL(blob);
+    final anchor = web.HTMLAnchorElement()
+      ..href = url
+      ..download = fileName;
+    anchor.click();
+    web.URL.revokeObjectURL(url);
   }
 }
 

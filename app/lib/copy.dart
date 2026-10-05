@@ -288,4 +288,38 @@ abstract final class Copy {
     InviteStatus.revoked => 'Revoked',
     InviteStatus.expired => 'Expired',
   };
+
+  // Bake-off report (S9 7.7, S7 section 4).
+  static const bakeoffReport = 'Bake-off report';
+  static const tooFewToShow = 'Too few to show';
+  static const notEnoughData =
+      'Not enough data yet. Come back when more swipes are in.';
+  static const pickOneVersion = 'Pick one version';
+  static const snapshotSaved = 'Snapshot saved.';
+  static const deleteSnapshotFirst = 'Delete a snapshot first';
+  static const saveSnapshot = 'Save snapshot';
+  static const downloadCsv = 'Download CSV';
+  static const stepUpSaveSnapshot = 'to save a snapshot';
+  static const stepUpDeleteSnapshot = 'to delete a snapshot';
+  static const bakeoffFrom = 'From';
+  static const bakeoffTo = 'To';
+  static const bakeoffInputVersion = 'Input version';
+  static const bakeoffQuestionVersion = 'Question version';
+  static const bakeoffAnyVersion = 'Any';
+  static const bakeoffSnapshotName = 'Snapshot name';
+  static const bakeoffSnapshots = 'Snapshots';
+  static const bakeoffNoSnapshots = 'No snapshots yet.';
+  static const bakeoffKillSwitches = 'Kill switches';
+  static const bakeoffSnapshotNameInvalid =
+      'Enter a name of 1 to 100 characters.';
+  static String deleteSnapshotQuestion(String n) => 'Delete the snapshot $n?';
+  static String modelLabel(String m) => switch (m) {
+    'header_rules' => 'Header rules',
+    'gemini' => 'Gemini',
+    'jev' => 'Jev',
+    _ => m,
+  };
+  static String stepUpKillSwitch(String model, bool on) =>
+      'to switch ${modelLabel(model)} ${on ? 'on' : 'off'}';
+  static String snapshotCards(int? n) => n == null ? tooFewToShow : '$n cards';
 }

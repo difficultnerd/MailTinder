@@ -43,4 +43,11 @@ class BrowserImpl implements Browser {
       'Browser.replaceAddress is not available on this platform',
     );
   }
+
+  @override
+  void saveFile(List<int> bytes, String fileName, String mimeType) {
+    throw UnsupportedError(
+      'Browser.saveFile is not available on this platform',
+    );
+  }
 }

@@ -9,6 +9,7 @@ class FakeBrowser implements Browser {
   bool popupBlocked = false;
   bool popupWindow = false;
   bool closedWindow = false;
+  final List<({List<int> bytes, String fileName, String mimeType})> saved = [];
 
   @override
   void assign(Uri url) {
@@ -40,6 +41,11 @@ class FakeBrowser implements Browser {
   @override
   void replaceAddress(String hashPath) {
     replacedAddresses.add(hashPath);
+  }
+
+  @override
+  void saveFile(List<int> bytes, String fileName, String mimeType) {
+    saved.add((bytes: bytes, fileName: fileName, mimeType: mimeType));
   }
 }
 

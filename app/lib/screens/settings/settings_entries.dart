@@ -36,4 +36,9 @@ final List<SettingsEntry> settingsEntries = [
     route: Routes.settingsAdmin,
     adminOnly: true,
   ),
+  const SettingsEntry(
+    title: Copy.bakeoffReport,
+    route: Routes.settingsBakeoff,
+    adminOnly: true,
+  ),
 ];

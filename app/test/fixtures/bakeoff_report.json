@@ -1,0 +1,83 @@
+{
+  "query": {"from": "2026-09-05", "to": "2026-10-05", "input_version": null, "question_version": null, "price_version": null, "pool_versions": false},
+  "versions_present": {"input": ["1", "2"], "question": ["1"], "price": ["1"]},
+  "min_cell_size": 20,
+  "ground_truth_version": "1",
+  "interval_method": "wilson_95",
+  "labelled_swipes": 8312,
+  "participants": {"count": 41, "top_contributor_share": {"value": 0.123, "n": 1022}},
+  "models": [
+    {
+      "model": "header_rules", "classifier_id": "header_rules@1",
+      "cards": 8312, "valid_answers": 8312,
+      "accuracy": {"value": 0.7, "lower": 0.69, "upper": 0.71, "n": 8312},
+      "junk_precision": {"value": 0.8, "lower": 0.78, "upper": 0.82, "n": 4000},
+      "junk_recall": {"value": 0.6, "lower": 0.58, "upper": 0.62, "n": 4100},
+      "junk_f1": 0.686,
+      "false_junk_rate": {"value": 0.05, "lower": 0.04, "upper": 0.06, "n": 4200},
+      "calibration": null,
+      "latency": {"p50_ms": 1, "p95_ms": 2, "histogram": []},
+      "timeout_rate": {"value": 0.0, "lower": 0.0, "upper": 0.001, "n": 8312},
+      "error_rate": {"value": 0.0, "lower": 0.0, "upper": 0.001, "n": 8312},
+      "input_tokens": 0, "cost_per_1000_messages_usd": 0.0
+    },
+    {
+      "model": "gemini", "classifier_id": "gemini@flash-lite",
+      "cards": 8312, "valid_answers": 8200,
+      "accuracy": {"value": 0.87, "lower": 0.863, "upper": 0.877, "n": 8312},
+      "junk_precision": {"value": 0.9, "lower": 0.89, "upper": 0.91, "n": 4000},
+      "junk_recall": {"value": 0.85, "lower": 0.84, "upper": 0.86, "n": 4100},
+      "junk_f1": 0.874,
+      "false_junk_rate": {"value": 0.03, "lower": 0.025, "upper": 0.035, "n": 4200},
+      "calibration": {"ece": 0.042, "bins": [{"confidence_from": 0.0, "confidence_to": 0.5, "count": 300, "observed_accuracy": 0.4}, {"confidence_from": 0.5, "confidence_to": 1.0, "count": null, "observed_accuracy": null}]},
+      "latency": {"p50_ms": 420, "p95_ms": 1100, "histogram": [{"from_ms": 0, "to_ms": 500, "count": 5000}, {"from_ms": 500, "to_ms": 1000, "count": null}]},
+      "timeout_rate": {"value": 0.01, "lower": 0.008, "upper": 0.012, "n": 8312},
+      "error_rate": {"value": 0.002, "lower": null, "upper": null, "n": 8312},
+      "input_tokens": 1200000, "cost_per_1000_messages_usd": 0.35
+    },
+    {
+      "model": "jev", "classifier_id": "jev@1.13.0",
+      "cards": 8312, "valid_answers": null,
+      "accuracy": {"value": 0.81, "lower": 0.8, "upper": 0.82, "n": 8312},
+      "junk_precision": {"value": null, "lower": null, "upper": null, "n": null},
+      "junk_recall": {"value": 0.5, "lower": 0.48, "upper": 0.52, "n": 4100},
+      "junk_f1": null,
+      "false_junk_rate": {"value": 0.04, "lower": 0.03, "upper": 0.05, "n": 4200},
+      "calibration": null,
+      "latency": {"p50_ms": null, "p95_ms": null, "histogram": []},
+      "timeout_rate": {"value": null, "lower": null, "upper": null, "n": null},
+      "error_rate": {"value": 0.0, "lower": 0.0, "upper": 0.001, "n": 8312},
+      "input_tokens": null, "cost_per_1000_messages_usd": null
+    }
+  ],
+  "paired": [
+    {
+      "model_a": "gemini", "model_b": "jev", "n_paired": 8000,
+      "only_a_correct": 700, "only_b_correct": 300, "both_correct": 6000, "neither_correct": 1000,
+      "mcnemar_exact_p": 0.0123,
+      "accuracy_difference": {"value": 0.05, "lower": 0.04, "upper": 0.06},
+      "bootstrap": {"method": "cluster_by_participant", "resamples": 2000, "seed": 7, "participants": 41}
+    },
+    {
+      "model_a": "header_rules", "model_b": "jev", "n_paired": null,
+      "only_a_correct": null, "only_b_correct": null, "both_correct": null, "neither_correct": null,
+      "mcnemar_exact_p": null,
+      "accuracy_difference": {"value": null, "lower": null, "upper": null},
+      "bootstrap": {"method": "insufficient_participants", "resamples": 0, "seed": 7, "participants": null}
+    }
+  ],
+  "agreement": [
+    {"model_a": "gemini", "model_b": "jev", "rate": {"value": 0.77, "lower": 0.76, "upper": 0.78, "n": 8000}}
+  ],
+  "by_segment": [
+    {"dimension": "provider", "value": "gmail", "model": "gemini", "accuracy": {"value": 0.88, "lower": 0.87, "upper": 0.89, "n": 7000}, "false_junk_rate": {"value": 0.03, "lower": 0.02, "upper": 0.04, "n": 3000}},
+    {"dimension": "age_bucket", "value": "over_1y", "model": "jev", "accuracy": {"value": null, "lower": null, "upper": null, "n": null}, "false_junk_rate": {"value": null, "lower": null, "upper": null, "n": null}}
+  ],
+  "confusion": [
+    {"model": "gemini", "class": "list", "label": "junk", "count": 2500},
+    {"model": "gemini", "class": "personal", "label": "junk", "count": null}
+  ],
+  "trend": [
+    {"date": "2026-10-04", "model": "gemini", "accuracy": {"value": 0.86, "lower": 0.8, "upper": 0.9, "n": 300}}
+  ]
+}

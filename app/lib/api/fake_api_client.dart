@@ -3,6 +3,7 @@ import 'dart:async';
 import 'api_client.dart';
 import 'models/admin.dart';
 import 'models/auth.dart';
+import 'models/bakeoff.dart';
 import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
@@ -682,4 +683,140 @@ class FakeApiClient implements ApiClient {
   @override
   Future<void> endUserSession(String userId) =>
       _adminWrite(FakeCall('DELETE', '/api/v1/admin/users/$userId/sessions'));
+
+  /// Bake-off (S9 7.7). [bakeoffReports] are consumed in order; the last one
+  /// repeats. [nextBakeoffError] throws once on the next report load.
+  final List<BakeoffReport> bakeoffReports = [];
+  Object? nextBakeoffError;
+
+  /// When set, [getBakeoff] waits for it, so a test can hold the loading state.
+  Future<void>? bakeoffGate;
+  List<int> csvBytes = const [97, 44, 98];
+  ClassifierExperiment classifierExperiment = ClassifierExperiment(
+    models: [
+      ModelSwitch(
+        model: 'gemini',
+        classifierId: 'gemini@flash-lite',
+        enabled: true,
+        changedAt: DateTime.utc(2026, 10),
+      ),
+      ModelSwitch(
+        model: 'jev',
+        classifierId: 'jev@1.13.0',
+        enabled: true,
+        changedAt: DateTime.utc(2026, 10),
+      ),
+    ],
+    participants: 12,
+  );
+  final List<SnapshotSummary> snapshots = [];
+  final Map<String, BakeoffReport> snapshotReports = {};
+
+  @override
+  Future<BakeoffReport> getBakeoff(BakeoffQuery q) async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/bakeoff', q.toQuery()));
+    await bakeoffGate;
+    final err = nextBakeoffError;
+    if (err != null) {
+      nextBakeoffError = null;
+      throw err;
+    }
+    return bakeoffReports.length > 1
+        ? bakeoffReports.removeAt(0)
+        : bakeoffReports.single;
+  }
+
+  @override
+  Future<List<int>> getBakeoffCsv(BakeoffQuery q) async {
+    _adminRead(
+      FakeCall('GET', '/api/v1/admin/bakeoff', {'accept': 'text/csv'}),
+    );
+    return csvBytes;
+  }
+
+  @override
+  Future<ClassifierExperiment> getClassifierExperiment() async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/experiments/classifier'));
+    return classifierExperiment;
+  }
+
+  @override
+  Future<ClassifierExperiment> setModelEnabled(
+    String model,
+    bool enabled,
+  ) async {
+    await _adminWrite(
+      FakeCall('PATCH', '/api/v1/admin/experiments/classifier', {
+        'models': [
+          {'model': model, 'enabled': enabled},
+        ],
+      }),
+    );
+    classifierExperiment = ClassifierExperiment(
+      models: [
+        for (final m in classifierExperiment.models)
+          m.model == model
+              ? ModelSwitch(
+                  model: m.model,
+                  classifierId: m.classifierId,
+                  enabled: enabled,
+                  changedAt: m.changedAt,
+                )
+              : m,
+      ],
+      participants: classifierExperiment.participants,
+    );
+    return classifierExperiment;
+  }
+
+  @override
+  Future<Snapshot> createSnapshot(String name, BakeoffQuery q) async {
+    await _adminWrite(
+      FakeCall('POST', '/api/v1/admin/bakeoff/snapshots', {
+        'name': name,
+        'query': q.toJson(),
+      }),
+    );
+    final report = bakeoffReports.last;
+    final summary = SnapshotSummary(
+      snapshotId: 'snap-${snapshots.length + 1}',
+      name: name,
+      createdAt: DateTime.utc(2026, 10, 5),
+      labelledSwipes: report.labelledSwipes,
+    );
+    snapshots.insert(0, summary);
+    snapshotReports[summary.snapshotId] = report;
+    return Snapshot(summary: summary, report: report);
+  }
+
+  @override
+  Future<Paged<SnapshotSummary>> listSnapshots({String? cursor}) async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/bakeoff/snapshots'));
+    return Paged<SnapshotSummary>(items: List.of(snapshots));
+  }
+
+  @override
+  Future<Snapshot> getSnapshot(String id) async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/bakeoff/snapshots/$id'));
+    final summary = snapshots.firstWhere((s) => s.snapshotId == id);
+    return Snapshot(summary: summary, report: snapshotReports[id]!);
+  }
+
+  @override
+  Future<List<int>> getSnapshotCsv(String id) async {
+    _adminRead(
+      FakeCall('GET', '/api/v1/admin/bakeoff/snapshots/$id', {
+        'accept': 'text/csv',
+      }),
+    );
+    return csvBytes;
+  }
+
+  @override
+  Future<void> deleteSnapshot(String id) async {
+    await _adminWrite(
+      FakeCall('DELETE', '/api/v1/admin/bakeoff/snapshots/$id'),
+    );
+    snapshots.removeWhere((s) => s.snapshotId == id);
+  }
 }

@@ -1,5 +1,6 @@
 import 'models/admin.dart';
 import 'models/auth.dart';
+import 'models/bakeoff.dart';
 import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
@@ -133,6 +134,33 @@ abstract class ApiClient {
 
   /// DELETE /api/v1/admin/users/{id}/sessions (API-ADM-15). Needs step-up.
   Future<void> endUserSession(String userId);
+
+  /// GET /api/v1/admin/bakeoff (API-ADM-10), JSON.
+  Future<BakeoffReport> getBakeoff(BakeoffQuery q);
+
+  /// GET /api/v1/admin/bakeoff with `Accept: text/csv` (API-ADM-10).
+  Future<List<int>> getBakeoffCsv(BakeoffQuery q);
+
+  /// GET /api/v1/admin/experiments/classifier (API-ADM-8).
+  Future<ClassifierExperiment> getClassifierExperiment();
+
+  /// PATCH /api/v1/admin/experiments/classifier (API-ADM-9). Needs step-up.
+  Future<ClassifierExperiment> setModelEnabled(String model, bool enabled);
+
+  /// POST /api/v1/admin/bakeoff/snapshots (API-ADM-11). Needs step-up.
+  Future<Snapshot> createSnapshot(String name, BakeoffQuery q);
+
+  /// GET /api/v1/admin/bakeoff/snapshots (API-ADM-13).
+  Future<Paged<SnapshotSummary>> listSnapshots({String? cursor});
+
+  /// GET /api/v1/admin/bakeoff/snapshots/{id} (API-ADM-12), JSON.
+  Future<Snapshot> getSnapshot(String id);
+
+  /// GET /api/v1/admin/bakeoff/snapshots/{id} with `Accept: text/csv`.
+  Future<List<int>> getSnapshotCsv(String id);
+
+  /// DELETE /api/v1/admin/bakeoff/snapshots/{id} (API-ADM-14). Needs step-up.
+  Future<void> deleteSnapshot(String id);
 }
 
 class ApiException implements Exception {
@@ -143,6 +171,7 @@ class ApiException implements Exception {
     this.mailboxId,
     this.retryAfterSeconds,
     this.fields = const [],
+    this.problem,
   });
 
   final int status;
@@ -152,6 +181,9 @@ class ApiException implements Exception {
   final String? mailboxId;
   final int? retryAfterSeconds;
   final List<String> fields;
+
+  /// The raw problem body, for members such as `versions_present`.
+  final Map<String, dynamic>? problem;
 
   @override
   String toString() =>

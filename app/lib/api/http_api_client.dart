@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'api_client.dart';
 import 'models/admin.dart';
 import 'models/auth.dart';
+import 'models/bakeoff.dart';
 import 'models/category.dart';
 import 'models/experiments.dart';
 import 'models/feed.dart';
@@ -442,6 +443,122 @@ class HttpApiClient implements ApiClient {
     );
   }
 
+  static const _bakeoff = 'admin/bakeoff';
+
+  @override
+  Future<BakeoffReport> getBakeoff(BakeoffQuery q) async {
+    final data = await send('GET', _bakeoff, query: q.toQuery());
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return BakeoffReport.fromJson(data);
+  }
+
+  @override
+  Future<List<int>> getBakeoffCsv(BakeoffQuery q) =>
+      _getCsv(_bakeoff, q.toQuery());
+
+  @override
+  Future<ClassifierExperiment> getClassifierExperiment() async {
+    final data = await send('GET', 'admin/experiments/classifier');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return ClassifierExperiment.fromJson(data);
+  }
+
+  @override
+  Future<ClassifierExperiment> setModelEnabled(
+    String model,
+    bool enabled,
+  ) async {
+    final data = await send(
+      'PATCH',
+      'admin/experiments/classifier',
+      body: {
+        'models': [
+          {'model': model, 'enabled': enabled},
+        ],
+      },
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return ClassifierExperiment.fromJson(data);
+  }
+
+  @override
+  Future<Snapshot> createSnapshot(String name, BakeoffQuery q) async {
+    final data = await send(
+      'POST',
+      '$_bakeoff/snapshots',
+      body: {'name': name, 'query': q.toJson()},
+      expect: const {201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Snapshot.fromJson(data);
+  }
+
+  @override
+  Future<Paged<SnapshotSummary>> listSnapshots({String? cursor}) async {
+    final data = await send(
+      'GET',
+      '$_bakeoff/snapshots',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'snapshots', SnapshotSummary.fromJson);
+  }
+
+  @override
+  Future<Snapshot> getSnapshot(String id) async {
+    final data = await send(
+      'GET',
+      '$_bakeoff/snapshots/${Uri.encodeComponent(id)}',
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Snapshot.fromJson(data);
+  }
+
+  @override
+  Future<List<int>> getSnapshotCsv(String id) =>
+      _getCsv('$_bakeoff/snapshots/${Uri.encodeComponent(id)}', null);
+
+  @override
+  Future<void> deleteSnapshot(String id) async {
+    await send(
+      'DELETE',
+      '$_bakeoff/snapshots/${Uri.encodeComponent(id)}',
+      expect: const {204},
+    );
+  }
+
+  /// GET with `Accept: text/csv`; the session cookie rides on the client.
+  Future<List<int>> _getCsv(String path, Map<String, String>? query) async {
+    final resolved = _resolvePath(path);
+    final uri = query == null
+        ? resolved
+        : resolved.replace(queryParameters: query);
+    http.Response response;
+    try {
+      final request = http.Request('GET', uri)..headers['Accept'] = 'text/csv';
+      response = await http.Response.fromStream(await _client.send(request));
+    } on http.ClientException {
+      throw const NetworkException();
+    }
+    if (response.statusCode == 200) {
+      return response.bodyBytes;
+    }
+    final exception = _parseProblem(response);
+    if (response.statusCode == 401) {
+      onUnauthenticated();
+    }
+    throw exception;
+  }
+
   /// Shared plumbing for every endpoint added by later tasks.
   Future<Map<String, Object?>?> send(
     String method,
@@ -579,6 +696,7 @@ class HttpApiClient implements ApiClient {
           mailboxId: mailboxId,
           retryAfterSeconds: retryAfterSeconds,
           fields: fields,
+          problem: decoded,
         );
       }
     } catch (_) {

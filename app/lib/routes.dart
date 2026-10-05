@@ -8,6 +8,7 @@ import 'platform/browser.dart';
 import 'screens/filed/category_messages_screen.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/admin/admin_screen.dart';
+import 'screens/admin/bakeoff_screen.dart';
 import 'screens/request_invite/request_invite_screen.dart';
 import 'screens/settings/account_screen.dart';
 import 'screens/settings/connected_accounts_screen.dart';
@@ -34,6 +35,7 @@ abstract final class Routes {
   static const settingsStats = '/settings/stats';
   static const settingsExperiments = '/settings/experiments';
   static const settingsAdmin = '/settings/admin';
+  static const settingsBakeoff = '/settings/bakeoff';
 }
 
 Route<Object?>? onGenerateRoute(
@@ -101,6 +103,8 @@ Route<Object?>? onGenerateRoute(
           return const ExperimentsScreen();
         case Routes.settingsAdmin:
           return const AdminScreen();
+        case Routes.settingsBakeoff:
+          return const BakeoffScreen();
         case Routes.filedCategory:
           final arguments = settings.arguments;
           if (arguments is Category) {

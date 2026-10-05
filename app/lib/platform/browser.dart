@@ -31,6 +31,10 @@ abstract class Browser {
 
   /// history.replaceState to '#$hashPath'.
   void replaceAddress(String hashPath);
+
+  /// Saves [bytes] as a download named [fileName] (Blob plus a clicked
+  /// `<a download>`, revoked afterwards).
+  void saveFile(List<int> bytes, String fileName, String mimeType);
 }
 
 /// A popup window opened by [Browser.openPopup].
