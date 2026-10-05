@@ -1,5 +1,7 @@
+import 'models/admin.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
+import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
 import 'models/rule.dart';
@@ -87,6 +89,42 @@ abstract class ApiClient {
 
   /// GET /api/v1/stats (API-STAT-1).
   Future<Stats> getStats();
+
+  /// GET /api/v1/me/experiments (API-EXP-1).
+  Future<MyExperiments> getMyExperiments();
+
+  /// PUT /api/v1/me/experiments (API-EXP-2).
+  Future<MyExperiments> putMyExperiments({
+    required bool optedIn,
+    required String consentVersion,
+  });
+
+  /// GET /api/v1/admin/invites (API-ADM-1).
+  Future<Paged<Invite>> listInvites({String? cursor});
+
+  /// POST /api/v1/admin/invites (API-ADM-2, 201 or 200). Needs step-up.
+  Future<Invite> createInvite(String emailAddress);
+
+  /// POST /api/v1/admin/invites/{id}/resend (API-ADM-3). Needs step-up.
+  Future<Invite> resendInvite(String inviteId);
+
+  /// DELETE /api/v1/admin/invites/{id} (API-ADM-4). Needs step-up.
+  Future<void> revokeInvite(String inviteId);
+
+  /// GET /api/v1/admin/invite-requests (API-ADM-5).
+  Future<Paged<InviteRequest>> listInviteRequests({String? cursor});
+
+  /// POST /api/v1/admin/invite-requests/{id}/approve (API-ADM-6). Needs step-up.
+  Future<Invite> approveInviteRequest(String requestId);
+
+  /// POST /api/v1/admin/invite-requests/{id}/decline (API-ADM-7). Needs step-up.
+  Future<void> declineInviteRequest(String requestId);
+
+  /// GET /api/v1/admin/users (API-ADM-16).
+  Future<Paged<AdminUser>> listUsers({String? cursor});
+
+  /// DELETE /api/v1/admin/users/{id}/sessions (API-ADM-15). Needs step-up.
+  Future<void> endUserSession(String userId);
 }
 
 class ApiException implements Exception {

@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'api_client.dart';
+import 'models/admin.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
+import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
 import 'models/rule.dart';
@@ -493,4 +495,159 @@ class FakeApiClient implements ApiClient {
     }
     return stats;
   }
+
+  /// Returned by [getMyExperiments]; [putMyExperiments] updates it.
+  MyExperiments myExperiments = const MyExperiments(
+    available: true,
+    optedIn: false,
+    consentVersion: null,
+    currentConsentVersion: '2026-10-03',
+    optedInAt: null,
+  );
+
+  /// When set, the matching experiments call throws it (and clears it).
+  Object? nextExperimentsGetError;
+  Object? nextExperimentsPutError;
+
+  /// Admin lists. Pages are consumed in order; when empty a single page of
+  /// the matching `*Items` list is returned.
+  final List<Paged<Invite>> invitePages = [];
+  final List<Paged<InviteRequest>> inviteRequestPages = [];
+  final List<Paged<AdminUser>> userPages = [];
+
+  /// Throws (and clears) on the next admin call of any kind.
+  Object? nextAdminError;
+
+  /// Throws (and clears) on the next admin write, so a test can make the
+  /// first attempt ask for step-up and the retry succeed.
+  Object? nextAdminWriteError;
+
+  Future<void> _adminWrite(FakeCall call) async {
+    calls.add(call);
+    final err = nextAdminWriteError;
+    if (err != null) {
+      nextAdminWriteError = null;
+      throw err;
+    }
+  }
+
+  void _adminRead(FakeCall call) {
+    calls.add(call);
+    final err = nextAdminError;
+    if (err != null) {
+      nextAdminError = null;
+      throw err;
+    }
+  }
+
+  Invite _invite(String id, String email) => Invite(
+    inviteId: id,
+    emailAddress: email,
+    status: InviteStatus.pending,
+    createdAt: DateTime.utc(2026, 10),
+    expiresAt: DateTime.utc(2026, 10, 8),
+    lastSentAt: DateTime.utc(2026, 10),
+  );
+
+  @override
+  Future<MyExperiments> getMyExperiments() async {
+    calls.add(FakeCall('GET', '/api/v1/me/experiments'));
+    if (nextExperimentsGetError != null) {
+      final err = nextExperimentsGetError;
+      nextExperimentsGetError = null;
+      throw err!;
+    }
+    return myExperiments;
+  }
+
+  @override
+  Future<MyExperiments> putMyExperiments({
+    required bool optedIn,
+    required String consentVersion,
+  }) async {
+    calls.add(
+      FakeCall('PUT', '/api/v1/me/experiments', {
+        'opted_in': optedIn,
+        'consent_version': consentVersion,
+      }),
+    );
+    if (nextExperimentsPutError != null) {
+      final err = nextExperimentsPutError;
+      nextExperimentsPutError = null;
+      throw err!;
+    }
+    myExperiments = MyExperiments(
+      available: myExperiments.available,
+      optedIn: optedIn,
+      consentVersion: optedIn ? consentVersion : null,
+      currentConsentVersion: myExperiments.currentConsentVersion,
+      optedInAt: optedIn ? DateTime.utc(2026, 10, 5) : null,
+    );
+    return myExperiments;
+  }
+
+  @override
+  Future<Paged<Invite>> listInvites({String? cursor}) async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/invites', {'cursor': cursor}));
+    return invitePages.isEmpty
+        ? const Paged<Invite>(items: [])
+        : invitePages.removeAt(0);
+  }
+
+  @override
+  Future<Invite> createInvite(String emailAddress) async {
+    await _adminWrite(
+      FakeCall('POST', '/api/v1/admin/invites', {
+        'email_address': emailAddress,
+      }),
+    );
+    return _invite('inv-new', emailAddress);
+  }
+
+  @override
+  Future<Invite> resendInvite(String inviteId) async {
+    await _adminWrite(
+      FakeCall('POST', '/api/v1/admin/invites/$inviteId/resend'),
+    );
+    return _invite(inviteId, 'resent@example.test');
+  }
+
+  @override
+  Future<void> revokeInvite(String inviteId) =>
+      _adminWrite(FakeCall('DELETE', '/api/v1/admin/invites/$inviteId'));
+
+  @override
+  Future<Paged<InviteRequest>> listInviteRequests({String? cursor}) async {
+    _adminRead(
+      FakeCall('GET', '/api/v1/admin/invite-requests', {'cursor': cursor}),
+    );
+    return inviteRequestPages.isEmpty
+        ? const Paged<InviteRequest>(items: [])
+        : inviteRequestPages.removeAt(0);
+  }
+
+  @override
+  Future<Invite> approveInviteRequest(String requestId) async {
+    await _adminWrite(
+      FakeCall('POST', '/api/v1/admin/invite-requests/$requestId/approve'),
+    );
+    return _invite('inv-approved', 'approved@example.test');
+  }
+
+  @override
+  Future<void> declineInviteRequest(String requestId) => _adminWrite(
+    FakeCall('POST', '/api/v1/admin/invite-requests/$requestId/decline'),
+  );
+
+  @override
+  Future<Paged<AdminUser>> listUsers({String? cursor}) async {
+    _adminRead(FakeCall('GET', '/api/v1/admin/users', {'cursor': cursor}));
+    return userPages.isEmpty
+        ? const Paged<AdminUser>(items: [])
+        : userPages.removeAt(0);
+  }
+
+  @override
+  Future<void> endUserSession(String userId) =>
+      _adminWrite(FakeCall('DELETE', '/api/v1/admin/users/$userId/sessions'));
 }

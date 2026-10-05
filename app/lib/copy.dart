@@ -1,3 +1,4 @@
+import 'api/models/admin.dart';
 import 'format.dart';
 import 'state/swipe_controller.dart';
 
@@ -231,5 +232,49 @@ abstract final class Copy {
     'expired' => 'Expired',
     'done' => 'Done',
     _ => outcome,
+  };
+
+  // Experiments and Admin (S9 7.6, 7.8).
+  static const experiments = 'Experiments';
+  static const experimentsSwitch = 'Experiments';
+  static const admin = 'Admin';
+  static const consentChanged =
+      'The consent text has changed. Read it again before you switch this on.';
+  static const experimentPaused = 'The experiment is paused';
+  static const experimentsOffQuestion =
+      'Turn this off? Your experiment records will be deleted. Anonymous totals already published or saved stay as they are.';
+  static const turnOff = 'Turn off';
+  static const adminsOnly = 'Admins only.';
+  static const emailInvalid = 'Enter a valid email address.';
+  static const emailAddressLabel = 'Email address';
+  static const inviteButton = 'Invite';
+  static const resend = 'Re-send';
+  static const revoke = 'Revoke';
+  static const approve = 'Approve';
+  static const decline = 'Decline';
+  static const endSession = 'End session';
+  static const loadMore = 'Load more';
+  static const adminInvites = 'Invites';
+  static const adminRequests = 'Requests';
+  static const adminUsers = 'Users';
+  static const adminNothingHere = 'Nothing here yet.';
+
+  static String stepUpInvite(String a) => 'to invite $a';
+  static String stepUpResend(String a) => 'to re-send the invite to $a';
+  static String stepUpRevoke(String a) => 'to revoke the invite to $a';
+  static String stepUpApprove(String a) => 'to approve $a';
+  static String stepUpDecline(String a) => 'to decline $a';
+  static String stepUpEndSession(String a) => "to end $a's session";
+  static String endSessionQuestion(String a) =>
+      "End $a's session? They'll need to sign in again.";
+  static String revokeQuestion(String a) =>
+      'Revoke the invite to $a? The link stops working.';
+  static String declineQuestion(String a) => 'Decline $a? They are not told.';
+  static String mailboxCount(int n) => n == 1 ? '1 mailbox' : '$n mailboxes';
+  static String inviteStatus(InviteStatus s) => switch (s) {
+    InviteStatus.pending => 'Pending',
+    InviteStatus.used => 'Used',
+    InviteStatus.revoked => 'Revoked',
+    InviteStatus.expired => 'Expired',
   };
 }

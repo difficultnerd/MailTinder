@@ -27,4 +27,13 @@ final List<SettingsEntry> settingsEntries = [
     title: Copy.settingsAccount,
     route: Routes.settingsAccount,
   ),
+  const SettingsEntry(
+    title: Copy.experiments,
+    route: Routes.settingsExperiments,
+  ),
+  const SettingsEntry(
+    title: Copy.admin,
+    route: Routes.settingsAdmin,
+    adminOnly: true,
+  ),
 ];

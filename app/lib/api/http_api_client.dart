@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
+import 'models/admin.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
+import 'models/experiments.dart';
 import 'models/feed.dart';
 import 'models/history.dart';
 import 'models/rule.dart';
@@ -294,6 +296,131 @@ class HttpApiClient implements ApiClient {
       throw const NetworkException();
     }
     return Stats.fromJson(data);
+  }
+
+  @override
+  Future<MyExperiments> getMyExperiments() async {
+    final data = await send('GET', 'me/experiments');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return MyExperiments.fromJson(data);
+  }
+
+  @override
+  Future<MyExperiments> putMyExperiments({
+    required bool optedIn,
+    required String consentVersion,
+  }) async {
+    final data = await send(
+      'PUT',
+      'me/experiments',
+      body: {
+        'classifier_bakeoff': {
+          'opted_in': optedIn,
+          'consent_version': consentVersion,
+        },
+      },
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return MyExperiments.fromJson(data);
+  }
+
+  Map<String, String>? _cursorQuery(String? cursor) =>
+      cursor == null ? null : {'cursor': cursor};
+
+  @override
+  Future<Paged<Invite>> listInvites({String? cursor}) async {
+    final data = await send(
+      'GET',
+      'admin/invites',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'invites', Invite.fromJson);
+  }
+
+  @override
+  Future<Invite> createInvite(String emailAddress) async {
+    final data = await send(
+      'POST',
+      'admin/invites',
+      body: {'email_address': emailAddress},
+      expect: const {200, 201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<Invite> resendInvite(String inviteId) async {
+    final data = await send(
+      'POST',
+      'admin/invites/${Uri.encodeComponent(inviteId)}/resend',
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<void> revokeInvite(String inviteId) async {
+    await send(
+      'DELETE',
+      'admin/invites/${Uri.encodeComponent(inviteId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<Paged<InviteRequest>> listInviteRequests({String? cursor}) async {
+    final data = await send(
+      'GET',
+      'admin/invite-requests',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'requests', InviteRequest.fromJson);
+  }
+
+  @override
+  Future<Invite> approveInviteRequest(String requestId) async {
+    final data = await send(
+      'POST',
+      'admin/invite-requests/${Uri.encodeComponent(requestId)}/approve',
+      expect: const {201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<void> declineInviteRequest(String requestId) async {
+    await send(
+      'POST',
+      'admin/invite-requests/${Uri.encodeComponent(requestId)}/decline',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<Paged<AdminUser>> listUsers({String? cursor}) async {
+    final data = await send('GET', 'admin/users', query: _cursorQuery(cursor));
+    return Paged.parse(data, 'users', AdminUser.fromJson);
+  }
+
+  @override
+  Future<void> endUserSession(String userId) async {
+    await send(
+      'DELETE',
+      'admin/users/${Uri.encodeComponent(userId)}/sessions',
+      expect: const {204},
+    );
   }
 
   /// Shared plumbing for every endpoint added by later tasks.
