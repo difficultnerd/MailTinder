@@ -9,15 +9,21 @@ import '../../api/models/feed.dart';
 import '../../api/models/session.dart';
 import '../../copy.dart';
 import '../../platform/browser.dart';
+import '../../platform/haptics.dart';
+import '../../platform/sound_player.dart';
 import '../../state/categories_cache.dart';
 import '../../state/feed_model.dart';
+import '../../state/feedback_model.dart';
 import '../../state/id_generator.dart';
+import '../../state/play_prefs.dart';
 import '../../state/progress_model.dart';
 import '../../state/round_tracker.dart';
 import '../../state/session_model.dart';
 import '../../state/swipe_controller.dart';
+import '../settings/app_scope.dart';
 import 'card_view.dart';
 import 'celebrations.dart';
+import 'effects.dart';
 import 'divider_card.dart';
 import 'filing_sheet.dart';
 import 'progress_header.dart';
@@ -44,6 +50,7 @@ class FeedScreen extends StatefulWidget {
     this.progress,
     this.rounds,
     this.feedVisible,
+    this.feedback,
   });
 
   final FeedModel? model;
@@ -65,6 +72,10 @@ class FeedScreen extends StatefulWidget {
   /// becomes due for the next time the Feed shows (GM-03 AC1).
   final ValueListenable<bool>? feedVisible;
 
+  /// Swipe effects (GM-02); built from the app scope's Sounds switch when
+  /// absent.
+  final FeedbackModel? feedback;
+
   @override
   State<FeedScreen> createState() => _FeedScreenState();
 }
@@ -73,6 +84,7 @@ class _FeedScreenState extends State<FeedScreen> {
   SwipeController? _swipe;
   ProgressModel? _progress;
   RoundTracker? _rounds;
+  FeedbackModel? _feedback;
   final CelebrationQueue _celebrations = CelebrationQueue();
   StreamSubscription<SwipeEvent>? _eventsSub;
   FeedItem? _dividerMarked;
@@ -89,6 +101,15 @@ class _FeedScreenState extends State<FeedScreen> {
       progress.addListener(_onProgressChanged);
       unawaited(progress.load());
       _rounds = widget.rounds ?? RoundTracker();
+      _feedback =
+          widget.feedback ??
+          FeedbackModel(
+            prefs:
+                context.getInheritedWidgetOfExactType<AppScope>()?.playPrefs ??
+                PlayPrefs(),
+            sound: const SoundPlayerImpl(),
+            haptics: const HapticsImpl(),
+          );
       model.addListener(_onFeedChanged);
       final visible = widget.feedVisible;
       if (visible != null) {
@@ -150,6 +171,7 @@ class _FeedScreenState extends State<FeedScreen> {
     _progress?.removeListener(_onProgressChanged);
     if (widget.progress == null) _progress?.dispose();
     if (widget.rounds == null) _rounds?.dispose();
+    if (widget.feedback == null) _feedback?.dispose();
     _eventsSub?.cancel();
     _celebrations.dispose();
     _swipe?.removeListener(_onSwipeChanged);
@@ -237,6 +259,30 @@ class _FeedScreenState extends State<FeedScreen> {
           },
         ),
         CelebrationOverlay(queue: _celebrations),
+        ListenableBuilder(
+          listenable: _feedback!,
+          builder: (context, _) {
+            final fb = _feedback!;
+            return Stack(
+              children: [
+                if (fb.combo != null)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: ComboBadge(count: fb.combo!),
+                  ),
+                if (fb.confettiDue)
+                  Positioned.fill(
+                    child: MilestoneOverlay(
+                      key: ValueKey('milestone-${fb.milestone}'),
+                      milestone: fb.milestone,
+                      onDone: fb.acknowledgeConfetti,
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
         ListenableBuilder(
           listenable: _rounds!,
           builder: (context, _) {
@@ -387,6 +433,8 @@ class _FeedScreenState extends State<FeedScreen> {
         onReject: swipe.reject,
         onFile: () => swipe.file(context),
         onSkip: swipe.skip,
+        feedback: _feedback,
+        card: current.card,
         child: CardView(
           card: current.card,
           mailboxAddress: _mailboxAddress(session, current.card.mailboxId),

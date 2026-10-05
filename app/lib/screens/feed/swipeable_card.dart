@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../api/models/feed.dart';
+import '../../api/models/swipe.dart';
+import '../../state/feedback_model.dart';
+import 'effects.dart';
+
 /// Wraps the focused card and turns a drag into a swipe (S9 section 3, S2
 /// SW-01 to SW-04). The card follows the finger; on release the axis wins when
 /// the distance is at least [kSwipeDistance] or the velocity at least
@@ -23,6 +28,8 @@ class SwipeableCard extends StatefulWidget {
     required this.onReject,
     required this.onFile,
     required this.onSkip,
+    this.feedback,
+    this.card,
   });
 
   final Widget child;
@@ -30,6 +37,10 @@ class SwipeableCard extends StatefulWidget {
   final VoidCallback onReject;
   final VoidCallback onFile;
   final VoidCallback onSkip;
+
+  /// Plays the per-direction effect, sound and haptic for [card] (GM-02).
+  final FeedbackModel? feedback;
+  final FeedCard? card;
 
   @override
   State<SwipeableCard> createState() => _SwipeableCardState();
@@ -45,7 +56,7 @@ const double kSwipeVelocity = 800;
 const Duration kFlyOffDuration = Duration(milliseconds: 250);
 
 /// How far a committed card travels as it flies off.
-const double kFlyOffDistance = 1000;
+const double kFlyOffDistance = kEffectFlyDistance;
 
 class _SwipeableCardState extends State<SwipeableCard>
     with SingleTickerProviderStateMixin {
@@ -56,7 +67,7 @@ class _SwipeableCardState extends State<SwipeableCard>
 
   Offset _drag = Offset.zero;
   Offset _flyFrom = Offset.zero;
-  Offset _flyTo = Offset.zero;
+  CardEffect _effect = CardEffect.flyRight;
   _Axis? _flyAxis;
   bool _flying = false;
 
@@ -99,21 +110,35 @@ class _SwipeableCardState extends State<SwipeableCard>
       return;
     }
 
+    final kind = switch (axis) {
+      _Axis.right => SwipeKind.keep,
+      _Axis.left => SwipeKind.reject,
+      _Axis.up => SwipeKind.file,
+      _Axis.down => SwipeKind.skip,
+    };
+    final card = widget.card;
+    final played = card == null ? null : widget.feedback?.onSwipe(card, kind);
+
     if (MediaQuery.disableAnimationsOf(context)) {
       _drag = Offset.zero;
       _commit(axis);
       return;
     }
 
+    _effect =
+        played ??
+        switch (axis) {
+          _Axis.right => CardEffect.flyRight,
+          _Axis.left => CardEffect.flyLeft,
+          _Axis.up => CardEffect.flyUp,
+          _Axis.down => CardEffect.flyDown,
+        };
+    _fly.duration = effectDuration(_effect);
     _flyFrom = _drag;
-    _flyTo = switch (axis) {
-      _Axis.right => const Offset(kFlyOffDistance, 0),
-      _Axis.left => const Offset(-kFlyOffDistance, 0),
-      _Axis.up => const Offset(0, -kFlyOffDistance),
-      _Axis.down => const Offset(0, kFlyOffDistance),
-    };
     _flyAxis = axis;
-    _flying = true;
+    setState(() {
+      _flying = true;
+    });
     _fly.forward(from: 0);
   }
 
@@ -136,8 +161,10 @@ class _SwipeableCardState extends State<SwipeableCard>
     if (_flying) {
       child = AnimatedBuilder(
         animation: _fly,
-        builder: (context, _) => Transform.translate(
-          offset: Offset.lerp(_flyFrom, _flyTo, _fly.value) ?? _flyTo,
+        builder: (context, _) => applyCardEffect(
+          effect: _effect,
+          t: _fly.value,
+          from: _flyFrom,
           child: widget.child,
         ),
       );

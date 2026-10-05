@@ -57,8 +57,9 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Iterable<FakeCall> writes(SettingsHarness h) =>
-      h.api.calls.where((c) => c.method != 'GET');
+  Iterable<FakeCall> writes(SettingsHarness h) => h.api.calls.where(
+    (c) => c.method != 'GET' && c.path != '/api/v1/feed/next',
+  );
 
   testWidgets('AU-01 AC1 admin invites by email', (tester) async {
     final h = await open(tester);

@@ -64,8 +64,9 @@ void main() {
     return h;
   }
 
-  Iterable<FakeCall> writes(SettingsHarness h) =>
-      h.api.calls.where((c) => c.method != 'GET');
+  Iterable<FakeCall> writes(SettingsHarness h) => h.api.calls.where(
+    (c) => c.method != 'GET' && c.path != '/api/v1/feed/next',
+  );
 
   SnapshotSummary snap(String id, String name) => SnapshotSummary(
     snapshotId: id,

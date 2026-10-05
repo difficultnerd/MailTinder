@@ -372,4 +372,8 @@ abstract final class Copy {
   static const roundUnsubscribed = 'Senders unsubscribed';
   static const roundBlocked = 'Senders blocked';
   static const keepGoing = 'Keep going';
+
+  /// Swipe feedback (GM-02, T-1008b).
+  static String combo(int n) => 'Combo $n';
+  static String clearedMilestone(int n) => '${formatCount(n)} cleared';
 }

@@ -120,7 +120,11 @@ Route<Object?>? onGenerateRoute(
         default:
           final state = session.session?.state;
           return switch (state) {
-            SessionState.authenticated => const HomeShell(),
+            SessionState.authenticated => HomeShell(
+              session: session,
+              api: api,
+              browser: browser,
+            ),
             SessionState.pendingInviteRequest => RequestInviteScreen(
               session: session,
               api: api,

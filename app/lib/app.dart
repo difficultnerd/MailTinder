@@ -126,7 +126,11 @@ class _MailTinderAppState extends State<MailTinderApp> {
 
           final state = session.session?.state;
           return switch (state) {
-            SessionState.authenticated => const HomeShell(),
+            SessionState.authenticated => HomeShell(
+              session: session,
+              api: widget.api,
+              browser: widget.browser,
+            ),
             SessionState.pendingInviteRequest => RequestInviteScreen(
               session: session,
               api: widget.api,
