@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import 'api/api_client.dart';
 import 'api/models/auth.dart';
+import 'api/models/category.dart';
 import 'api/models/session.dart';
 import 'platform/browser.dart';
+import 'screens/filed/category_messages_screen.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/request_invite/request_invite_screen.dart';
 import 'screens/settings/settings_screen.dart';
@@ -18,6 +20,7 @@ abstract final class Routes {
   static const invite = '/invite';
   static const authResult = '/auth/result';
   static const requestInvite = '/request-invite';
+  static const filedCategory = '/filed/category';
   static const settingsAccounts = '/settings/accounts';
 }
 
@@ -72,6 +75,17 @@ Route<Object?>? onGenerateRoute(
         case Routes.settingsAccounts:
           // Placeholder: shows the Settings tab (T-1006a replaces its builder).
           return const SettingsScreen();
+        case Routes.filedCategory:
+          final arguments = settings.arguments;
+          if (arguments is Category) {
+            return CategoryMessagesScreen(
+              category: arguments,
+              api: api,
+              session: session,
+              browser: browser,
+            );
+          }
+          return const SizedBox.shrink();
         case Routes.home:
         default:
           final state = session.session?.state;

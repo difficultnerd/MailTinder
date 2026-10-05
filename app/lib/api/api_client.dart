@@ -1,4 +1,5 @@
 import 'models/auth.dart';
+import 'models/category.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
 import 'models/swipe.dart';
@@ -38,6 +39,23 @@ abstract class ApiClient {
 
   /// POST /api/v1/block-prompts/decline (API-RULE-5).
   Future<void> declineBlockPrompt(String promptRef);
+
+  /// GET /api/v1/categories (API-CAT-1).
+  Future<List<Category>> listCategories();
+
+  /// PATCH /api/v1/categories/{category_id} {name} (API-CAT-3).
+  Future<Category> renameCategory(String categoryId, String name);
+
+  /// DELETE /api/v1/categories/{category_id} (API-CAT-4). Removes the label
+  /// only; messages are never deleted (S3 INV-5).
+  Future<void> deleteCategory(String categoryId);
+
+  /// GET /api/v1/categories/{category_id}/messages (API-CAT-5).
+  Future<FiledMessagePage> listCategoryMessages(
+    String categoryId, {
+    String? cursor,
+    int limit = 20,
+  });
 }
 
 class ApiException implements Exception {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'api_client.dart';
 import 'models/auth.dart';
+import 'models/category.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
 import 'models/swipe.dart';
@@ -57,6 +58,37 @@ class FakeApiClient implements ApiClient {
 
   /// The promptRef passed to the last [declineBlockPrompt] call.
   String? lastDeclinedPromptRef;
+
+  /// Categories returned by [listCategories]. [renameCategory] and
+  /// [deleteCategory] update this list.
+  final List<Category> categories = [];
+
+  /// When set, [listCategories] awaits it first: lets a test hold the Filed
+  /// tab in a `loading` state.
+  Completer<void>? categoriesGate;
+
+  /// When set, [listCategories] throws it (and clears it).
+  Object? nextListCategoriesError;
+
+  /// When set, [renameCategory] throws it (and clears it).
+  Object? nextRenameError;
+
+  /// When set, [deleteCategory] throws it (and clears it).
+  Object? nextDeleteError;
+
+  /// When set, [listCategoryMessages] throws it (and clears it).
+  Object? nextCategoryMessagesError;
+
+  /// Pages returned by [listCategoryMessages], consumed in order. When empty,
+  /// an empty page with no cursor is returned.
+  final List<FiledMessagePage> categoryMessagePages = [];
+
+  /// The arguments of the last [renameCategory] call.
+  String? lastRenamedCategoryId;
+  String? lastRenamedName;
+
+  /// The category id passed to the last [deleteCategory] call.
+  String? lastDeletedCategoryId;
 
   @override
   Future<Session> getSession() async {
@@ -225,5 +257,86 @@ class FakeApiClient implements ApiClient {
       nextDeclineError = null;
       throw err!;
     }
+  }
+
+  @override
+  Future<List<Category>> listCategories() async {
+    calls.add(FakeCall('GET', '/api/v1/categories'));
+    final gate = categoriesGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    if (nextListCategoriesError != null) {
+      final err = nextListCategoriesError;
+      nextListCategoriesError = null;
+      throw err!;
+    }
+    return List<Category>.unmodifiable(categories);
+  }
+
+  @override
+  Future<Category> renameCategory(String categoryId, String name) async {
+    calls.add(
+      FakeCall('PATCH', '/api/v1/categories/$categoryId', {'name': name}),
+    );
+    lastRenamedCategoryId = categoryId;
+    lastRenamedName = name;
+    if (nextRenameError != null) {
+      final err = nextRenameError;
+      nextRenameError = null;
+      throw err!;
+    }
+    final index = categories.indexWhere((c) => c.categoryId == categoryId);
+    final updated = Category(
+      categoryId: categoryId,
+      name: name,
+      messageCount: index >= 0 ? categories[index].messageCount : 0,
+      perMailbox: index >= 0
+          ? categories[index].perMailbox
+          : const <CategoryMailboxCount>[],
+    );
+    if (index >= 0) {
+      categories[index] = updated;
+    }
+    return updated;
+  }
+
+  @override
+  Future<void> deleteCategory(String categoryId) async {
+    calls.add(FakeCall('DELETE', '/api/v1/categories/$categoryId'));
+    lastDeletedCategoryId = categoryId;
+    if (nextDeleteError != null) {
+      final err = nextDeleteError;
+      nextDeleteError = null;
+      throw err!;
+    }
+    categories.removeWhere((c) => c.categoryId == categoryId);
+  }
+
+  @override
+  Future<FiledMessagePage> listCategoryMessages(
+    String categoryId, {
+    String? cursor,
+    int limit = 20,
+  }) async {
+    calls.add(
+      FakeCall('GET', '/api/v1/categories/$categoryId/messages', {
+        'cursor': cursor,
+        'limit': limit,
+      }),
+    );
+    if (nextCategoryMessagesError != null) {
+      final err = nextCategoryMessagesError;
+      nextCategoryMessagesError = null;
+      throw err!;
+    }
+    if (categoryMessagePages.isNotEmpty) {
+      return categoryMessagePages.removeAt(0);
+    }
+    return const FiledMessagePage(
+      messages: [],
+      nextCursor: null,
+      mailboxErrors: [],
+    );
   }
 }
