@@ -64,6 +64,18 @@ impl GmailHttp {
             .await
     }
 
+    /// `POST` `path` with no body and decode the JSON response.
+    ///
+    /// Gmail's `messages.trash` and `messages.untrash` are body-less POSTs.
+    pub async fn post_json_empty<T: DeserializeOwned>(
+        &self,
+        mb: &MailboxCtx,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T, MailError> {
+        self.send(mb, HttpMethod::Post, path, query, None).await
+    }
+
     /// The clock, for HTTP-date `Retry-After` values.
     pub fn now(&self) -> time::OffsetDateTime {
         self.clock.now()

@@ -32,6 +32,7 @@ mod auth_results;
 mod client;
 mod errors;
 mod headers;
+mod modify;
 mod read;
 
 pub use client::GmailHttp;

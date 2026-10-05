@@ -581,8 +581,9 @@ async fn list_labels(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, GmailError> {
-    let st = st.0.lock().unwrap();
+    let mut st = st.0.lock().unwrap();
     let email = authed_email(&st, &headers)?;
+    record(&mut st, "GET", "labels.list", vec![]);
     let mb = st
         .mailboxes
         .get(&email)
@@ -642,7 +643,10 @@ async fn create_label(
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     record(&mut st, "POST", "labels.create", vec![]);
-    let race = st.label_create_race.contains(&email);
+    // The race switch fires once, simulating another client creating the same
+    // label between this client's list and its create: the label is made, the
+    // response is 409.
+    let race = st.label_create_race.remove(&email);
     let clash = st
         .mailboxes
         .get(&email)
@@ -650,7 +654,7 @@ async fn create_label(
         .labels
         .values()
         .any(|l| l.name.eq_ignore_ascii_case(&body.name));
-    if clash {
+    if race || clash {
         // The race: create the label anyway, then answer 409.
         if race {
             let id = st.next_user_label_id(&email);

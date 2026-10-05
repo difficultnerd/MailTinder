@@ -1,7 +1,8 @@
 //! The read half of [`MailProvider`] over the Gmail REST API.
 //!
 //! `list_inbox`, `get_meta`, `get_preview` and `inbox_count` are real; the
-//! write methods are stubs filled by T-403 and T-404.
+//! label-changing methods delegate to [`crate::modify`] (T-403) and
+//! `send_mailto` stays a stub until T-404.
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -38,6 +39,11 @@ pub struct GmailProvider {
 impl GmailProvider {
     pub fn new(http: GmailHttp) -> Self {
         Self { http }
+    }
+
+    /// The shared HTTP client; the `modify.rs` half uses it too.
+    pub(crate) fn http(&self) -> &GmailHttp {
+        &self.http
     }
 }
 
@@ -196,33 +202,33 @@ impl MailProvider for GmailProvider {
 
     async fn set_labels(
         &self,
-        _mb: &MailboxCtx,
-        _id: &MessageId,
-        _add: &LabelSet,
-        _remove: &LabelSet,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        add: &LabelSet,
+        remove: &LabelSet,
     ) -> Result<LabelSet, MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+        self.modify_labels(mb, id, add, remove).await
     }
 
-    async fn trash(&self, _mb: &MailboxCtx, _id: &MessageId) -> Result<LabelSet, MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+    async fn trash(&self, mb: &MailboxCtx, id: &MessageId) -> Result<LabelSet, MailError> {
+        self.trash_message(mb, id).await
     }
 
-    async fn report_spam(&self, _mb: &MailboxCtx, _id: &MessageId) -> Result<LabelSet, MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+    async fn report_spam(&self, mb: &MailboxCtx, id: &MessageId) -> Result<LabelSet, MailError> {
+        self.report_spam_message(mb, id).await
     }
 
     async fn restore_labels(
         &self,
-        _mb: &MailboxCtx,
-        _id: &MessageId,
-        _exact: &LabelSet,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        exact: &LabelSet,
     ) -> Result<(), MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+        self.restore_labels_exact(mb, id, exact).await
     }
 
-    async fn ensure_label(&self, _mb: &MailboxCtx, _name: &str) -> Result<String, MailError> {
-        Err(MailError::Invalid("not_implemented".to_owned()))
+    async fn ensure_label(&self, mb: &MailboxCtx, name: &str) -> Result<String, MailError> {
+        self.ensure_label_named(mb, name).await
     }
 
     async fn send_mailto(&self, _mb: &MailboxCtx, _to: &MailtoTarget) -> Result<(), MailError> {
