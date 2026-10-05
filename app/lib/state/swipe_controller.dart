@@ -7,6 +7,7 @@ import '../api/models/feed.dart';
 import '../api/models/swipe.dart';
 import '../copy.dart';
 import '../screens/feed/block_prompt.dart';
+import 'categories_cache.dart';
 import 'feed_model.dart';
 import 'id_generator.dart';
 
@@ -94,6 +95,7 @@ class SwipeController extends ChangeNotifier {
     DateTime Function()? now,
     FilingSheetLauncher? fileLauncher,
     BuildContext Function()? contextProvider,
+    CategoriesCache? categories,
     Duration retryBase = const Duration(seconds: 1),
   }) : _api = api,
        _feed = feed,
@@ -101,6 +103,7 @@ class SwipeController extends ChangeNotifier {
        _now = now ?? DateTime.now,
        _fileLauncher = fileLauncher ?? _defaultFileLauncher,
        _contextProvider = contextProvider,
+       _categories = categories,
        _retryBase = retryBase;
 
   final ApiClient _api;
@@ -109,6 +112,10 @@ class SwipeController extends ChangeNotifier {
   final DateTime Function() _now;
   final FilingSheetLauncher _fileLauncher;
   final BuildContext Function()? _contextProvider;
+
+  /// The category list, used to resolve a `409 category_exists` on a new name
+  /// (FL-02 AC1).
+  final CategoriesCache? _categories;
   final Duration _retryBase;
 
   final List<UndoEntry> _undoStack = [];
@@ -144,6 +151,36 @@ class SwipeController extends ChangeNotifier {
   Future<void> keep() => _swipe(SwipeKind.keep);
   Future<void> skip() => _swipe(SwipeKind.skip);
   Future<void> reject() => _swipe(SwipeKind.reject);
+
+  /// Files [card] under [choice]; used by the keep-learning prompt (FL-04 AC2).
+  Future<void> fileWith(FeedCard card, FilingChoice choice) async {
+    await _swipe(
+      SwipeKind.file,
+      card: card,
+      categoryId: choice.categoryId,
+      newCategoryName: choice.newCategoryName,
+    );
+  }
+
+  /// Accepts the keep-learning prompt: creates the filing rule for the card's
+  /// sender, then files this card too (FL-04 AC2). An error shows
+  /// [Copy.actionFailed] and nothing is filed.
+  Future<void> acceptKeepPrompt(FeedCard card) async {
+    final prompt = card.keepPrompt;
+    if (prompt == null) return;
+    try {
+      await _api.createFileRule(
+        mailboxId: card.mailboxId,
+        messageId: card.messageId,
+        categoryId: prompt.categoryId,
+      );
+    } on Object {
+      _toast = const ToastMessage(text: Copy.actionFailed, showUndo: false);
+      _notify();
+      return;
+    }
+    await fileWith(card, FilingChoice(categoryId: prompt.categoryId));
+  }
 
   Future<void> file(BuildContext context) async {
     if (!enabled) return;
@@ -208,18 +245,12 @@ class SwipeController extends ChangeNotifier {
     String? categoryId,
     String? newCategoryName,
   ) async {
-    final req = SwipeRequest(
-      mailboxId: entry.card.mailboxId,
-      messageId: entry.card.messageId,
-      classificationToken: entry.card.classificationToken,
-      kind: entry.kind,
-      categoryId: categoryId,
-      newCategoryName: newCategoryName,
-    );
-
     SwipeResult result;
     try {
-      result = await _sendWithRetry(req, entry.key);
+      result = await _sendWithRetry(
+        _request(entry, categoryId, newCategoryName),
+        entry.key,
+      );
     } on ApiException catch (e) {
       if (e.code == 'message_changed') {
         // FD-04 AC1: card stays gone, silently.
@@ -230,8 +261,20 @@ class SwipeController extends ChangeNotifier {
         _notify();
         return;
       }
-      _fail(entry);
-      return;
+      if (e.code == 'category_exists' && newCategoryName != null) {
+        final retried = await _retryWithExistingCategory(
+          entry,
+          newCategoryName,
+        );
+        if (retried == null) {
+          _fail(entry);
+          return;
+        }
+        result = retried;
+      } else {
+        _fail(entry);
+        return;
+      }
     } on Object {
       _fail(entry);
       return;
@@ -247,6 +290,43 @@ class SwipeController extends ChangeNotifier {
     }
     _notify();
     await _handlePrompts(result.prompts);
+  }
+
+  SwipeRequest _request(
+    UndoEntry entry,
+    String? categoryId,
+    String? newCategoryName,
+  ) {
+    return SwipeRequest(
+      mailboxId: entry.card.mailboxId,
+      messageId: entry.card.messageId,
+      classificationToken: entry.card.classificationToken,
+      kind: entry.kind,
+      categoryId: categoryId,
+      newCategoryName: newCategoryName,
+    );
+  }
+
+  /// A `409 category_exists` on a new name means the category already exists:
+  /// reload the cache, find it and resend once with its id and a fresh
+  /// idempotency key (FL-02 AC1).
+  Future<SwipeResult?> _retryWithExistingCategory(
+    UndoEntry entry,
+    String name,
+  ) async {
+    final cache = _categories;
+    if (cache == null) return null;
+    await cache.reload();
+    final existing = cache.findByName(name);
+    if (existing == null) return null;
+    try {
+      return await _sendWithRetry(
+        _request(entry, existing.categoryId, null),
+        _ids.uuidV4(),
+      );
+    } on Object {
+      return null;
+    }
   }
 
   Future<SwipeResult> _sendWithRetry(SwipeRequest req, String key) async {

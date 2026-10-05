@@ -42,6 +42,14 @@ abstract class ApiClient {
   /// POST /api/v1/rules {kind: block_person, prompt_ref} (API-RULE-2).
   Future<void> createBlockRule(String promptRef);
 
+  /// POST /api/v1/rules {kind: "file", mailbox_id, message_id, category_id}
+  /// (API-RULE-2, FL-04 AC2).
+  Future<void> createFileRule({
+    required String mailboxId,
+    required String messageId,
+    required String categoryId,
+  });
+
   /// POST /api/v1/block-prompts/decline (API-RULE-5).
   Future<void> declineBlockPrompt(String promptRef);
 

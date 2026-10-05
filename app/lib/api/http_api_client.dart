@@ -141,6 +141,25 @@ class HttpApiClient implements ApiClient {
   }
 
   @override
+  Future<void> createFileRule({
+    required String mailboxId,
+    required String messageId,
+    required String categoryId,
+  }) async {
+    await send(
+      'POST',
+      'rules',
+      body: {
+        'kind': 'file',
+        'mailbox_id': mailboxId,
+        'message_id': messageId,
+        'category_id': categoryId,
+      },
+      expect: const {201},
+    );
+  }
+
+  @override
   Future<void> declineBlockPrompt(String promptRef) async {
     await send(
       'POST',
