@@ -6,6 +6,7 @@ import 'app.dart';
 import 'platform/browser.dart';
 import 'state/session_model.dart';
 import 'state/sign_in_model.dart';
+import 'state/step_up_controller.dart';
 
 void main() {
   final origin = Uri.base;
@@ -23,6 +24,11 @@ void main() {
   sessionModel = SessionModel(api: apiClient);
   final browser = const BrowserImpl();
   final signInModel = SignInModel(api: apiClient, browser: browser);
+  final stepUp = StepUpController(
+    api: apiClient,
+    session: sessionModel,
+    browser: browser,
+  );
 
   runApp(
     MailTinderApp(
@@ -30,6 +36,7 @@ void main() {
       api: apiClient,
       signInModel: signInModel,
       browser: browser,
+      stepUp: stepUp,
     ),
   );
 }

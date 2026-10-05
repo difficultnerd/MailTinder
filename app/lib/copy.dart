@@ -42,4 +42,16 @@ abstract final class Copy {
       'Request sent. You\'ll get an email if it\'s approved.';
   static const tooManyRequests = 'Too many requests. Try again later.';
   static const actionFailed = 'Couldn\'t do that. Try again.';
+  static const confirmItsYou = 'Confirm it\'s you';
+  static const stepUpExplainer = 'Google will ask you to sign in again.';
+  static const cancel = 'Cancel';
+  static const stepUpWrongAccount =
+      'That Google account isn\'t linked to your Mail Tinder account. '
+      'Nothing was changed.';
+  static const stepUpNotConfirmed = 'Not confirmed. Nothing was changed.';
+  static const stepUpConfirmedPopup = 'Confirmed. You can close this window.';
+  static const popupBlocked =
+      'Your browser blocked the sign-in window. Allow pop-ups for Mail '
+      'Tinder, then try again.';
+  static const close = 'Close';
 }

@@ -37,6 +37,19 @@ class _AuthResultScreenState extends State<AuthResultScreen> {
   }
 
   Future<void> _handle() async {
+    if (widget.browser.isPopupWindow) {
+      // Step-up popup (S9 section 1.1 step 7): never route; just show the
+      // outcome and, when confirmed, close after a beat.
+      if (widget.outcome == AuthOutcome.steppedUp) {
+        Future<void>.delayed(const Duration(seconds: 1), () {
+          if (mounted) {
+            widget.browser.closeWindow();
+          }
+        });
+      }
+      return;
+    }
+
     await widget.session.refresh();
     if (!mounted) {
       return;
@@ -78,11 +91,42 @@ class _AuthResultScreenState extends State<AuthResultScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.browser.isPopupWindow) {
+      return _buildPopupPage();
+    }
     return Scaffold(
       body: Center(
         child: Semantics(
           label: Copy.loading,
           child: const CircularProgressIndicator(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPopupPage() {
+    final (message, autoClose) = switch (widget.outcome) {
+      AuthOutcome.steppedUp => (Copy.stepUpConfirmedPopup, true),
+      AuthOutcome.stepUpWrongAccount => (Copy.stepUpWrongAccount, false),
+      _ => (Copy.stepUpNotConfirmed, false),
+    };
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, textAlign: TextAlign.center),
+              if (!autoClose) ...[
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () => widget.browser.closeWindow(),
+                  child: const Text(Copy.close),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

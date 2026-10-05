@@ -8,22 +8,28 @@ import 'routes.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/request_invite/request_invite_screen.dart';
 import 'screens/sign_in/sign_in_screen.dart';
+import 'screens/step_up/confirm_its_you_overlay.dart';
 import 'state/session_model.dart';
 import 'state/sign_in_model.dart';
+import 'state/step_up_controller.dart';
 
 class MailTinderApp extends StatefulWidget {
-  const MailTinderApp({
+  MailTinderApp({
     super.key,
     required this.session,
     required this.api,
     required this.signInModel,
     required this.browser,
-  });
+    StepUpController? stepUp,
+  }) : stepUp =
+           stepUp ??
+           StepUpController(api: api, session: session, browser: browser);
 
   final SessionModel session;
   final ApiClient api;
   final SignInModel signInModel;
   final Browser browser;
+  final StepUpController stepUp;
 
   @override
   State<MailTinderApp> createState() => _MailTinderAppState();
@@ -61,6 +67,10 @@ class _MailTinderAppState extends State<MailTinderApp> {
       title: Copy.productName,
       theme: ThemeData(fontFamily: 'Roboto'),
       navigatorKey: _navigatorKey,
+      builder: (context, child) => StepUpOverlayHost(
+        controller: widget.stepUp,
+        child: child ?? const SizedBox.shrink(),
+      ),
       onGenerateRoute: (settings) => onGenerateRoute(
         settings,
         widget.session,
