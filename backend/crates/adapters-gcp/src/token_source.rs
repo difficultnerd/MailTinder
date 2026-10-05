@@ -78,7 +78,7 @@ impl TokenSource for MetadataTokenSource {
             });
         let resp = self
             .http
-            // codeql[cpp/cleartext-transmission] — GCP metadata server is HTTP-only by design; fixed trusted endpoint, never user-influenced.
+            // codeql[rust/non-https-url] — GCP metadata server is HTTP-only by design; fixed trusted endpoint, never user-influenced.
             .get(&url)
             .header("Metadata-Flavor", "Google")
             .send()
