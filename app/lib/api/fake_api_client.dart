@@ -59,6 +59,14 @@ class FakeApiClient implements ApiClient {
   /// The promptRef passed to the last [declineBlockPrompt] call.
   String? lastDeclinedPromptRef;
 
+  /// When set, [createFileRule] throws it (and clears it).
+  Object? nextFileRuleError;
+
+  /// The arguments of the last [createFileRule] call.
+  String? lastFileRuleMailboxId;
+  String? lastFileRuleMessageId;
+  String? lastFileRuleCategoryId;
+
   /// Categories returned by [listCategories]. [renameCategory] and
   /// [deleteCategory] update this list.
   final List<Category> categories = [];
@@ -240,6 +248,30 @@ class FakeApiClient implements ApiClient {
     if (nextBlockRuleError != null) {
       final err = nextBlockRuleError;
       nextBlockRuleError = null;
+      throw err!;
+    }
+  }
+
+  @override
+  Future<void> createFileRule({
+    required String mailboxId,
+    required String messageId,
+    required String categoryId,
+  }) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/rules', {
+        'kind': 'file',
+        'mailbox_id': mailboxId,
+        'message_id': messageId,
+        'category_id': categoryId,
+      }),
+    );
+    lastFileRuleMailboxId = mailboxId;
+    lastFileRuleMessageId = messageId;
+    lastFileRuleCategoryId = categoryId;
+    if (nextFileRuleError != null) {
+      final err = nextFileRuleError;
+      nextFileRuleError = null;
       throw err!;
     }
   }

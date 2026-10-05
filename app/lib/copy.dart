@@ -95,6 +95,17 @@ abstract final class Copy {
   static const categoryNameRule =
       'Use 1 to 100 characters, not starting or ending with /.';
 
+  static const newCategory = 'New category';
+  static const other = 'Other';
+  static const dismiss = 'Dismiss';
+
+  /// {"File under $n"} (FL-03 AC1).
+  static String fileUnder(String name) => 'File under $name';
+
+  /// {"You always keep these. File under $n?"} (FL-04 AC1).
+  static String keepPrompt(String name) =>
+      'You always keep these. File under $name?';
+
   /// {"You already have a category called $n."}
   static String categoryExists(String name) =>
       'You already have a category called $name.';

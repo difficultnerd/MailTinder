@@ -2,18 +2,28 @@ import 'package:flutter/material.dart';
 
 import '../../api/models/feed.dart';
 import 'bulk_badge.dart';
+import 'keep_prompt.dart';
 
 /// One card in focus (FD-01 AC1). All mail strings render through plain
 /// [Text] widgets, never RichText/SelectableText/Html/Markdown, so hostile
 /// input is output-encoded (ASVS V1.1.2, V3.2.2).
 class CardView extends StatelessWidget {
-  const CardView({super.key, required this.card, required this.mailboxAddress});
+  const CardView({
+    super.key,
+    required this.card,
+    required this.mailboxAddress,
+    this.onFilePrompt,
+  });
 
   final FeedCard card;
 
   /// The mailbox's email address (FD-02 AC2); empty when the mailbox is not in
   /// the session so the badge is omitted.
   final String mailboxAddress;
+
+  /// Called when the keep-learning prompt's "File" is tapped (FL-04 AC2).
+  /// Null on cards that cannot act, where the prompt is not shown.
+  final Future<void> Function()? onFilePrompt;
 
   @override
   Widget build(BuildContext context) {
@@ -73,6 +83,8 @@ class CardView extends StatelessWidget {
                 ],
               ],
             ),
+            if (card.keepPrompt != null && onFilePrompt != null)
+              KeepPrompt(card: card, onFile: onFilePrompt!),
           ],
         ),
       ),

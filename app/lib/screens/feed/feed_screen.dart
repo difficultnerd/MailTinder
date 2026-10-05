@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
@@ -6,12 +8,14 @@ import '../../api/models/feed.dart';
 import '../../api/models/session.dart';
 import '../../copy.dart';
 import '../../platform/browser.dart';
+import '../../state/categories_cache.dart';
 import '../../state/feed_model.dart';
 import '../../state/id_generator.dart';
 import '../../state/session_model.dart';
 import '../../state/swipe_controller.dart';
 import 'card_view.dart';
 import 'divider_card.dart';
+import 'filing_sheet.dart';
 import 'swipe_buttons.dart';
 import 'swipeable_card.dart';
 
@@ -30,12 +34,17 @@ class FeedScreen extends StatefulWidget {
     this.session,
     this.api,
     this.browser,
+    this.categories,
   });
 
   final FeedModel? model;
   final SessionModel? session;
   final ApiClient? api;
   final Browser? browser;
+
+  /// The session's category cache; injected in tests. Built from [api] when
+  /// absent.
+  final CategoriesCache? categories;
 
   @override
   State<FeedScreen> createState() => _FeedScreenState();
@@ -50,11 +59,18 @@ class _FeedScreenState extends State<FeedScreen> {
     final model = widget.model;
     if (model != null) {
       model.open();
+      final categories = widget.categories ?? CategoriesCache(api: widget.api!);
+      // Load the category names in the background so the first up-swipe has
+      // them (FL-01 AC3).
+      unawaited(categories.ensureLoaded());
       _swipe = SwipeController(
         api: widget.api!,
         feed: model,
         ids: IdGenerator(),
         contextProvider: () => context,
+        categories: categories,
+        fileLauncher: (context, card) =>
+            showFilingSheet(context, card, cache: categories),
       )..addListener(_onSwipeChanged);
     }
   }
@@ -273,6 +289,7 @@ class _FeedScreenState extends State<FeedScreen> {
         child: CardView(
           card: current.card,
           mailboxAddress: _mailboxAddress(session, current.card.mailboxId),
+          onFilePrompt: () => swipe.acceptKeepPrompt(current.card),
         ),
       );
     }
