@@ -1,3 +1,4 @@
+import 'models/auth.dart';
 import 'models/session.dart';
 
 abstract class ApiClient {
@@ -6,6 +7,16 @@ abstract class ApiClient {
 
   /// POST /api/v1/auth/sign-out -> 204.
   Future<void> signOut();
+
+  /// POST /api/v1/auth/google/start. Returns the authorization_url.
+  Future<Uri> startAuth({
+    required AuthIntent intent,
+    String? inviteToken,
+    String? mailboxId,
+  });
+
+  /// POST /api/v1/invite-requests with body {} (expects 202).
+  Future<void> createInviteRequest();
 }
 
 class ApiException implements Exception {

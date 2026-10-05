@@ -2,6 +2,8 @@ abstract final class Copy {
   static const productName = 'Mail Tinder';
   static const productDescription =
       'Triage your email like a dating app. Swipe through lists, newsletters and receipts in seconds.';
+  static const tagline =
+      'Swipe through your inbox and clear the mail you don\'t want.';
   static const tabFeed = 'Feed';
   static const tabFiled = 'Filed';
   static const tabNeedsAttention = 'Needs Attention';
@@ -12,4 +14,32 @@ abstract final class Copy {
   static const tryAgain = 'Try again';
   static const continueWithGoogle = 'Continue with Google';
   static const requestAnInvite = 'Request an invite';
+  static const requestInvite = 'Request an invite';
+  static const privacyNotice = 'Privacy notice';
+  static const scopesExplainer =
+      'Google will ask you to let Mail Tinder read and organise your Gmail, '
+      'send unsubscribe emails for you, and keep its own settings file in your '
+      'Google Drive.';
+  static const invited =
+      'You\'ve been invited. Continue with the Google account the invite was '
+      'sent to.';
+  static const inviteInvalid =
+      'This invite link no longer works. Ask for a new invite.';
+  static const emailMismatch =
+      'This account isn\'t the one you were invited with. Try the invited '
+      'account, or ask for a new invite.';
+  static const emailUnverified =
+      'We couldn\'t confirm this account\'s email address. Try another account.';
+  static const notRegistered =
+      'There\'s no Mail Tinder account for this Google account. Use your '
+      'invite link, or request an invite.';
+  static const signInFailed = 'Sign-in didn\'t finish. Try again.';
+  static const inviteOnlyExplainer =
+      'Mail Tinder is invite only. Send a request and you\'ll hear back by '
+      'email if it\'s approved.';
+  static const useDifferentAccount = 'Use a different account';
+  static const requestSent =
+      'Request sent. You\'ll get an email if it\'s approved.';
+  static const tooManyRequests = 'Too many requests. Try again later.';
+  static const actionFailed = 'Couldn\'t do that. Try again.';
 }

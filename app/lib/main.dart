@@ -3,7 +3,9 @@ import 'package:http/http.dart' as http;
 
 import 'api/http_api_client.dart';
 import 'app.dart';
+import 'platform/browser.dart';
 import 'state/session_model.dart';
+import 'state/sign_in_model.dart';
 
 void main() {
   final origin = Uri.base;
@@ -19,6 +21,15 @@ void main() {
   );
 
   sessionModel = SessionModel(api: apiClient);
+  final browser = const BrowserImpl();
+  final signInModel = SignInModel(api: apiClient, browser: browser);
 
-  runApp(MailTinderApp(session: sessionModel, api: apiClient));
+  runApp(
+    MailTinderApp(
+      session: sessionModel,
+      api: apiClient,
+      signInModel: signInModel,
+      browser: browser,
+    ),
+  );
 }

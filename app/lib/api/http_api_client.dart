@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
+import 'models/auth.dart';
 import 'models/session.dart';
 
 typedef UnauthenticatedHandler = void Function();
@@ -45,6 +46,33 @@ class HttpApiClient implements ApiClient {
   @override
   Future<void> signOut() async {
     await send('POST', 'auth/sign-out', expect: const {204});
+  }
+
+  @override
+  Future<Uri> startAuth({
+    required AuthIntent intent,
+    String? inviteToken,
+    String? mailboxId,
+  }) async {
+    final data = await send(
+      'POST',
+      'auth/google/start',
+      body: {
+        'intent': intent.wire,
+        'invite_token': inviteToken,
+        'mailbox_id': mailboxId,
+      },
+    );
+    final raw = data?['authorization_url'] as String?;
+    if (raw == null) {
+      throw const NetworkException();
+    }
+    return Uri.parse(raw);
+  }
+
+  @override
+  Future<void> createInviteRequest() async {
+    await send('POST', 'invite-requests', body: const {}, expect: const {202});
   }
 
   /// Shared plumbing for every endpoint added by later tasks.
