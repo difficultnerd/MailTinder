@@ -33,6 +33,7 @@ mod client;
 mod drive;
 mod errors;
 mod headers;
+mod list_unsubscribe;
 mod modify;
 mod read;
 mod send;

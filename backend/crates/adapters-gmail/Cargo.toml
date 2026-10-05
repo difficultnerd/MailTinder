@@ -20,6 +20,7 @@ thiserror.workspace = true
 futures = "0.3"
 mailparse = "0.15"
 rfc2047-decoder = "1"
+psl = "2"
 
 [dev-dependencies]
 testkit.workspace = true
