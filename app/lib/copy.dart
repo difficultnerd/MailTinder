@@ -1,3 +1,5 @@
+import 'state/swipe_controller.dart';
+
 abstract final class Copy {
   static const productName = 'Mail Tinder';
   static const productDescription =
@@ -63,6 +65,29 @@ abstract final class Copy {
   static const allNeedSignIn = 'Sign in again to see your mail.';
   static const loadingCards = 'Loading cards';
 
+  static const kept = 'Kept.';
+  static const skipped = "Skipped. It'll come back later.";
+  static const trashed = 'Trashed.';
+  static const trashedUnsubscribeManual =
+      'Trashed. The unsubscribe link is in Needs Attention.';
+  static const trashedListNoUnsubscribe =
+      'Trashed. Future mail from this sender will be trashed too.';
+  static const reportedSpam = 'Reported as spam and trashed.';
+  static const restored = 'Restored.';
+  static const restoredAlreadySent =
+      "Restored. The unsubscribe request had already been sent.";
+  static const restoredSpam =
+      "Restored. The spam report itself can't be recalled.";
+  static const cannotUndo = "Can't undo that any more.";
+  static const block = 'Block';
+  static const notNow = 'Not now';
+  static const blocked = 'Blocked.';
+  static const keepButton = 'Keep';
+  static const rejectButton = 'Reject';
+  static const fileButton = 'File';
+  static const skipButton = 'Skip';
+  static const undoButton = 'Undo';
+
   /// {"Can't reach $a. Sign in again"}
   static String mailboxNeedsSignIn(String address) =>
       "Can't reach $address. Sign in again";
@@ -81,4 +106,22 @@ abstract final class Copy {
   /// reason."
   static String bulkBadgeSemantics(int score) =>
       'Bulk score $score out of 100. Tap for the reason.';
+
+  /// {"Trashed. Unsubscribing in $d."} where $d is the delay in minutes,
+  /// at least 1, "1 minute" singular. Minutes are rounded up (ceil) so a
+  /// 4:59 remaining delay reads "5 minutes" (S9).
+  static String trashedUnsubscribing(Duration delay) {
+    final minutes = (delay.inSeconds / 60).ceil();
+    final m = minutes < 1 ? 1 : minutes;
+    final unit = m == 1 ? 'minute' : 'minutes';
+    return 'Trashed. Unsubscribing in $m $unit.';
+  }
+
+  /// {"Filed under $name."}
+  static String filed(String name) => 'Filed under $name.';
+
+  /// {"You've rejected $n 3 times. Block them?"} (3 from
+  /// `kPersonalBlockThreshold`).
+  static String blockQuestion(String name) =>
+      "You've rejected $name $kPersonalBlockThreshold times. Block them?";
 }

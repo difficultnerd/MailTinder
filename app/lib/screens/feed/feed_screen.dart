@@ -7,12 +7,17 @@ import '../../api/models/session.dart';
 import '../../copy.dart';
 import '../../platform/browser.dart';
 import '../../state/feed_model.dart';
+import '../../state/id_generator.dart';
 import '../../state/session_model.dart';
+import '../../state/swipe_controller.dart';
 import 'card_view.dart';
 import 'divider_card.dart';
+import 'swipe_buttons.dart';
+import 'swipeable_card.dart';
 
 /// The Feed tab (S9 section 3): one card in focus with the next behind it,
-/// plus every non-swipe Feed state. Swipes arrive in T-1002b.
+/// swipe gestures and buttons, the toast with Undo, and every non-swipe Feed
+/// state.
 ///
 /// [model] powers the state. [session], [api] and [browser] let the banner and
 /// full-screen "Sign in again" actions start a reconnect. When [model] is
@@ -37,10 +42,48 @@ class FeedScreen extends StatefulWidget {
 }
 
 class _FeedScreenState extends State<FeedScreen> {
+  SwipeController? _swipe;
+
   @override
   void initState() {
     super.initState();
-    widget.model?.open();
+    final model = widget.model;
+    if (model != null) {
+      model.open();
+      _swipe = SwipeController(
+        api: widget.api!,
+        feed: model,
+        ids: IdGenerator(),
+        contextProvider: () => context,
+      )..addListener(_onSwipeChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _swipe?.removeListener(_onSwipeChanged);
+    _swipe?.dispose();
+    super.dispose();
+  }
+
+  void _onSwipeChanged() {
+    final toast = _swipe?.toast;
+    final messenger = ScaffoldMessenger.of(context);
+    if (toast == null) {
+      // e.g. a `409 message_changed` drops the card silently (FD-04).
+      messenger.removeCurrentSnackBar();
+      return;
+    }
+    messenger.removeCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(toast.text),
+        duration: const Duration(seconds: 4),
+        action: toast.showUndo
+            ? SnackBarAction(label: Copy.undoButton, onPressed: _swipe!.undo)
+            : null,
+      ),
+    );
   }
 
   String _mailboxAddress(SessionModel session, String mailboxId) {
@@ -127,6 +170,11 @@ class _FeedScreenState extends State<FeedScreen> {
     ApiClient api,
     Browser browser,
   ) {
+    // Offline with nothing loaded yet: show the Feed layout so the offline
+    // banner and the (disabled) swipe buttons are both on screen (S9).
+    if (m.offline && m.status == FeedStatus.loading) {
+      return _buildReady(context, m, session);
+    }
     return switch (m.status) {
       FeedStatus.loading => Center(
         child: Semantics(
@@ -144,6 +192,7 @@ class _FeedScreenState extends State<FeedScreen> {
   Widget _buildReady(BuildContext context, FeedModel m, SessionModel session) {
     final current = m.current;
     final next = m.next;
+    final swipe = _swipe!;
     return LayoutBuilder(
       builder: (context, constraints) {
         return RefreshIndicator(
@@ -154,13 +203,28 @@ class _FeedScreenState extends State<FeedScreen> {
               height: constraints.maxHeight,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-                child: Stack(
+                child: Column(
                   children: [
-                    if (next is CardItem)
-                      Positioned.fill(
-                        child: _backgroundCard(next.card, session),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          if (next is CardItem)
+                            Positioned.fill(
+                              child: _backgroundCard(next.card, session),
+                            ),
+                          Positioned.fill(
+                            child: _currentCard(
+                              context,
+                              current,
+                              session,
+                              swipe,
+                            ),
+                          ),
+                        ],
                       ),
-                    Positioned.fill(child: _currentCard(current, session)),
+                    ),
+                    const SizedBox(height: 16),
+                    SwipeButtons(controller: swipe),
                   ],
                 ),
               ),
@@ -194,11 +258,22 @@ class _FeedScreenState extends State<FeedScreen> {
     );
   }
 
-  Widget _currentCard(FeedItem? current, SessionModel session) {
+  Widget _currentCard(
+    BuildContext context,
+    FeedItem? current,
+    SessionModel session,
+    SwipeController swipe,
+  ) {
     if (current is CardItem) {
-      return CardView(
-        card: current.card,
-        mailboxAddress: _mailboxAddress(session, current.card.mailboxId),
+      return SwipeableCard(
+        onKeep: swipe.keep,
+        onReject: swipe.reject,
+        onFile: () => swipe.file(context),
+        onSkip: swipe.skip,
+        child: CardView(
+          card: current.card,
+          mailboxAddress: _mailboxAddress(session, current.card.mailboxId),
+        ),
       );
     }
     if (current is DividerItem) {

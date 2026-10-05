@@ -5,6 +5,7 @@ import 'api_client.dart';
 import 'models/auth.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
+import 'models/swipe.dart';
 
 typedef UnauthenticatedHandler = void Function();
 
@@ -91,6 +92,56 @@ class HttpApiClient implements ApiClient {
       throw const NetworkException();
     }
     return FeedPage.fromJson(data);
+  }
+
+  @override
+  Future<SwipeResult> swipe(
+    SwipeRequest req, {
+    required String idempotencyKey,
+  }) async {
+    final data = await send(
+      'POST',
+      'swipes',
+      body: req.toJson(),
+      idempotencyKey: idempotencyKey,
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return SwipeResult.fromJson(data);
+  }
+
+  @override
+  Future<UndoResult> undo(String undoToken) async {
+    final data = await send(
+      'POST',
+      'swipes/undo',
+      body: {'undo_token': undoToken},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return UndoResult.fromJson(data);
+  }
+
+  @override
+  Future<void> createBlockRule(String promptRef) async {
+    await send(
+      'POST',
+      'rules',
+      body: {'kind': 'block_person', 'prompt_ref': promptRef},
+      expect: const {201},
+    );
+  }
+
+  @override
+  Future<void> declineBlockPrompt(String promptRef) async {
+    await send(
+      'POST',
+      'block-prompts/decline',
+      body: {'prompt_ref': promptRef},
+      expect: const {204},
+    );
   }
 
   /// Shared plumbing for every endpoint added by later tasks.

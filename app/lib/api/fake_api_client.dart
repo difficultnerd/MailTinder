@@ -4,6 +4,7 @@ import 'api_client.dart';
 import 'models/auth.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
+import 'models/swipe.dart';
 
 class FakeCall {
   FakeCall(this.method, this.path, [this.body]);
@@ -27,6 +28,35 @@ class FakeApiClient implements ApiClient {
   /// When set, [feedNext] awaits it first: lets a test hold the Feed in a
   /// `loading` state or sequence requests.
   Completer<void>? feedGate;
+
+  /// Results returned by [swipe], consumed in order. When empty, [swipe]
+  /// returns a default `kept` result.
+  final List<SwipeResult> swipeResults = [];
+
+  /// When set, [swipe] throws it (and clears it) before returning.
+  Object? nextSwipeError;
+
+  /// When set, [swipe] awaits it first: lets a test hold a swipe in flight.
+  Completer<void>? swipeGate;
+
+  /// Results returned by [undo], consumed in order. When empty, [undo]
+  /// returns a default restored result.
+  final List<UndoResult> undoResults = [];
+
+  /// When set, [undo] throws it (and clears it) before returning.
+  Object? nextUndoError;
+
+  /// When set, [createBlockRule] throws it (and clears it).
+  Object? nextBlockRuleError;
+
+  /// When set, [declineBlockPrompt] throws it (and clears it).
+  Object? nextDeclineError;
+
+  /// The promptRef passed to the last [createBlockRule] call.
+  String? lastBlockedPromptRef;
+
+  /// The promptRef passed to the last [declineBlockPrompt] call.
+  String? lastDeclinedPromptRef;
 
   @override
   Future<Session> getSession() async {
@@ -116,5 +146,84 @@ class FakeApiClient implements ApiClient {
       );
     }
     return feedPages.removeAt(0);
+  }
+
+  @override
+  Future<SwipeResult> swipe(
+    SwipeRequest req, {
+    required String idempotencyKey,
+  }) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/swipes', {
+        ...req.toJson(),
+        'idempotency_key': idempotencyKey,
+      }),
+    );
+    final gate = swipeGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    if (nextSwipeError != null) {
+      final err = nextSwipeError;
+      nextSwipeError = null;
+      throw err!;
+    }
+    if (swipeResults.isNotEmpty) {
+      return swipeResults.removeAt(0);
+    }
+    return const SwipeResult(
+      outcome: 'kept',
+      undoToken: 'undo-1',
+      prompts: [],
+      achievementsUnlocked: [],
+      bossDefeated: false,
+    );
+  }
+
+  @override
+  Future<UndoResult> undo(String undoToken) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/swipes/undo', {'undo_token': undoToken}),
+    );
+    if (nextUndoError != null) {
+      final err = nextUndoError;
+      nextUndoError = null;
+      throw err!;
+    }
+    if (undoResults.isNotEmpty) {
+      return undoResults.removeAt(0);
+    }
+    return const UndoResult(restored: true, unsubscribeAlreadySent: false);
+  }
+
+  @override
+  Future<void> createBlockRule(String promptRef) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/rules', {
+        'kind': 'block_person',
+        'prompt_ref': promptRef,
+      }),
+    );
+    lastBlockedPromptRef = promptRef;
+    if (nextBlockRuleError != null) {
+      final err = nextBlockRuleError;
+      nextBlockRuleError = null;
+      throw err!;
+    }
+  }
+
+  @override
+  Future<void> declineBlockPrompt(String promptRef) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/block-prompts/decline', {
+        'prompt_ref': promptRef,
+      }),
+    );
+    lastDeclinedPromptRef = promptRef;
+    if (nextDeclineError != null) {
+      final err = nextDeclineError;
+      nextDeclineError = null;
+      throw err!;
+    }
   }
 }

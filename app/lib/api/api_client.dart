@@ -1,6 +1,7 @@
 import 'models/auth.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
+import 'models/swipe.dart';
 
 abstract class ApiClient {
   /// GET /api/v1/session. Never 401 (S7 5.2); creates a pre_auth session when none exists.
@@ -25,6 +26,18 @@ abstract class ApiClient {
     int limit = 20,
     bool refresh = false,
   });
+
+  /// POST /api/v1/swipes (API-SW-1). [idempotencyKey] is reused on retry.
+  Future<SwipeResult> swipe(SwipeRequest req, {required String idempotencyKey});
+
+  /// POST /api/v1/swipes/undo (API-SW-2).
+  Future<UndoResult> undo(String undoToken);
+
+  /// POST /api/v1/rules {kind: block_person, prompt_ref} (API-RULE-2).
+  Future<void> createBlockRule(String promptRef);
+
+  /// POST /api/v1/block-prompts/decline (API-RULE-5).
+  Future<void> declineBlockPrompt(String promptRef);
 }
 
 class ApiException implements Exception {
