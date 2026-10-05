@@ -13,13 +13,18 @@ use fake_google::{
 };
 use time::OffsetDateTime;
 
-const T0: OffsetDateTime = time::macros::datetime!(2026-10-05 00:00 UTC);
+/// The fake's injected virtual clock start. Kept relative to "now" so the
+/// minted tokens (`exp = t0() + offset`) stay valid against jsonwebtoken's real
+/// wall-clock validation regardless of when the suite runs.
+fn t0() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
+}
 const CLIENT_ID: &str = "fake-client.apps.example.test";
 const CLIENT_SECRET: &str = "fake-secret";
 const REDIRECT: &str = "http://127.0.0.1:9999/callback";
 
 async fn start() -> FakeGoogleHandle {
-    let clock = Arc::new(testkit::clock::VirtualClock::new(T0));
+    let clock = Arc::new(testkit::clock::VirtualClock::new(t0()));
     FakeGoogle::start(clock).await.expect("start")
 }
 
@@ -141,7 +146,7 @@ async fn fake_oidc_happy_path_code_pkce_id_token_validates() {
         .as_slice(),
     )
     .unwrap();
-    let decoded = verify_id_token(&id_token, keys, T0.unix_timestamp());
+    let decoded = verify_id_token(&id_token, keys, t0().unix_timestamp());
     let claims = decoded.claims;
     assert_eq!(claims["iss"], ISSUER);
     assert_eq!(claims["aud"], CLIENT_ID);
@@ -299,7 +304,7 @@ async fn fake_oidc_each_token_scenario_produces_its_defect() {
     h.token_scenario(TokenScenario::Expired);
     let (_, id) = happy_path(&h).await;
     let claims = decode_id_token(&id);
-    assert!(claims["exp"].as_i64().unwrap() <= T0.unix_timestamp() - 60);
+    assert!(claims["exp"].as_i64().unwrap() <= t0().unix_timestamp() - 60);
 
     // NotYetValid
     let h = start().await;
@@ -307,7 +312,7 @@ async fn fake_oidc_each_token_scenario_produces_its_defect() {
     h.token_scenario(TokenScenario::NotYetValid);
     let (_, id) = happy_path(&h).await;
     let claims = decode_id_token(&id);
-    assert_eq!(claims["nbf"].as_i64().unwrap(), T0.unix_timestamp() + 600);
+    assert_eq!(claims["nbf"].as_i64().unwrap(), t0().unix_timestamp() + 600);
 
     // MissingNonce
     let h = start().await;
@@ -587,7 +592,7 @@ async fn fake_oidc_auth_time_present_with_prompt_login() {
     let id_token = body["id_token"].as_str().unwrap().to_owned();
     let claims = decode_id_token(&id_token);
     let auth_time = claims["auth_time"].as_i64().unwrap();
-    assert_eq!(auth_time, T0.unix_timestamp() - 120);
+    assert_eq!(auth_time, t0().unix_timestamp() - 120);
 }
 
 #[tokio::test]
@@ -614,13 +619,13 @@ async fn fake_oidc_service_token_verifies_against_jwks() {
 
 #[tokio::test]
 async fn fake_oidc_times_follow_injected_clock() {
-    // The fake uses the injected virtual clock (fixed at T0) for all times.
+    // The fake uses the injected virtual clock (fixed at t0()) for all times.
     let h = start().await;
     register(&h);
     let (_, id_token) = happy_path(&h).await;
     let claims = decode_id_token(&id_token);
     let iat = claims["iat"].as_i64().unwrap();
     let exp = claims["exp"].as_i64().unwrap();
-    assert_eq!(iat, T0.unix_timestamp());
+    assert_eq!(iat, t0().unix_timestamp());
     assert_eq!(exp - iat, 3600);
 }

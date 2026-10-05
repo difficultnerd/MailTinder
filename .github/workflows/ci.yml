@@ -27,9 +27,21 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: backend
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          install_components: cloud-firestore-emulator,beta
+      - run: ../scripts/firestore-emulator.sh
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo test --all-features --locked
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
 
   dart:
     runs-on: ubuntu-latest
@@ -74,12 +86,24 @@ jobs:
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-llvm-cov
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          install_components: cloud-firestore-emulator,beta
+      - run: ../scripts/firestore-emulator.sh
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: stable
           cache: true
       - run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
         working-directory: backend
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
       - run: flutter pub get && flutter test --coverage
         working-directory: app
       - run: python3 -m unittest discover -s tools -p 'test_check_coverage_floors.py'

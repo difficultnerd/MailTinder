@@ -9,9 +9,26 @@ publish.workspace = true
 [dependencies]
 domain.workspace = true
 ports.workspace = true
+obs.workspace = true
 time.workspace = true
 uuid.workspace = true
 getrandom.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+url.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[features]
+firestore-emulator = []
+
+[dev-dependencies]
+testkit.workspace = true
+proptest.workspace = true
+axum.workspace = true
 
 [lints]
 workspace = true

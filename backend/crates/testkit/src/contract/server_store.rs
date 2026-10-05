@@ -239,16 +239,20 @@ where
             return Err("version mismatch".into());
         }
         // A put with the current version succeeds and changes the version.
+        // (The record must differ, or Firestore — which only bumps updateTime
+        // on a content change — would return the same version.)
+        let mut u2 = u.clone();
+        u2.is_admin = true;
         let v2 = s
             .users()
-            .put(&u, Precondition::Matches(v1.clone()))
+            .put(&u2, Precondition::Matches(v1.clone()))
             .await
             .map_err(|e| format!("current Matches: {e:?}"))?;
         if v2 == got.version {
             return Err("version did not change".into());
         }
         // A put with the now-stale version fails.
-        if s.users().put(&u, Precondition::Matches(v1)).await.is_ok() {
+        if s.users().put(&u2, Precondition::Matches(v1)).await.is_ok() {
             return Err("stale Matches should fail".into());
         }
     }
