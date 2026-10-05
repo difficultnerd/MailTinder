@@ -156,7 +156,10 @@ class StepUpController extends ChangeNotifier {
       if (_status != StepUpStatus.redirecting) {
         return; // cancelled while the request was in flight
       }
-      final target = safeNavigationTarget(url.toString(), allowLoopbackHttp: false);
+      final target = safeNavigationTarget(
+        url.toString(),
+        allowLoopbackHttp: false,
+      );
       if (target == null) {
         _completeStepUp(false);
         return;
@@ -177,7 +180,8 @@ class StepUpController extends ChangeNotifier {
     final stepUp = _session.session?.stepUpValidUntil;
     final now = _now();
     final baseline = _baseline;
-    final confirmed = stepUp != null &&
+    final confirmed =
+        stepUp != null &&
         stepUp.isAfter(now) &&
         (baseline == null || stepUp.isAfter(baseline));
     if (confirmed) {

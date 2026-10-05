@@ -1,10 +1,8 @@
 import 'package:app/api/api_client.dart';
 import 'package:app/api/fake_api_client.dart';
-import 'package:app/api/models/auth.dart';
 import 'package:app/api/models/session.dart';
 import 'package:app/app.dart';
 import 'package:app/copy.dart';
-import 'package:app/platform/browser.dart';
 import 'package:app/screens/sign_in/auth_result_screen.dart';
 import 'package:app/state/session_model.dart';
 import 'package:app/state/sign_in_model.dart';
@@ -20,11 +18,8 @@ void main() {
     user: SessionUser(userId: 'u1', isAdmin: false),
   );
 
-  ApiException stepUpRequired() => ApiException(
-    status: 403,
-    code: 'step_up_required',
-    requestId: 'r1',
-  );
+  ApiException stepUpRequired() =>
+      ApiException(status: 403, code: 'step_up_required', requestId: 'r1');
 
   Widget buildApp(
     FakeApiClient fakeApi, {
@@ -72,7 +67,10 @@ void main() {
         fakeApi.nextError = stepUpRequired();
         final future = controller.run(
           waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
+          action: () async {
+            await fakeApi.signOut();
+            return 'ok';
+          },
         );
         await tester.pumpAndSettle();
 
@@ -99,13 +97,18 @@ void main() {
           session: SessionModel(api: fakeApi),
           browser: browser,
         );
-        await tester.pumpWidget(buildApp(fakeApi, browser: browser, stepUp: controller));
+        await tester.pumpWidget(
+          buildApp(fakeApi, browser: browser, stepUp: controller),
+        );
         await tester.pumpAndSettle();
 
         fakeApi.nextError = stepUpRequired();
         final future = controller.run(
           waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
+          action: () async {
+            await fakeApi.signOut();
+            return 'ok';
+          },
         );
         await tester.pumpAndSettle();
 
@@ -138,7 +141,9 @@ void main() {
           session: SessionModel(api: fakeApi),
           browser: browser,
         );
-        await tester.pumpWidget(buildApp(fakeApi, browser: browser, stepUp: controller));
+        await tester.pumpWidget(
+          buildApp(fakeApi, browser: browser, stepUp: controller),
+        );
         await tester.pumpAndSettle();
 
         var actionCalls = 0;
@@ -160,7 +165,7 @@ void main() {
         // Fake session flips stepUpValidUntil to a fresh value.
         fakeApi.session = Session(
           state: SessionState.authenticated,
-          user: SessionUser(userId: 'u1', isAdmin: false),
+          user: const SessionUser(userId: 'u1', isAdmin: false),
           stepUpValidUntil: _afterNow(),
         );
         await tester.pump(const Duration(milliseconds: 50));
@@ -185,13 +190,13 @@ void main() {
           session: SessionModel(api: fakeApi),
           browser: browser,
         );
-        await tester.pumpWidget(buildApp(fakeApi, browser: browser, stepUp: controller));
+        await tester.pumpWidget(
+          buildApp(fakeApi, browser: browser, stepUp: controller),
+        );
         await tester.pumpAndSettle();
 
         final navigator = tester.state<NavigatorState>(find.byType(Navigator));
-        navigator.pushNamed(
-          '/auth/result?outcome=step_up_wrong_account',
-        );
+        navigator.pushNamed('/auth/result?outcome=step_up_wrong_account');
         await tester.pumpAndSettle();
 
         expect(find.text(Copy.stepUpWrongAccount), findsOneWidget);
@@ -216,7 +221,10 @@ void main() {
         fakeApi.nextError = stepUpRequired();
         final future = controller.run(
           waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
+          action: () async {
+            await fakeApi.signOut();
+            return 'ok';
+          },
         );
         await tester.pumpAndSettle();
         expect(find.text(Copy.confirmItsYou), findsOneWidget);
@@ -231,142 +239,153 @@ void main() {
       },
     );
 
-    testWidgets(
-      's9_step_up_timeout gives up after five minutes',
-      (tester) async {
-        var now = DateTime.utc(2026, 1, 1, 12, 0, 0);
-        final fakeApi = FakeApiClient();
-        fakeApi.session = authenticated;
-        final controller = StepUpController(
-          api: fakeApi,
-          session: SessionModel(api: fakeApi),
-          browser: FakeBrowser(),
-          now: () => now,
-          pollEvery: const Duration(seconds: 2),
-          giveUpAfter: const Duration(minutes: 5),
-        );
-        await tester.pumpWidget(buildApp(fakeApi, stepUp: controller));
-        await tester.pumpAndSettle();
-
-        fakeApi.nextError = stepUpRequired();
-        final future = controller.run(
-          waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.text(Copy.continueWithGoogle));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 50));
-
-        // Advance the fake clock past the deadline.
-        now = DateTime.utc(2026, 1, 1, 12, 6, 0);
-        await tester.pump(const Duration(seconds: 2));
-        await tester.pumpAndSettle();
-
-        final result = await future;
-        expect(result, isNull);
-        expect(controller.status, StepUpStatus.idle);
-        expect(find.text(Copy.stepUpNotConfirmed), findsOneWidget);
-      },
-    );
-
-    testWidgets(
-      's9_step_up_popup_blocked shows the pop-up message',
-      (tester) async {
-        final fakeApi = FakeApiClient();
-        fakeApi.session = authenticated;
-        final browser = FakeBrowser()..popupBlocked = true;
-        final controller = StepUpController(
-          api: fakeApi,
-          session: SessionModel(api: fakeApi),
-          browser: browser,
-        );
-        await tester.pumpWidget(buildApp(fakeApi, browser: browser, stepUp: controller));
-        await tester.pumpAndSettle();
-
-        fakeApi.nextError = stepUpRequired();
-        final future = controller.run(
-          waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.text(Copy.continueWithGoogle));
-        await tester.pumpAndSettle();
-
-        expect(controller.status, StepUpStatus.popupBlocked);
-        expect(find.text(Copy.popupBlocked), findsOneWidget);
-        // Button stays for a retry.
-        final button = tester.widget<ElevatedButton>(
-          find.byType(ElevatedButton),
-        );
-        expect(button.onPressed, isNotNull);
-
-        controller.cancel();
-        await tester.pumpAndSettle();
-        await future;
-      },
-    );
-
-    testWidgets(
-      'step-up start uses intent step_up and no invite token',
-      (tester) async {
-        final fakeApi = FakeApiClient();
-        fakeApi.session = authenticated;
-        final browser = FakeBrowser();
-        final controller = StepUpController(
-          api: fakeApi,
-          session: SessionModel(api: fakeApi),
-          browser: browser,
-        );
-        await tester.pumpWidget(buildApp(fakeApi, browser: browser, stepUp: controller));
-        await tester.pumpAndSettle();
-
-        fakeApi.nextError = stepUpRequired();
-        final future = controller.run(
-          waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
-        );
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.text(Copy.continueWithGoogle));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 50));
-
-        final startCall = fakeApi.calls.firstWhere(
-          (c) => c.path == '/api/v1/auth/google/start',
-        );
-        final body = startCall.body as Map<String, Object?>;
-        expect(body['intent'], equals('step_up'));
-        expect(body['invite_token'], isNull);
-
-        controller.cancel();
-        await tester.pumpAndSettle();
-        await future;
-      },
-    );
-
-    test('step-up runs the action directly when no step-up is needed', () async {
+    testWidgets('s9_step_up_timeout gives up after five minutes', (
+      tester,
+    ) async {
+      var now = DateTime.utc(2026, 1, 1, 12, 0, 0);
       final fakeApi = FakeApiClient();
       fakeApi.session = authenticated;
       final controller = StepUpController(
         api: fakeApi,
         session: SessionModel(api: fakeApi),
         browser: FakeBrowser(),
+        now: () => now,
+        pollEvery: const Duration(seconds: 2),
+        giveUpAfter: const Duration(minutes: 5),
       );
-      var calls = 0;
-      final result = await controller.run(
+      await tester.pumpWidget(buildApp(fakeApi, stepUp: controller));
+      await tester.pumpAndSettle();
+
+      fakeApi.nextError = stepUpRequired();
+      final future = controller.run(
         waitingActionLabel: 'to disconnect jane@example.com',
         action: () async {
-          calls++;
+          await fakeApi.signOut();
           return 'ok';
         },
       );
-      expect(result, 'ok');
-      expect(calls, 1);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text(Copy.continueWithGoogle));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // Advance the fake clock past the deadline.
+      now = DateTime.utc(2026, 1, 1, 12, 6, 0);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      final result = await future;
+      expect(result, isNull);
       expect(controller.status, StepUpStatus.idle);
+      expect(find.text(Copy.stepUpNotConfirmed), findsOneWidget);
     });
+
+    testWidgets('s9_step_up_popup_blocked shows the pop-up message', (
+      tester,
+    ) async {
+      final fakeApi = FakeApiClient();
+      fakeApi.session = authenticated;
+      final browser = FakeBrowser()..popupBlocked = true;
+      final controller = StepUpController(
+        api: fakeApi,
+        session: SessionModel(api: fakeApi),
+        browser: browser,
+      );
+      await tester.pumpWidget(
+        buildApp(fakeApi, browser: browser, stepUp: controller),
+      );
+      await tester.pumpAndSettle();
+
+      fakeApi.nextError = stepUpRequired();
+      final future = controller.run(
+        waitingActionLabel: 'to disconnect jane@example.com',
+        action: () async {
+          await fakeApi.signOut();
+          return 'ok';
+        },
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text(Copy.continueWithGoogle));
+      await tester.pumpAndSettle();
+
+      expect(controller.status, StepUpStatus.popupBlocked);
+      expect(find.text(Copy.popupBlocked), findsOneWidget);
+      // Button stays for a retry.
+      final button = tester.widget<ElevatedButton>(find.byType(ElevatedButton));
+      expect(button.onPressed, isNotNull);
+
+      controller.cancel();
+      await tester.pumpAndSettle();
+      await future;
+    });
+
+    testWidgets('step-up start uses intent step_up and no invite token', (
+      tester,
+    ) async {
+      final fakeApi = FakeApiClient();
+      fakeApi.session = authenticated;
+      final browser = FakeBrowser();
+      final controller = StepUpController(
+        api: fakeApi,
+        session: SessionModel(api: fakeApi),
+        browser: browser,
+      );
+      await tester.pumpWidget(
+        buildApp(fakeApi, browser: browser, stepUp: controller),
+      );
+      await tester.pumpAndSettle();
+
+      fakeApi.nextError = stepUpRequired();
+      final future = controller.run(
+        waitingActionLabel: 'to disconnect jane@example.com',
+        action: () async {
+          await fakeApi.signOut();
+          return 'ok';
+        },
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text(Copy.continueWithGoogle));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      final startCall = fakeApi.calls.firstWhere(
+        (c) => c.path == '/api/v1/auth/google/start',
+      );
+      final body = startCall.body as Map<String, Object?>;
+      expect(body['intent'], equals('step_up'));
+      expect(body['invite_token'], isNull);
+
+      controller.cancel();
+      await tester.pumpAndSettle();
+      await future;
+    });
+
+    test(
+      'step-up runs the action directly when no step-up is needed',
+      () async {
+        final fakeApi = FakeApiClient();
+        fakeApi.session = authenticated;
+        final controller = StepUpController(
+          api: fakeApi,
+          session: SessionModel(api: fakeApi),
+          browser: FakeBrowser(),
+        );
+        var calls = 0;
+        final result = await controller.run(
+          waitingActionLabel: 'to disconnect jane@example.com',
+          action: () async {
+            calls++;
+            return 'ok';
+          },
+        );
+        expect(result, 'ok');
+        expect(calls, 1);
+        expect(controller.status, StepUpStatus.idle);
+      },
+    );
 
     test('step-up does not loop when the retried action asks again', () async {
       final fakeApi = FakeApiClient();
@@ -396,7 +415,7 @@ void main() {
       // Confirm the step-up.
       fakeApi.session = Session(
         state: SessionState.authenticated,
-        user: SessionUser(userId: 'u1', isAdmin: false),
+        user: const SessionUser(userId: 'u1', isAdmin: false),
         stepUpValidUntil: _afterNow(),
       );
       final result = await future;
@@ -413,18 +432,27 @@ void main() {
         session: SessionModel(api: fakeApi),
         browser: FakeBrowser(),
       );
-      final other = ApiException(status: 500, code: 'server_error', requestId: 'r');
+      final other = ApiException(
+        status: 500,
+        code: 'server_error',
+        requestId: 'r',
+      );
       fakeApi.nextError = other;
       await expectLater(
         controller.run(
           waitingActionLabel: 'to disconnect jane@example.com',
-          action: () async { await fakeApi.signOut(); return 'ok'; },
+          action: () async {
+            await fakeApi.signOut();
+            return 'ok';
+          },
         ),
         throwsA(isA<ApiException>()),
       );
     });
 
-    testWidgets('XC-03 Confirm it\'s you controls are labelled', (tester) async {
+    testWidgets('XC-03 Confirm it\'s you controls are labelled', (
+      tester,
+    ) async {
       final fakeApi = FakeApiClient();
       fakeApi.session = authenticated;
       final controller = StepUpController(
@@ -438,13 +466,17 @@ void main() {
       fakeApi.nextError = stepUpRequired();
       final future = controller.run(
         waitingActionLabel: 'to disconnect jane@example.com',
-        action: () async { await fakeApi.signOut(); return 'ok'; },
+        action: () async {
+          await fakeApi.signOut();
+          return 'ok';
+        },
       );
       await tester.pumpAndSettle();
 
       expect(
         find.byWidgetPredicate(
-          (w) => w is Semantics && w.properties.label == Copy.continueWithGoogle,
+          (w) =>
+              w is Semantics && w.properties.label == Copy.continueWithGoogle,
         ),
         findsWidgets,
       );

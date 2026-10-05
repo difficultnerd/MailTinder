@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'api_client.dart';
 import 'models/auth.dart';
+import 'models/feed.dart';
 import 'models/session.dart';
 
 class FakeCall {
@@ -16,6 +19,14 @@ class FakeApiClient implements ApiClient {
   Object? nextError; // thrown (and cleared) by the next call when set
   Uri authUrl = Uri.parse('https://accounts.google.com/o/oauth2/auth');
   bool inviteRequestSucceeds = true;
+
+  /// Pages returned by [feedNext], consumed in order. When empty, [feedNext]
+  /// returns an empty page with no cursor.
+  final List<FeedPage> feedPages = [];
+
+  /// When set, [feedNext] awaits it first: lets a test hold the Feed in a
+  /// `loading` state or sequence requests.
+  Completer<void>? feedGate;
 
   @override
   Future<Session> getSession() async {
@@ -70,5 +81,40 @@ class FakeApiClient implements ApiClient {
     if (!inviteRequestSucceeds) {
       throw const NetworkException();
     }
+  }
+
+  @override
+  Future<FeedPage> feedNext({
+    String? cursor,
+    int limit = 20,
+    bool refresh = false,
+  }) async {
+    calls.add(
+      FakeCall('POST', '/api/v1/feed/next', {
+        'cursor': cursor,
+        'limit': limit,
+        'refresh': refresh,
+      }),
+    );
+    final gate = feedGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    if (nextError != null) {
+      final err = nextError;
+      nextError = null;
+      throw err!;
+    }
+    if (feedPages.isEmpty) {
+      return const FeedPage(
+        cards: [],
+        nextCursor: null,
+        phase: 'new',
+        phaseChanged: false,
+        mailboxErrors: [],
+        ruleActionsApplied: 0,
+      );
+    }
+    return feedPages.removeAt(0);
   }
 }

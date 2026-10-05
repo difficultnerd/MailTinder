@@ -9,7 +9,8 @@ abstract final class Copy {
   static const tabNeedsAttention = 'Needs Attention';
   static const tabSettings = 'Settings';
   static const genericError = 'Something went wrong. Try again.';
-  static const offline = "You're offline. Check your connection and try again.";
+  static const offline =
+      "You're offline. Swipes are paused until you're back online.";
   static const loading = 'Loading';
   static const tryAgain = 'Try again';
   static const continueWithGoogle = 'Continue with Google';
@@ -54,4 +55,30 @@ abstract final class Copy {
       'Your browser blocked the sign-in window. Allow pop-ups for Mail '
       'Tinder, then try again.';
   static const close = 'Close';
+  static const upToDate =
+      "You're up to date. Now working back through older mail.";
+  static const continueLabel = 'Continue';
+  static const nothingToTriage = 'Nothing to triage.';
+  static const signInAgain = 'Sign in again';
+  static const allNeedSignIn = 'Sign in again to see your mail.';
+  static const loadingCards = 'Loading cards';
+
+  /// {"Can't reach $a. Sign in again"}
+  static String mailboxNeedsSignIn(String address) =>
+      "Can't reach $address. Sign in again";
+
+  /// {"Can't reach $a right now. Pull down to try again."}
+  static String mailboxUnavailable(String address) =>
+      "Can't reach $address right now. Pull down to try again.";
+
+  /// {"Sign in again to $a"}
+  static String signInAgainTo(String address) => 'Sign in again to $address';
+
+  /// {"Bulk $s"}
+  static String bulkBadge(int score) => 'Bulk $score';
+
+  /// Semantics for the bulk badge: "Bulk score $s out of 100. Tap for the
+  /// reason."
+  static String bulkBadgeSemantics(int score) =>
+      'Bulk score $score out of 100. Tap for the reason.';
 }

@@ -1,4 +1,5 @@
 import 'models/auth.dart';
+import 'models/feed.dart';
 import 'models/session.dart';
 
 abstract class ApiClient {
@@ -17,6 +18,13 @@ abstract class ApiClient {
 
   /// POST /api/v1/invite-requests with body {} (expects 202).
   Future<void> createInviteRequest();
+
+  /// POST /api/v1/feed/next {cursor, limit, refresh}.
+  Future<FeedPage> feedNext({
+    String? cursor,
+    int limit = 20,
+    bool refresh = false,
+  });
 }
 
 class ApiException implements Exception {

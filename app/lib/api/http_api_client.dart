@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
 import 'models/auth.dart';
+import 'models/feed.dart';
 import 'models/session.dart';
 
 typedef UnauthenticatedHandler = void Function();
@@ -73,6 +74,23 @@ class HttpApiClient implements ApiClient {
   @override
   Future<void> createInviteRequest() async {
     await send('POST', 'invite-requests', body: const {}, expect: const {202});
+  }
+
+  @override
+  Future<FeedPage> feedNext({
+    String? cursor,
+    int limit = 20,
+    bool refresh = false,
+  }) async {
+    final data = await send(
+      'POST',
+      'feed/next',
+      body: {'cursor': cursor, 'limit': limit, 'refresh': refresh},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return FeedPage.fromJson(data);
   }
 
   /// Shared plumbing for every endpoint added by later tasks.

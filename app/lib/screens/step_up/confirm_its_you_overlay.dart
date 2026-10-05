@@ -51,9 +51,7 @@ class ConfirmItsYouOverlay extends StatelessWidget {
                 label: Copy.continueWithGoogle,
                 button: true,
                 child: ElevatedButton(
-                  onPressed: redirecting
-                      ? null
-                      : controller.continueWithGoogle,
+                  onPressed: redirecting ? null : controller.continueWithGoogle,
                   child: redirecting
                       ? const SizedBox(
                           width: 20,
