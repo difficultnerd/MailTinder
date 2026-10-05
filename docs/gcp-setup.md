@@ -81,6 +81,36 @@ screen verification + a test Gmail account):
 4. Store the Client ID + Secret in **Secret Manager** (the `api`/`unsub`
    service accounts are the accessors) and tell the agent the secret names.
 
+## CI (GitHub Actions): Firestore emulator auth — TRACKED, not yet fixed
+
+**Status:** Open. Not blocking the autonomous build (drivers gate on the local
+`ci-local.sh`; the failing `coverage` job sits on PR #4, not on pushes).
+Documented here so it is fixed deliberately during a keyboard session, not
+rediscovered.
+
+**Symptom:** the `coverage` job in `.github/workflows/ci.yml` fails at
+`gcloud emulators firestore start`. GitHub's bare runner has no gcloud
+credentials, so the emulator (needed by T-301's `firestore_contract.rs`
+suite) never comes up. The warning literally says to add a
+`google-github-actions/auth` step before `setup-gcloud`.
+
+**History:**
+- `scripts/firestore-emulator.sh` was first committed without the exec bit →
+  exit 126 "cannot execute." Fixed in commit `ef3ee1c` (chmod `100755`). So
+  the *script* now runs; only the gcloud-auth gap remains.
+
+**Two candidate fixes:**
+- **A. Service-account key (fast, dev-stage):** create a least-privilege
+  Firestore SA, upload its JSON as a GitHub secret `GOOGLE_CREDENTIALS`, add
+  a `google-github-actions/auth` step before `setup-gcloud` in the `coverage`
+  job. Stores a long-lived key — fine for now, not for production.
+- **B. Workload Identity Federation (production-grade, the goal):** GitHub
+  OIDC + a Workload Identity Pool; no long-lived keys. More setup; the
+  recommended end state per the user's DevSecOps goal.
+
+**Decision:** user is away (no keyboard). Plan is A now → B before production.
+Needs a human at a terminal to create the SA / pool + secret.
+
 ## Restore / re-provision
 
 If the VPS is rebuilt, re-run:
