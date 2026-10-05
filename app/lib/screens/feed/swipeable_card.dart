@@ -43,7 +43,7 @@ class SwipeableCard extends StatefulWidget {
   final FeedCard? card;
 
   @override
-  State<SwipeableCard> createState() => _SwipeableCardState();
+  State<SwipeableCard> createState() => SwipeableCardState();
 }
 
 /// Minimum drag distance (logical px) for a swipe to commit.
@@ -58,7 +58,7 @@ const Duration kFlyOffDuration = Duration(milliseconds: 250);
 /// How far a committed card travels as it flies off.
 const double kFlyOffDistance = kEffectFlyDistance;
 
-class _SwipeableCardState extends State<SwipeableCard>
+class SwipeableCardState extends State<SwipeableCard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _fly = AnimationController(
     vsync: this,
@@ -70,6 +70,18 @@ class _SwipeableCardState extends State<SwipeableCard>
   CardEffect _effect = CardEffect.flyRight;
   _Axis? _flyAxis;
   bool _flying = false;
+
+  @override
+  void didUpdateWidget(SwipeableCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A new card takes the slot: forget the previous card's fly-off.
+    if (oldWidget.card?.messageId != widget.card?.messageId) {
+      _fly.stop();
+      _flying = false;
+      _flyAxis = null;
+      _drag = Offset.zero;
+    }
+  }
 
   @override
   void dispose() {
@@ -110,6 +122,22 @@ class _SwipeableCardState extends State<SwipeableCard>
       return;
     }
 
+    _play(axis);
+  }
+
+  /// Runs the same effects and fly-off a drag would, for the Keep, Reject,
+  /// File and Skip buttons (GM-02 applies to every swipe however triggered).
+  void swipe(SwipeKind kind) {
+    if (_flying) return;
+    _play(switch (kind) {
+      SwipeKind.keep => _Axis.right,
+      SwipeKind.reject => _Axis.left,
+      SwipeKind.file => _Axis.up,
+      SwipeKind.skip => _Axis.down,
+    });
+  }
+
+  void _play(_Axis axis) {
     final kind = switch (axis) {
       _Axis.right => SwipeKind.keep,
       _Axis.left => SwipeKind.reject,

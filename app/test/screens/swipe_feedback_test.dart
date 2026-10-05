@@ -195,4 +195,44 @@ void main() {
     await tester.pump();
     expect(find.text(Copy.combo(kComboSwipes)), findsOneWidget);
   });
+
+  testWidgets('GM-02 AC1 a button reject animates and counts toward 100 '
+      'cleared', (tester) async {
+    final h = await _pump(tester, preCleared: kConfettiEvery - 1);
+    await tester.tap(find.byTooltip(Copy.rejectButton));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(_effect(CardEffect.flyLeft), findsOneWidget);
+    expect(h.feedback.confettiDue, isTrue);
+    await tester.pumpAndSettle();
+    expect(h.api.calls.where((c) => c.path == '/api/v1/swipes'), hasLength(1));
+  });
+
+  testWidgets('GM-02 AC2 a button keep plays its sound when Sounds is on', (
+    tester,
+  ) async {
+    final h = _H();
+    h.prefs.soundsOn = true;
+    await h.session.refresh();
+    h.api.feedPages.addAll([
+      pageOf([buildCard(messageId: 'm1')], nextCursor: 'c1'),
+      pageOf([buildCard(messageId: 'm2')], nextCursor: 'c1'),
+    ]);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: FeedScreen(
+            model: h.feed,
+            session: h.session,
+            api: h.api,
+            browser: h.browser,
+            feedback: h.feedback,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip(Copy.keepButton));
+    await tester.pumpAndSettle();
+    expect(h.sound.played, [SwipeSound.keep]);
+  });
 }

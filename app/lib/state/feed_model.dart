@@ -59,10 +59,38 @@ class FeedModel extends ChangeNotifier {
   bool _dividerShown = false;
 
   FeedStatus get status => _status;
-  FeedItem? get current => _queue.isEmpty ? null : _queue.first;
-  FeedItem? get next => _queue.length > 1 ? _queue[1] : null;
+  FeedItem? get current => _visibleAt(0);
+  FeedItem? get next => _visibleAt(1);
   List<MailboxError> get mailboxErrors => _mailboxErrors;
   bool get offline => _offline;
+
+  bool Function(FeedCard card)? _hidden;
+
+  /// Cards for which [hidden] returns true are skipped over when picking
+  /// [current] and [next] but keep their place in the queue; null shows
+  /// everything again (GM-07 AC2).
+  void setHiddenFilter(bool Function(FeedCard card)? hidden) {
+    _hidden = hidden;
+    notifyListeners();
+  }
+
+  bool _isHidden(FeedItem item) =>
+      item is CardItem && (_hidden?.call(item.card) ?? false);
+
+  int _visibleIndex(int skip) {
+    var seen = 0;
+    for (var i = 0; i < _queue.length; i++) {
+      if (_isHidden(_queue[i])) continue;
+      if (seen == skip) return i;
+      seen++;
+    }
+    return -1;
+  }
+
+  FeedItem? _visibleAt(int skip) {
+    final i = _visibleIndex(skip);
+    return i < 0 ? null : _queue[i];
+  }
 
   /// First open of the Feed tab: cursor null, refresh true.
   Future<void> open() => _loadInitial();
@@ -102,9 +130,10 @@ class FeedModel extends ChangeNotifier {
 
   /// Dismisses the up-to-date divider card.
   void dismissDivider() {
-    final first = _queue.isEmpty ? null : _queue.first;
+    final index = _visibleIndex(0);
+    final first = index < 0 ? null : _queue[index];
     if (first is DividerItem) {
-      _queue.removeAt(0);
+      _queue.removeAt(index);
       notifyListeners();
       loadMoreIfNeeded();
     }
@@ -112,10 +141,11 @@ class FeedModel extends ChangeNotifier {
 
   /// Removes and returns the current card (null for a divider).
   FeedCard? takeCurrent() {
-    if (_queue.isEmpty) return null;
-    final first = _queue.first;
+    final index = _visibleIndex(0);
+    if (index < 0) return null;
+    final first = _queue[index];
     if (first is! CardItem) return null;
-    _queue.removeAt(0);
+    _queue.removeAt(index);
     notifyListeners();
     loadMoreIfNeeded();
     return first.card;

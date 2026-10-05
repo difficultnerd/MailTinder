@@ -7,6 +7,7 @@ import '../../api/api_client.dart';
 import '../../api/models/auth.dart';
 import '../../api/models/feed.dart';
 import '../../api/models/session.dart';
+import '../../api/models/swipe.dart';
 import '../../copy.dart';
 import '../../platform/browser.dart';
 import '../../platform/haptics.dart';
@@ -21,6 +22,9 @@ import '../../state/round_tracker.dart';
 import '../../state/session_model.dart';
 import '../../state/swipe_controller.dart';
 import '../settings/app_scope.dart';
+import '../../state/blitz_model.dart';
+import 'blitz_bar.dart';
+import 'blitz_results_card.dart';
 import 'card_view.dart';
 import 'celebrations.dart';
 import 'effects.dart';
@@ -85,6 +89,8 @@ class _FeedScreenState extends State<FeedScreen> {
   ProgressModel? _progress;
   RoundTracker? _rounds;
   FeedbackModel? _feedback;
+  BlitzModel? _blitz;
+  final GlobalKey<SwipeableCardState> _cardKey = GlobalKey();
   final CelebrationQueue _celebrations = CelebrationQueue();
   StreamSubscription<SwipeEvent>? _eventsSub;
   FeedItem? _dividerMarked;
@@ -130,6 +136,7 @@ class _FeedScreenState extends State<FeedScreen> {
             showFilingSheet(context, card, cache: categories),
       )..addListener(_onSwipeChanged);
       _eventsSub = _swipe!.events.listen(_onSwipeEvent);
+      _blitz = BlitzModel(feed: model, swipes: _swipe!);
     }
   }
 
@@ -173,6 +180,7 @@ class _FeedScreenState extends State<FeedScreen> {
     if (widget.rounds == null) _rounds?.dispose();
     if (widget.feedback == null) _feedback?.dispose();
     _eventsSub?.cancel();
+    _blitz?.dispose();
     _celebrations.dispose();
     _swipe?.removeListener(_onSwipeChanged);
     _swipe?.dispose();
@@ -251,6 +259,7 @@ class _FeedScreenState extends State<FeedScreen> {
                   progress: _progress!,
                   current: current is CardItem ? current.card : null,
                 ),
+                BlitzBar(model: _blitz!),
                 Expanded(
                   child: _buildBody(context, model, session, api, browser),
                 ),
@@ -280,6 +289,21 @@ class _FeedScreenState extends State<FeedScreen> {
                     ),
                   ),
               ],
+            );
+          },
+        ),
+        ListenableBuilder(
+          listenable: _blitz!,
+          builder: (context, _) {
+            final result = _blitz!.result;
+            if (_blitz!.status != BlitzStatus.ended || result == null) {
+              return const SizedBox.shrink();
+            }
+            return Positioned.fill(
+              child: BlitzResultsCard(
+                result: result,
+                onDone: _blitz!.dismissResults,
+              ),
             );
           },
         ),
@@ -352,6 +376,20 @@ class _FeedScreenState extends State<FeedScreen> {
     };
   }
 
+  /// No card widget to animate (e.g. the divider): act directly.
+  void _direct(SwipeController swipe, SwipeKind kind) {
+    switch (kind) {
+      case SwipeKind.keep:
+        swipe.keep();
+      case SwipeKind.reject:
+        swipe.reject();
+      case SwipeKind.file:
+        swipe.file(context);
+      case SwipeKind.skip:
+        swipe.skip();
+    }
+  }
+
   Widget _buildReady(BuildContext context, FeedModel m, SessionModel session) {
     final current = m.current;
     final next = m.next;
@@ -387,7 +425,17 @@ class _FeedScreenState extends State<FeedScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    SwipeButtons(controller: swipe),
+                    SwipeButtons(
+                      controller: swipe,
+                      onSwipe: (kind) {
+                        final card = _cardKey.currentState;
+                        if (card != null) {
+                          card.swipe(kind);
+                        } else {
+                          _direct(swipe, kind);
+                        }
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -429,6 +477,7 @@ class _FeedScreenState extends State<FeedScreen> {
   ) {
     if (current is CardItem) {
       return SwipeableCard(
+        key: _cardKey,
         onKeep: swipe.keep,
         onReject: swipe.reject,
         onFile: () => swipe.file(context),

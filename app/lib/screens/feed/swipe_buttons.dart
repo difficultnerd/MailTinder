@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../api/models/swipe.dart';
 import '../../copy.dart';
 import '../../state/swipe_controller.dart';
 
@@ -9,9 +10,18 @@ import '../../state/swipe_controller.dart';
 /// buttons are disabled while the controller is disabled (offline included);
 /// Undo is disabled when the undo stack is empty.
 class SwipeButtons extends StatelessWidget {
-  const SwipeButtons({super.key, required this.controller});
+  const SwipeButtons({super.key, required this.controller, this.onSwipe});
 
   final SwipeController controller;
+
+  /// Routes a button press through the card's effects path; when null the
+  /// buttons call the controller directly.
+  final void Function(SwipeKind kind)? onSwipe;
+
+  VoidCallback _press(SwipeKind kind, VoidCallback direct) {
+    final route = onSwipe;
+    return route == null ? direct : () => route(kind);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -21,22 +31,30 @@ class SwipeButtons extends StatelessWidget {
         _button(
           label: Copy.rejectButton,
           icon: Icons.close,
-          onPressed: controller.enabled ? controller.reject : null,
+          onPressed: controller.enabled
+              ? _press(SwipeKind.reject, controller.reject)
+              : null,
         ),
         _button(
           label: Copy.skipButton,
           icon: Icons.arrow_downward,
-          onPressed: controller.enabled ? controller.skip : null,
+          onPressed: controller.enabled
+              ? _press(SwipeKind.skip, controller.skip)
+              : null,
         ),
         _button(
           label: Copy.fileButton,
           icon: Icons.folder_open,
-          onPressed: controller.enabled ? () => controller.file(context) : null,
+          onPressed: controller.enabled
+              ? _press(SwipeKind.file, () => controller.file(context))
+              : null,
         ),
         _button(
           label: Copy.keepButton,
           icon: Icons.check,
-          onPressed: controller.enabled ? controller.keep : null,
+          onPressed: controller.enabled
+              ? _press(SwipeKind.keep, controller.keep)
+              : null,
         ),
         _button(
           label: Copy.undoButton,

@@ -376,4 +376,22 @@ abstract final class Copy {
   /// Swipe feedback (GM-02, T-1008b).
   static String combo(int n) => 'Combo $n';
   static String clearedMilestone(int n) => '${formatCount(n)} cleared';
+
+  /// Blitz (GM-07, T-1009).
+  static const blitz = 'Blitz';
+  static const blitzSemantics = 'Start a 60-second Blitz round';
+  static String blitzTimer(Duration d) {
+    final seconds = d.inSeconds < 0 ? 0 : d.inSeconds;
+    final s = seconds % 60;
+    return '${seconds ~/ 60}:${s < 10 ? '0' : ''}$s';
+  }
+
+  static String blitzScore(int n) => 'Score $n';
+  static const endRound = 'End round';
+  static const blitzOver = 'Blitz over';
+  static const blitzScoreRow = 'Score';
+  static const blitzCleared = 'Cleared';
+  static const blitzKept = 'Kept';
+  static const blitzFiled = 'Filed';
+  static const blitzDone = 'Done';
 }

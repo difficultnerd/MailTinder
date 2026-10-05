@@ -9,6 +9,7 @@ import 'package:app/state/feed_model.dart';
 import 'package:app/state/progress_model.dart';
 import 'package:app/state/round_tracker.dart';
 import 'package:app/state/session_model.dart';
+import 'package:app/screens/feed/swipeable_card.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -282,6 +283,8 @@ void main() {
     await _open(tester, h, _cards(2));
     await tester.tap(find.byTooltip(Copy.keepButton));
     await tester.pump();
+    // The button plays the fly-off before the swipe is sent.
+    await tester.pump(kFlyOffDuration);
     await tester.pump(const Duration(milliseconds: 100));
     expect(
       find.text(Copy.achievementUnlocked('First unsubscribe')),
@@ -325,6 +328,8 @@ void main() {
     await _open(tester, h, _cards(2, name: 'Big Co'));
     await tester.tap(find.byTooltip(Copy.keepButton));
     await tester.pump();
+    // The button plays the fly-off before the swipe is sent.
+    await tester.pump(kFlyOffDuration);
     await tester.pump(const Duration(milliseconds: 100));
     expect(find.text(Copy.bossDefeated('Big Co')), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));

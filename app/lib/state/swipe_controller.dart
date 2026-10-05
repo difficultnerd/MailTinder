@@ -146,6 +146,11 @@ class SwipeController extends ChangeNotifier {
     return held;
   }
 
+  /// Shows [prompts] in turn through the block dialog (the held prompts after
+  /// a Blitz round, GM-07 AC4).
+  Future<void> presentPrompts(List<BlockPrompt> prompts) =>
+      _handlePrompts(prompts);
+
   Stream<SwipeEvent> get events => _events.stream;
 
   Future<void> keep() => _swipe(SwipeKind.keep);
