@@ -86,7 +86,7 @@ void main() {
     "AU-06 AC3 delete account without a fresh sign-in shows Confirm it's you",
     (tester) async {
       final h = await open(tester);
-      h.api.nextDeleteError = problem(403, 'step_up_required');
+      h.api.nextDeleteAccountError = problem(403, 'step_up_required');
       await confirmDelete(tester);
       expect(find.text(Copy.confirmItsYou), findsOneWidget);
       expect(find.text(Copy.stepUpDeleteAccount), findsOneWidget);

@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
 import 'models/auth.dart';
+import 'models/category.dart';
 import 'models/feed.dart';
 import 'models/session.dart';
 import 'models/swipe.dart';
@@ -175,11 +176,64 @@ class HttpApiClient implements ApiClient {
     return DeleteAccountResult.fromJson(data);
   }
 
+  @override
+  Future<List<Category>> listCategories() async {
+    final data = await send('GET', 'categories');
+    final raw = data?['categories'];
+    if (raw is! List<Object?>) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Category.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<Category> renameCategory(String categoryId, String name) async {
+    final data = await send(
+      'PATCH',
+      'categories/$categoryId',
+      body: {'name': name},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Category.fromJson(data);
+  }
+
+  @override
+  Future<void> deleteCategory(String categoryId) async {
+    await send('DELETE', 'categories/$categoryId', expect: const {204});
+  }
+
+  @override
+  Future<FiledMessagePage> listCategoryMessages(
+    String categoryId, {
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send(
+      'GET',
+      'categories/$categoryId/messages',
+      query: query,
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return FiledMessagePage.fromJson(data);
+  }
+
   /// Shared plumbing for every endpoint added by later tasks.
   Future<Map<String, Object?>?> send(
     String method,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String>? query,
     String? idempotencyKey,
     Set<int> expect = const {200},
   }) async {
@@ -187,6 +241,7 @@ class HttpApiClient implements ApiClient {
       method,
       path,
       body: body,
+      query: query,
       idempotencyKey: idempotencyKey,
       expect: expect,
       canRetryCsrf: true,
@@ -197,11 +252,15 @@ class HttpApiClient implements ApiClient {
     String method,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String>? query,
     String? idempotencyKey,
     required Set<int> expect,
     required bool canRetryCsrf,
   }) async {
-    final uri = _resolvePath(path);
+    final resolved = _resolvePath(path);
+    final uri = query == null || query.isEmpty
+        ? resolved
+        : resolved.replace(queryParameters: query);
     final upperMethod = method.toUpperCase();
 
     final headers = <String, String>{'Accept': 'application/json'};
@@ -275,6 +334,7 @@ class HttpApiClient implements ApiClient {
         method,
         path,
         body: body,
+        query: query,
         idempotencyKey: idempotencyKey,
         expect: expect,
         canRetryCsrf: false,

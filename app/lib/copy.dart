@@ -88,6 +88,31 @@ abstract final class Copy {
   static const skipButton = 'Skip';
   static const undoButton = 'Undo';
 
+  static const filedEmpty = 'Swipe up on an email to start filing.';
+  static const rename = 'Rename';
+  static const delete = 'Delete';
+  static const categoryNameHint = 'Category name';
+  static const categoryNameRule =
+      'Use 1 to 100 characters, not starting or ending with /.';
+
+  /// {"You already have a category called $n."}
+  static String categoryExists(String name) =>
+      'You already have a category called $name.';
+
+  /// {"Delete $n? The label is removed from your mailboxes. Your messages
+  /// stay where they are."}
+  static String deleteCategoryQuestion(String name) =>
+      'Delete $name? The label is removed from your mailboxes. '
+      'Your messages stay where they are.';
+
+  /// {"Can't reach $a right now. Some messages may be missing."}
+  static String filedMailboxUnavailable(String address) =>
+      "Can't reach $address right now. Some messages may be missing.";
+
+  /// Screen reader label for a category row's trailing menu:
+  /// {"More for $n"}.
+  static String moreFor(String name) => 'More for $name';
+
   /// {"Can't reach $a. Sign in again"}
   static String mailboxNeedsSignIn(String address) =>
       "Can't reach $address. Sign in again";
