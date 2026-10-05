@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -144,7 +144,7 @@ fn record_delete(state: &mut FakeState, method: &str, path: &str) {
     });
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Serialize)]
 #[allow(non_snake_case)]
 struct ListQuery {
     #[serde(default)]
@@ -159,11 +159,29 @@ struct ListQuery {
     includeSpamTrash: Option<bool>,
 }
 
+/// Parse the raw list query string: repeated `labelIds` allowed, unknown
+/// parameters ignored (Gmail tolerates `fields=` and friends).
+fn parse_list_query(raw: &str) -> ListQuery {
+    let mut q = ListQuery::default();
+    for (k, v) in url::form_urlencoded::parse(raw.as_bytes()) {
+        match k.as_ref() {
+            "labelIds" => q.labelIds.push(v.into_owned()),
+            "q" => q.q = Some(v.into_owned()),
+            "pageToken" => q.pageToken = Some(v.into_owned()),
+            "maxResults" => q.maxResults = v.parse().ok(),
+            "includeSpamTrash" => q.includeSpamTrash = v.parse().ok(),
+            _ => {}
+        }
+    }
+    q
+}
+
 async fn list_messages(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<ListQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, GmailError> {
+    let q = parse_list_query(raw.as_deref().unwrap_or(""));
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     if let Some(e) = check_fail(&mut st, "GET", "/gmail/v1/users/me/messages") {
@@ -534,6 +552,9 @@ async fn send_message(
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     record(&mut st, "POST", "messages.send", vec![]);
+    if let Some(e) = check_fail(&mut st, "POST", "/gmail/v1/users/me/messages/send") {
+        return Err(e);
+    }
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(body.raw.as_bytes())
         .map_err(|_| GmailError::new(400, "invalidArgument"))?;
@@ -563,8 +584,9 @@ async fn list_labels(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, GmailError> {
-    let st = st.0.lock().unwrap();
+    let mut st = st.0.lock().unwrap();
     let email = authed_email(&st, &headers)?;
+    record(&mut st, "GET", "labels.list", vec![]);
     let mb = st
         .mailboxes
         .get(&email)
@@ -624,7 +646,13 @@ async fn create_label(
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     record(&mut st, "POST", "labels.create", vec![]);
-    let race = st.label_create_race.contains(&email);
+    if let Some(e) = check_fail(&mut st, "POST", "/gmail/v1/users/me/labels") {
+        return Err(e);
+    }
+    // The race switch fires once, simulating another client creating the same
+    // label between this client's list and its create: the label is made, the
+    // response is 409.
+    let race = st.label_create_race.remove(&email);
     let clash = st
         .mailboxes
         .get(&email)
@@ -632,7 +660,7 @@ async fn create_label(
         .labels
         .values()
         .any(|l| l.name.eq_ignore_ascii_case(&body.name));
-    if clash {
+    if race || clash {
         // The race: create the label anyway, then answer 409.
         if race {
             let id = st.next_user_label_id(&email);

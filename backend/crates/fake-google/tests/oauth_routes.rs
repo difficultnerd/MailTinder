@@ -545,6 +545,10 @@ async fn fake_oidc_access_denied_redirects_with_error() {
 
 #[tokio::test]
 async fn fake_oidc_auth_time_present_with_prompt_login() {
+    // `t0()` reads the wall clock, and the fake freezes its own injected clock
+    // at `t0()` inside `start()`. Reading it twice can straddle a second
+    // boundary, so capture once and allow one second of skew below.
+    let epoch = t0();
     let h = start().await;
     register(&h);
     h.next_login(NextLogin {
@@ -592,7 +596,8 @@ async fn fake_oidc_auth_time_present_with_prompt_login() {
     let id_token = body["id_token"].as_str().unwrap().to_owned();
     let claims = decode_id_token(&id_token);
     let auth_time = claims["auth_time"].as_i64().unwrap();
-    assert_eq!(auth_time, t0().unix_timestamp() - 120);
+    let skew = (auth_time - (epoch.unix_timestamp() - 120)).abs();
+    assert!(skew <= 1, "auth_time {auth_time} vs epoch {epoch}");
 }
 
 #[tokio::test]

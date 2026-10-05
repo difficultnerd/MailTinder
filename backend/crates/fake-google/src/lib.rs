@@ -172,6 +172,20 @@ impl FakeGoogleHandle {
             .map(|m| m.labels.clone())
     }
 
+    /// `(id, labels)` for every message in the mailbox.
+    pub fn message_labels(&self, mb: &FakeMailboxKey) -> Vec<(String, BTreeSet<String>)> {
+        let st = self.state.lock().unwrap();
+        st.mailboxes
+            .get(&mb.0)
+            .map(|m| {
+                m.messages
+                    .values()
+                    .map(|msg| (msg.id.clone(), msg.labels.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn sent(&self, mb: &FakeMailboxKey) -> Vec<Vec<u8>> {
         let st = self.state.lock().unwrap();
         st.mailboxes

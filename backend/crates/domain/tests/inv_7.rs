@@ -1,7 +1,16 @@
 //! INV-7: core domain code does not import provider-specific types or I/O crates.
 const MANIFEST: &str = include_str!("../Cargo.toml");
-const ALLOWED: [&str; 5] = ["serde", "uuid", "time", "url", "thiserror"];
-const ALLOWED_DEV: [&str; 2] = ["proptest", "serde_json"];
+const ALLOWED: [&str; 8] = [
+    "serde",
+    "uuid",
+    "time",
+    "url",
+    "thiserror",
+    "html5ever",
+    "unicode-segmentation",
+    "percent-encoding",
+];
+const ALLOWED_DEV: [&str; 3] = ["proptest", "serde_json", "unicode-segmentation"];
 
 /// Parse the `[dependencies]` and `[dev-dependencies]` tables by hand (no toml
 /// crate): a dependency line is `name.workspace = true` or `name = ...` inside

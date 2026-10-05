@@ -138,8 +138,9 @@ where
             }
         }
 
-        // A trashed message is not listed.
-        {
+        // A trashed message is not listed. Trashing needs `trash`, so a
+        // read-only target (T-401 ships the read half before T-403) skips it.
+        if groups.modify {
             let t = make().await;
             let id = t
                 .seeder

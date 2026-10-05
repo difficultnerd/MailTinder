@@ -10,10 +10,25 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GITLEAKS_VERSION: "8.24.0"
 
 jobs:
+  # All five jobs below run on every event. main's branch protection lists
+  # gitleaks, semgrep, cargo-audit, cargo-deny and dart-licenses as required
+  # status checks with strict=true and enforce_admins=true, so gating any of
+  # them off pull_request would leave every pull request permanently
+  # unmergeable ("Expected - Waiting for status to be reported").
+  #
+  # GitHub bills each job rounded up to a whole runner minute, so this
+  # workflow costs a minimum of five runner minutes on every trigger no matter
+  # how fast the individual jobs are. Cutting that means merging jobs into
+  # fewer ones, which changes the check names and therefore has to be done
+  # together with an update to the required status checks in branch protection.
   gitleaks:
     runs-on: ubuntu-latest
     steps:

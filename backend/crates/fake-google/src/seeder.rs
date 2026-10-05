@@ -65,10 +65,10 @@ impl MailSeeder for FakeGoogleSeeder {
         Ok(mb
             .sent
             .iter()
-            .map(|_raw| SentRecord {
+            .map(|raw| SentRecord {
                 mailbox: MailboxId(uuid::Uuid::from_u128(0)),
-                to: "unknown@example.org".to_owned(),
-                subject: None,
+                to: header_value(raw, "To").unwrap_or_default(),
+                subject: header_value(raw, "Subject"),
                 body: None,
             })
             .collect())
@@ -82,6 +82,22 @@ impl MailSeeder for FakeGoogleSeeder {
             .filter(|e| matches!(e, super::state::FakeEvent::PermanentDeleteAttempted { .. }))
             .count() as u64)
     }
+}
+
+/// The value of the first `name` header in a raw message, trimmed.
+fn header_value(raw: &[u8], name: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(raw);
+    for line in text.split("\r\n") {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            if key.eq_ignore_ascii_case(name) {
+                return Some(value.trim().to_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Render a minimal `.eml` from the seed's headers and preview text.

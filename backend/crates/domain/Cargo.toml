@@ -12,6 +12,9 @@ uuid.workspace = true
 time.workspace = true
 url.workspace = true
 thiserror.workspace = true
+html5ever.workspace = true
+unicode-segmentation.workspace = true
+percent-encoding = "2"
 
 [lints]
 workspace = true
@@ -19,3 +22,4 @@ workspace = true
 [dev-dependencies]
 proptest.workspace = true
 serde_json.workspace = true
+unicode-segmentation.workspace = true

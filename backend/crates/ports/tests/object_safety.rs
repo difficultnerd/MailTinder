@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use ports::{
-    AppFolderStore, Classifier, Clock, HttpEgress, IdentityProvider, JobScheduler, KeyService,
-    MailProvider, Rng, Secrets, SystemKeyService,
+    AppFolderStore, Classifier, Clock, HttpEgress, IdentityProvider, InviteMailer, JobScheduler,
+    KeyService, MailProvider, Rng, Secrets, SystemKeyService,
 };
 
 #[allow(dead_code)]
@@ -41,3 +41,6 @@ fn classifier(_: Arc<dyn Classifier>) {}
 
 #[allow(dead_code)]
 fn secrets(_: Arc<dyn Secrets>) {}
+
+#[allow(dead_code)]
+fn invite_mailer(_: Arc<dyn InviteMailer>) {}

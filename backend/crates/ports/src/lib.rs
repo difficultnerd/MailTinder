@@ -10,6 +10,7 @@ pub mod classifier;
 pub mod clock;
 pub mod egress;
 pub mod identity;
+pub mod invite_mailer;
 pub mod keys;
 pub mod mail;
 pub mod ports;
@@ -39,6 +40,7 @@ pub use egress::{
     RefusedRange,
 };
 pub use identity::{AuthRequest, IdClaims, IdError, IdentityProvider, Prompt, TokenSet};
+pub use invite_mailer::{InviteLink, InviteMailer};
 pub use keys::{Aad, KeyError, KeyService, SystemAad, SystemKeyService, WrappedKey};
 pub use mail::{
     ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
