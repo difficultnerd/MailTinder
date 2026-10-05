@@ -2,6 +2,7 @@ name: privacy
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
