@@ -6,9 +6,13 @@ import 'sound_player.dart';
 /// `AudioContext` is created on the first play, which only happens after a
 /// swipe gesture, so browsers do not block it.
 class SoundPlayerImpl implements SoundPlayer {
-  SoundPlayerImpl();
+  const SoundPlayerImpl();
 
-  web.AudioContext? _context;
+  /// One shared AudioContext for the page. Browsers cap how many may exist, so
+  /// a static keeps this at one — and being static it does not stop the
+  /// constructor from being `const`, which the analyzer requires on the VM
+  /// build (where the stub is used) and the web build both.
+  static web.AudioContext? _context;
 
   static const Map<SwipeSound, double> _hertz = {
     SwipeSound.keep: 660,

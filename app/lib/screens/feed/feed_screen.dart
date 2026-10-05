@@ -115,7 +115,7 @@ class _FeedScreenState extends State<FeedScreen> {
             prefs:
                 context.getInheritedWidgetOfExactType<AppScope>()?.playPrefs ??
                 PlayPrefs(),
-            sound: SoundPlayerImpl(),
+            sound: const SoundPlayerImpl(),
             haptics: const HapticsImpl(),
           );
       model.addListener(_onFeedChanged);
