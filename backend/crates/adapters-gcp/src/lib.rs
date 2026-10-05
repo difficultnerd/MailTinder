@@ -19,12 +19,16 @@
     clippy::unnested_or_patterns
 )]
 
+pub mod crypto;
 pub mod firestore;
 pub mod gcp_http;
 pub mod os_rng;
 pub mod system_clock;
 pub mod token_source;
 
+pub use crypto::envelope::EnvelopeKeyService;
+pub use crypto::kms::{CloudKms, KmsApi};
+pub use crypto::system::KmsSystemKeyService;
 pub use firestore::{FirestoreConfig, FirestoreStore};
 pub use gcp_http::{GcpError, GcpHttp, PLATFORM_HOSTS};
 pub use os_rng::OsRng;

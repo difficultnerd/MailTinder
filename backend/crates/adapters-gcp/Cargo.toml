@@ -21,6 +21,10 @@ url.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+aes-gcm = { workspace = true, features = ["aes", "zeroize"] }
+zeroize.workspace = true
+crc32c.workspace = true
+sha2.workspace = true
 
 [features]
 firestore-emulator = []
