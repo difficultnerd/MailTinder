@@ -19,20 +19,24 @@
     clippy::unnested_or_patterns
 )]
 
+pub mod classifier_switches;
 pub mod crypto;
 pub mod firestore;
 pub mod gcp_http;
 pub mod os_rng;
+pub mod secrets;
 pub mod system_clock;
 pub mod tasks;
 pub mod token_source;
 
+pub use classifier_switches::{BakeoffModel, ClassifierSwitches, EnvSwitches, SwitchState};
 pub use crypto::envelope::EnvelopeKeyService;
 pub use crypto::kms::{CloudKms, KmsApi};
 pub use crypto::system::KmsSystemKeyService;
 pub use firestore::{FirestoreConfig, FirestoreStore};
 pub use gcp_http::{GcpError, GcpHttp, PLATFORM_HOSTS};
 pub use os_rng::OsRng;
+pub use secrets::{SecretManagerSecrets, SecretsConfig};
 pub use system_clock::SystemClock;
 pub use tasks::{CloudTasksScheduler, TasksConfig};
 pub use token_source::{MetadataTokenSource, StaticTokenSource, TokenSource};
