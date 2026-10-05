@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ae5876782b413e9f8f97b414e010b53bbff2eaa024b88f9a3910c2f3a64f0ee1 # shrinks to v = Null
+cc c82c95dcf5498ae3ec7e9f2e46b0c746dcfd9d7df81916269ce2659d0cc8775d # shrinks to v = Object {"_at": String("0000-00-00T00:00:00Z")}

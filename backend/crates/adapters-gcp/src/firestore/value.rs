@@ -184,8 +184,8 @@ mod tests {
     }
 
     proptest::proptest! {
-                #[test]
-                fn firestore_value_round_trip_property(v in arb_json()) {
+        #[test]
+        fn firestore_value_round_trip_property(v in arb_json()) {
             let fields = to_fields(&v).unwrap();
             let back = from_fields(&fields).unwrap();
             assert_eq!(back, v);
@@ -194,6 +194,11 @@ mod tests {
 
     fn arb_json() -> impl proptest::strategy::Strategy<Value = Value> {
         use proptest::prelude::*;
+        // A string under an `_at` key must be a valid RFC 3339 timestamp
+        // (the `_at` rule, T-201b), so every generated string is a canonical
+        // timestamp. That keeps the round-trip identity at any nesting depth.
+        let timestamp = "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+            .prop_map(|s| Value::String(s.clone()));
         let leaf = prop_oneof![
             Just(Value::Null),
             any::<bool>().prop_map(Value::Bool),
@@ -203,7 +208,7 @@ mod tests {
                     .map(Value::Number)
                     .unwrap_or(Value::Null)
             }),
-            any::<String>().prop_map(Value::String),
+            timestamp,
         ];
         let tree = leaf.prop_recursive(4, 16, 4, |inner| {
             prop_oneof![
