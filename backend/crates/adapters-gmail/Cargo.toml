@@ -9,6 +9,25 @@ publish.workspace = true
 [dependencies]
 domain.workspace = true
 ports.workspace = true
+obs.workspace = true
+time.workspace = true
+url.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+futures = "0.3"
+mailparse = "0.15"
+rfc2047-decoder = "1"
+
+[dev-dependencies]
+testkit.workspace = true
+fake-google = { path = "../fake-google", version = "0.1.0" }
+tokio.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+time.workspace = true
 
 [lints]
 workspace = true

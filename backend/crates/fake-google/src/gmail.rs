@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -144,7 +144,7 @@ fn record_delete(state: &mut FakeState, method: &str, path: &str) {
     });
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Serialize)]
 #[allow(non_snake_case)]
 struct ListQuery {
     #[serde(default)]
@@ -159,11 +159,29 @@ struct ListQuery {
     includeSpamTrash: Option<bool>,
 }
 
+/// Parse the raw list query string: repeated `labelIds` allowed, unknown
+/// parameters ignored (Gmail tolerates `fields=` and friends).
+fn parse_list_query(raw: &str) -> ListQuery {
+    let mut q = ListQuery::default();
+    for (k, v) in url::form_urlencoded::parse(raw.as_bytes()) {
+        match k.as_ref() {
+            "labelIds" => q.labelIds.push(v.into_owned()),
+            "q" => q.q = Some(v.into_owned()),
+            "pageToken" => q.pageToken = Some(v.into_owned()),
+            "maxResults" => q.maxResults = v.parse().ok(),
+            "includeSpamTrash" => q.includeSpamTrash = v.parse().ok(),
+            _ => {}
+        }
+    }
+    q
+}
+
 async fn list_messages(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Query(q): Query<ListQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, GmailError> {
+    let q = parse_list_query(raw.as_deref().unwrap_or(""));
     let mut st = st.0.lock().unwrap();
     let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
     if let Some(e) = check_fail(&mut st, "GET", "/gmail/v1/users/me/messages") {

@@ -20,6 +20,9 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
+    # mailparse/quoted_printable (RFC 2047 / MIME parsing) ship under 0BSD, a
+    # permissive OSI-approved licence equivalent to MIT for our purposes.
+    "0BSD",
     # Mozilla CA root bundle (webpki-roots) ships under CDLA-Permissive-2.0;
     # it is a permissive data license for certificate roots.
     "CDLA-Permissive-2.0",

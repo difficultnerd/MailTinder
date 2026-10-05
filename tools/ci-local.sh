@@ -40,10 +40,18 @@ run() { # run <name> <cmd...>
 have() { command -v "$1" >/dev/null 2>&1; }
 
 REQUESTED=("$@")
+# `--full` (or any bare flag) on its own means "run every check", so only a
+# request that names a check narrows the run.
+SELECTIVE=0
+for arg in "$@"; do
+  case "$arg" in --*) ;; *) SELECTIVE=1 ;; esac
+done
 want() {
   # want <name> [--full-only]
   local name="$1"; local full_only="${2:-}"
-  [ ${#REQUESTED[@]} -eq 0 ] || [[ " ${REQUESTED[*]} " == *" $name "* ]] || return 1
+  if [ "$SELECTIVE" -eq 1 ]; then
+    [[ " ${REQUESTED[*]} " == *" $name "* ]] || return 1
+  fi
   [ -z "$full_only" ] || [[ " ${REQUESTED[*]} " == *"--full"* ]] || return 1
   return 0
 }
