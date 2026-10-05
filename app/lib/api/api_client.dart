@@ -8,6 +8,7 @@ import 'models/history.dart';
 import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/progress.dart';
 import 'models/stats.dart';
 import 'models/swipe.dart';
 
@@ -99,6 +100,9 @@ abstract class ApiClient {
 
   /// GET /api/v1/stats (API-STAT-1).
   Future<Stats> getStats();
+
+  /// GET /api/v1/progress (API-PROG-1).
+  Future<Progress> getProgress();
 
   /// GET /api/v1/me/experiments (API-EXP-1).
   Future<MyExperiments> getMyExperiments();

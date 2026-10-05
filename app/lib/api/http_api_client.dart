@@ -12,6 +12,7 @@ import 'models/history.dart';
 import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/progress.dart';
 import 'models/stats.dart';
 import 'models/swipe.dart';
 
@@ -317,6 +318,15 @@ class HttpApiClient implements ApiClient {
       throw const NetworkException();
     }
     return Stats.fromJson(data);
+  }
+
+  @override
+  Future<Progress> getProgress() async {
+    final data = await send('GET', 'progress');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Progress.fromJson(data);
   }
 
   @override

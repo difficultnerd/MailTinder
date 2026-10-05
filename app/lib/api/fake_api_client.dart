@@ -11,6 +11,7 @@ import 'models/history.dart';
 import 'models/needs_attention.dart';
 import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/progress.dart';
 import 'models/stats.dart';
 import 'models/swipe.dart';
 
@@ -551,6 +552,31 @@ class FakeApiClient implements ApiClient {
       throw err!;
     }
     return stats;
+  }
+
+  /// Returned by [getProgress] when [progressQueue] is empty.
+  Progress progress = const Progress(
+    inboxCount: 0,
+    mailboxErrors: [],
+    level: null,
+  );
+
+  /// Responses returned by [getProgress], consumed in order.
+  final List<Progress> progressQueue = [];
+
+  /// When set, [getProgress] throws it (and clears it).
+  Object? nextProgressError;
+
+  @override
+  Future<Progress> getProgress() async {
+    calls.add(FakeCall('GET', '/api/v1/progress'));
+    if (nextProgressError != null) {
+      final err = nextProgressError;
+      nextProgressError = null;
+      throw err!;
+    }
+    if (progressQueue.isNotEmpty) return progressQueue.removeAt(0);
+    return progress;
   }
 
   /// Returned by [getMyExperiments]; [putMyExperiments] updates it.

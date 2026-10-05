@@ -347,4 +347,29 @@ abstract final class Copy {
   static String stepUpKillSwitch(String model, bool on) =>
       'to switch ${modelLabel(model)} ${on ? 'on' : 'off'}';
   static String snapshotCards(int? n) => n == null ? tooFewToShow : '$n cards';
+
+  static String meter(int count, int change) {
+    final base = formatCount(count);
+    if (change < 0) return '$base, down ${formatCount(-change)} today';
+    if (change > 0) return '$base, up ${formatCount(change)} today';
+    return '$base, no change today';
+  }
+
+  static const meterPartial = "Some mailboxes didn't answer";
+  static String level(int year, int remaining) =>
+      'Level $year: ${formatCount(remaining)} left';
+  static String levelComplete(int oldYear, int newYear) =>
+      'Level $oldYear complete. Level $newYear unlocked.';
+  static String achievementUnlocked(String title) =>
+      'Achievement unlocked: $title';
+  static String bossDefeated(String name) => 'Boss defeated: $name';
+  static String bossLabel(String name, int remaining) =>
+      'Boss $name: $remaining left';
+  static const roundOver = 'Round over';
+  static const roundCleared = 'Cleared';
+  static const roundKept = 'Kept';
+  static const roundFiled = 'Filed';
+  static const roundUnsubscribed = 'Senders unsubscribed';
+  static const roundBlocked = 'Senders blocked';
+  static const keepGoing = 'Keep going';
 }

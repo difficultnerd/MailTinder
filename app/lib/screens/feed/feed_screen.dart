@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../../api/api_client.dart';
@@ -11,11 +12,16 @@ import '../../platform/browser.dart';
 import '../../state/categories_cache.dart';
 import '../../state/feed_model.dart';
 import '../../state/id_generator.dart';
+import '../../state/progress_model.dart';
+import '../../state/round_tracker.dart';
 import '../../state/session_model.dart';
 import '../../state/swipe_controller.dart';
 import 'card_view.dart';
+import 'celebrations.dart';
 import 'divider_card.dart';
 import 'filing_sheet.dart';
+import 'progress_header.dart';
+import 'round_card.dart';
 import 'swipe_buttons.dart';
 import 'swipeable_card.dart';
 
@@ -35,6 +41,9 @@ class FeedScreen extends StatefulWidget {
     this.api,
     this.browser,
     this.categories,
+    this.progress,
+    this.rounds,
+    this.feedVisible,
   });
 
   final FeedModel? model;
@@ -46,12 +55,28 @@ class FeedScreen extends StatefulWidget {
   /// absent.
   final CategoriesCache? categories;
 
+  /// The meter model; built from [api] when absent.
+  final ProgressModel? progress;
+
+  /// The round totals; a fresh tracker when absent.
+  final RoundTracker? rounds;
+
+  /// Whether the Feed tab is selected. When it turns false the round card
+  /// becomes due for the next time the Feed shows (GM-03 AC1).
+  final ValueListenable<bool>? feedVisible;
+
   @override
   State<FeedScreen> createState() => _FeedScreenState();
 }
 
 class _FeedScreenState extends State<FeedScreen> {
   SwipeController? _swipe;
+  ProgressModel? _progress;
+  RoundTracker? _rounds;
+  final CelebrationQueue _celebrations = CelebrationQueue();
+  StreamSubscription<SwipeEvent>? _eventsSub;
+  FeedItem? _dividerMarked;
+  bool _visible = true;
 
   @override
   void initState() {
@@ -59,6 +84,17 @@ class _FeedScreenState extends State<FeedScreen> {
     final model = widget.model;
     if (model != null) {
       model.open();
+      final progress = _progress =
+          widget.progress ?? ProgressModel(api: widget.api!);
+      progress.addListener(_onProgressChanged);
+      unawaited(progress.load());
+      _rounds = widget.rounds ?? RoundTracker();
+      model.addListener(_onFeedChanged);
+      final visible = widget.feedVisible;
+      if (visible != null) {
+        _visible = visible.value;
+        visible.addListener(_onVisibleChanged);
+      }
       final categories = widget.categories ?? CategoriesCache(api: widget.api!);
       // Load the category names in the background so the first up-swipe has
       // them (FL-01 AC3).
@@ -72,11 +108,50 @@ class _FeedScreenState extends State<FeedScreen> {
         fileLauncher: (context, card) =>
             showFilingSheet(context, card, cache: categories),
       )..addListener(_onSwipeChanged);
+      _eventsSub = _swipe!.events.listen(_onSwipeEvent);
     }
+  }
+
+  void _onSwipeEvent(SwipeEvent e) {
+    _rounds?.onEvent(e);
+    _celebrations.onEvent(e);
+    if (e is SwipeAcked) _progress?.onSwipeAcked();
+    // The swipe that revealed the divider was optimistic, so its ack (and the
+    // swipe count) arrives after the divider became current.
+    if (widget.model?.current is DividerItem) _rounds?.markDividerReached();
+  }
+
+  void _onProgressChanged() {
+    final done = _progress?.takeCompletedLevel();
+    final now = _progress?.level;
+    if (done != null && now != null) {
+      _celebrations.addLevelComplete(done.year, now.year);
+    }
+  }
+
+  void _onFeedChanged() {
+    final current = widget.model?.current;
+    if (current is DividerItem && !identical(current, _dividerMarked)) {
+      _dividerMarked = current;
+      _rounds?.markDividerReached();
+    }
+  }
+
+  void _onVisibleChanged() {
+    final visible = widget.feedVisible!.value;
+    if (_visible && !visible) _rounds?.markLeftFeed();
+    setState(() => _visible = visible);
   }
 
   @override
   void dispose() {
+    widget.model?.removeListener(_onFeedChanged);
+    widget.feedVisible?.removeListener(_onVisibleChanged);
+    _progress?.removeListener(_onProgressChanged);
+    if (widget.progress == null) _progress?.dispose();
+    if (widget.rounds == null) _rounds?.dispose();
+    _eventsSub?.cancel();
+    _celebrations.dispose();
     _swipe?.removeListener(_onSwipeChanged);
     _swipe?.dispose();
     super.dispose();
@@ -139,18 +214,44 @@ class _FeedScreenState extends State<FeedScreen> {
     final api = widget.api!;
     final browser = widget.browser!;
 
-    return ListenableBuilder(
-      listenable: model,
-      builder: (context, _) {
-        return Column(
-          children: [
-            if (model.offline) const _OfflineBanner(),
-            for (final err in model.mailboxErrors)
-              ..._mailboxBanners(err, session, api, browser),
-            Expanded(child: _buildBody(context, model, session, api, browser)),
-          ],
-        );
-      },
+    return Stack(
+      children: [
+        ListenableBuilder(
+          listenable: model,
+          builder: (context, _) {
+            final current = model.current;
+            return Column(
+              children: [
+                if (model.offline) const _OfflineBanner(),
+                for (final err in model.mailboxErrors)
+                  ..._mailboxBanners(err, session, api, browser),
+                ProgressHeader(
+                  progress: _progress!,
+                  current: current is CardItem ? current.card : null,
+                ),
+                Expanded(
+                  child: _buildBody(context, model, session, api, browser),
+                ),
+              ],
+            );
+          },
+        ),
+        CelebrationOverlay(queue: _celebrations),
+        ListenableBuilder(
+          listenable: _rounds!,
+          builder: (context, _) {
+            if (!_visible || !_rounds!.cardDue) {
+              return const SizedBox.shrink();
+            }
+            return Positioned.fill(
+              child: RoundCard(
+                totals: _rounds!.totals,
+                onDismiss: _rounds!.takeCard,
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 
