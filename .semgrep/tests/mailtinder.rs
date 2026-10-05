@@ -51,3 +51,20 @@ fn crypto_rules() {
     // ok: mailtinder-no-non-csprng-secrets
     let bytes = rng.bytes32();
 }
+
+fn tls_verification() {
+    // ruleid: mailtinder-tls-verification-on
+    let c = Client::builder().danger_accept_invalid_certs(true).build();
+
+    // ruleid: mailtinder-tls-verification-on
+    let c = Client::builder().danger_accept_invalid_hostnames(true).build();
+
+    // ruleid: mailtinder-tls-verification-on
+    client.get(url).dangerous();
+
+    // ruleid: mailtinder-tls-verification-on
+    let p = NoCertificateVerification::new();
+
+    // ok: mailtinder-tls-verification-on
+    let c = Client::builder().https_only(true).build();
+}

@@ -59,3 +59,16 @@ rules:
       exclude: ["**/backend/crates/testkit/**", "**/backend/crates/fake-google/**", ".semgrep/**"]
     pattern-regex: >-
       (rand::thread_rng|thread_rng\b|SmallRng|StdRng::seed_from_u64|rand::rngs::SmallRng)
+
+  - id: mailtinder-tls-verification-on
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      TLS certificate verification must never be disabled (ASVS V12.3.2). The
+      HttpEgress client always verifies certificates (rustls, unknown issuer
+      refused); no client may accept invalid certs or hostnames.
+    paths:
+      include: ["backend/**/*.rs"]
+      exclude: [".semgrep/**"]
+    pattern-regex: >-
+      (danger_accept_invalid_certs|danger_accept_invalid_hostnames|\.dangerous\(\)|NoCertificateVerification)

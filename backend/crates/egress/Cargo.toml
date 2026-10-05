@@ -8,6 +8,30 @@ publish.workspace = true
 
 [dependencies]
 ports.workspace = true
+obs.workspace = true
+# rustls only, no default features (ring provider, no aws-lc-sys).
+reqwest.workspace = true
+tokio.workspace = true
+url.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[features]
+# Test-only policy overrides. This feature must NEVER be enabled by the api,
+# unsub or worker [dependencies]; only the egress integration tests enable it
+# under [dev-dependencies] below. CI's `--all-features` compiles it for tests
+# only.
+test-policy = []
+
+[dev-dependencies]
+axum.workspace = true
+proptest.workspace = true
+testkit.workspace = true
+rcgen = { version = "0.14", features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# Rebuild egress with the test-policy feature for the integration tests.
+egress = { path = ".", features = ["test-policy"] }
 
 [lints]
 workspace = true
