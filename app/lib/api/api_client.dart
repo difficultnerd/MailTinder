@@ -1,4 +1,16 @@
+import 'models/admin.dart';
+import 'models/auth.dart';
+import 'models/bakeoff.dart';
+import 'models/category.dart';
+import 'models/experiments.dart';
+import 'models/feed.dart';
+import 'models/history.dart';
+import 'models/needs_attention.dart';
+import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/progress.dart';
+import 'models/stats.dart';
+import 'models/swipe.dart';
 
 abstract class ApiClient {
   /// GET /api/v1/session. Never 401 (S7 5.2); creates a pre_auth session when none exists.
@@ -6,6 +18,166 @@ abstract class ApiClient {
 
   /// POST /api/v1/auth/sign-out -> 204.
   Future<void> signOut();
+
+  /// POST /api/v1/auth/google/start. Returns the authorization_url.
+  Future<Uri> startAuth({
+    required AuthIntent intent,
+    String? inviteToken,
+    String? mailboxId,
+  });
+
+  /// POST /api/v1/invite-requests with body {} (expects 202).
+  Future<void> createInviteRequest();
+
+  /// POST /api/v1/feed/next {cursor, limit, refresh}.
+  Future<FeedPage> feedNext({
+    String? cursor,
+    int limit = 20,
+    bool refresh = false,
+  });
+
+  /// POST /api/v1/swipes (API-SW-1). [idempotencyKey] is reused on retry.
+  Future<SwipeResult> swipe(SwipeRequest req, {required String idempotencyKey});
+
+  /// POST /api/v1/swipes/undo (API-SW-2).
+  Future<UndoResult> undo(String undoToken);
+
+  /// POST /api/v1/rules {kind: block_person, prompt_ref} (API-RULE-2).
+  Future<void> createBlockRule(String promptRef);
+
+  /// POST /api/v1/rules {kind: "file", mailbox_id, message_id, category_id}
+  /// (API-RULE-2, FL-04 AC2).
+  Future<void> createFileRule({
+    required String mailboxId,
+    required String messageId,
+    required String categoryId,
+  });
+
+  /// POST /api/v1/block-prompts/decline (API-RULE-5).
+  Future<void> declineBlockPrompt(String promptRef);
+
+  /// GET /api/v1/mailboxes (API-MBX-1).
+  Future<List<Mailbox>> listMailboxes();
+
+  /// DELETE /api/v1/mailboxes/{id} -> 204 (API-MBX-2). Needs step-up.
+  Future<void> disconnectMailbox(String mailboxId);
+
+  /// DELETE /api/v1/account -> 202 (API-ACCT-1). Needs step-up.
+  Future<DeleteAccountResult> deleteAccount();
+
+  /// GET /api/v1/categories (API-CAT-1).
+  Future<List<Category>> listCategories();
+
+  /// PATCH /api/v1/categories/{category_id} {name} (API-CAT-3).
+  Future<Category> renameCategory(String categoryId, String name);
+
+  /// DELETE /api/v1/categories/{category_id} (API-CAT-4). Removes the label
+  /// only; messages are never deleted (S3 INV-5).
+  Future<void> deleteCategory(String categoryId);
+
+  /// GET /api/v1/categories/{category_id}/messages (API-CAT-5).
+  Future<FiledMessagePage> listCategoryMessages(
+    String categoryId, {
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// GET /api/v1/rules (API-RULE-1).
+  Future<List<Rule>> listRules({RuleKind? kind});
+
+  /// PATCH /api/v1/rules/{rule_id} {enabled} (API-RULE-3).
+  Future<Rule> setRuleEnabled(String ruleId, bool enabled);
+
+  /// DELETE /api/v1/rules/{rule_id} (API-RULE-4).
+  Future<void> deleteRule(String ruleId);
+
+  /// GET /api/v1/history (API-HIST-1).
+  Future<HistoryPage> listHistory({
+    HistoryFilter filter = HistoryFilter.all,
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// GET /api/v1/stats (API-STAT-1).
+  Future<Stats> getStats();
+
+  /// GET /api/v1/progress (API-PROG-1).
+  Future<Progress> getProgress();
+
+  /// GET /api/v1/me/experiments (API-EXP-1).
+  Future<MyExperiments> getMyExperiments();
+
+  /// PUT /api/v1/me/experiments (API-EXP-2).
+  Future<MyExperiments> putMyExperiments({
+    required bool optedIn,
+    required String consentVersion,
+  });
+
+  /// GET /api/v1/admin/invites (API-ADM-1).
+  Future<Paged<Invite>> listInvites({String? cursor});
+
+  /// POST /api/v1/admin/invites (API-ADM-2, 201 or 200). Needs step-up.
+  Future<Invite> createInvite(String emailAddress);
+
+  /// POST /api/v1/admin/invites/{id}/resend (API-ADM-3). Needs step-up.
+  Future<Invite> resendInvite(String inviteId);
+
+  /// DELETE /api/v1/admin/invites/{id} (API-ADM-4). Needs step-up.
+  Future<void> revokeInvite(String inviteId);
+
+  /// GET /api/v1/admin/invite-requests (API-ADM-5).
+  Future<Paged<InviteRequest>> listInviteRequests({String? cursor});
+
+  /// POST /api/v1/admin/invite-requests/{id}/approve (API-ADM-6). Needs step-up.
+  Future<Invite> approveInviteRequest(String requestId);
+
+  /// POST /api/v1/admin/invite-requests/{id}/decline (API-ADM-7). Needs step-up.
+  Future<void> declineInviteRequest(String requestId);
+
+  /// GET /api/v1/admin/users (API-ADM-16).
+  Future<Paged<AdminUser>> listUsers({String? cursor});
+
+  /// DELETE /api/v1/admin/users/{id}/sessions (API-ADM-15). Needs step-up.
+  Future<void> endUserSession(String userId);
+
+  /// GET /api/v1/admin/bakeoff (API-ADM-10), JSON.
+  Future<BakeoffReport> getBakeoff(BakeoffQuery q);
+
+  /// GET /api/v1/admin/bakeoff with `Accept: text/csv` (API-ADM-10).
+  Future<List<int>> getBakeoffCsv(BakeoffQuery q);
+
+  /// GET /api/v1/admin/experiments/classifier (API-ADM-8).
+  Future<ClassifierExperiment> getClassifierExperiment();
+
+  /// PATCH /api/v1/admin/experiments/classifier (API-ADM-9). Needs step-up.
+  Future<ClassifierExperiment> setModelEnabled(String model, bool enabled);
+
+  /// POST /api/v1/admin/bakeoff/snapshots (API-ADM-11). Needs step-up.
+  Future<Snapshot> createSnapshot(String name, BakeoffQuery q);
+
+  /// GET /api/v1/admin/bakeoff/snapshots (API-ADM-13).
+  Future<Paged<SnapshotSummary>> listSnapshots({String? cursor});
+
+  /// GET /api/v1/admin/bakeoff/snapshots/{id} (API-ADM-12), JSON.
+  Future<Snapshot> getSnapshot(String id);
+
+  /// GET /api/v1/admin/bakeoff/snapshots/{id} with `Accept: text/csv`.
+  Future<List<int>> getSnapshotCsv(String id);
+
+  /// DELETE /api/v1/admin/bakeoff/snapshots/{id} (API-ADM-14). Needs step-up.
+  Future<void> deleteSnapshot(String id);
+
+  /// GET /api/v1/needs-attention (API-NA-1).
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// POST /api/v1/needs-attention/{item_id}/resolve (API-NA-2).
+  Future<void> resolveNeedsAttention(String itemId);
+
+  /// POST /api/v1/needs-attention/{item_id}/dismiss (API-NA-3).
+  Future<void> dismissNeedsAttention(String itemId);
 }
 
 class ApiException implements Exception {
@@ -16,6 +188,7 @@ class ApiException implements Exception {
     this.mailboxId,
     this.retryAfterSeconds,
     this.fields = const [],
+    this.problem,
   });
 
   final int status;
@@ -25,6 +198,9 @@ class ApiException implements Exception {
   final String? mailboxId;
   final int? retryAfterSeconds;
   final List<String> fields;
+
+  /// The raw problem body, for members such as `versions_present`.
+  final Map<String, dynamic>? problem;
 
   @override
   String toString() =>
@@ -36,4 +212,36 @@ class NetworkException implements Exception {
 
   @override
   String toString() => 'NetworkException()';
+}
+
+/// DELETE /account 202 body (API-ACCT-1).
+class DeleteAccountResult {
+  const DeleteAccountResult({
+    required this.deletionDueBy,
+    required this.appFoldersNotDeleted,
+  });
+
+  factory DeleteAccountResult.fromJson(Map<String, Object?> json) {
+    final due = json['deletion_due_by'] as String?;
+    final raw = json['app_folders_not_deleted'] as List<Object?>?;
+    return DeleteAccountResult(
+      deletionDueBy: due != null
+          ? DateTime.parse(due).toUtc()
+          : DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      appFoldersNotDeleted: raw == null
+          ? const []
+          : raw
+                .whereType<Map<String, Object?>>()
+                .map(
+                  (m) => (
+                    mailboxId: (m['mailbox_id'] as String?) ?? '',
+                    emailAddress: (m['email_address'] as String?) ?? '',
+                  ),
+                )
+                .toList(growable: false),
+    );
+  }
+
+  final DateTime deletionDueBy;
+  final List<({String mailboxId, String emailAddress})> appFoldersNotDeleted;
 }

@@ -2,7 +2,19 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'api_client.dart';
+import 'models/admin.dart';
+import 'models/auth.dart';
+import 'models/bakeoff.dart';
+import 'models/category.dart';
+import 'models/experiments.dart';
+import 'models/feed.dart';
+import 'models/history.dart';
+import 'models/needs_attention.dart';
+import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/progress.dart';
+import 'models/stats.dart';
+import 'models/swipe.dart';
 
 typedef UnauthenticatedHandler = void Function();
 
@@ -47,11 +59,549 @@ class HttpApiClient implements ApiClient {
     await send('POST', 'auth/sign-out', expect: const {204});
   }
 
+  @override
+  Future<Uri> startAuth({
+    required AuthIntent intent,
+    String? inviteToken,
+    String? mailboxId,
+  }) async {
+    final data = await send(
+      'POST',
+      'auth/google/start',
+      body: {
+        'intent': intent.wire,
+        'invite_token': inviteToken,
+        'mailbox_id': mailboxId,
+      },
+    );
+    final raw = data?['authorization_url'] as String?;
+    if (raw == null) {
+      throw const NetworkException();
+    }
+    return Uri.parse(raw);
+  }
+
+  @override
+  Future<void> createInviteRequest() async {
+    await send('POST', 'invite-requests', body: const {}, expect: const {202});
+  }
+
+  @override
+  Future<FeedPage> feedNext({
+    String? cursor,
+    int limit = 20,
+    bool refresh = false,
+  }) async {
+    final data = await send(
+      'POST',
+      'feed/next',
+      body: {'cursor': cursor, 'limit': limit, 'refresh': refresh},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return FeedPage.fromJson(data);
+  }
+
+  @override
+  Future<SwipeResult> swipe(
+    SwipeRequest req, {
+    required String idempotencyKey,
+  }) async {
+    final data = await send(
+      'POST',
+      'swipes',
+      body: req.toJson(),
+      idempotencyKey: idempotencyKey,
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return SwipeResult.fromJson(data);
+  }
+
+  @override
+  Future<UndoResult> undo(String undoToken) async {
+    final data = await send(
+      'POST',
+      'swipes/undo',
+      body: {'undo_token': undoToken},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return UndoResult.fromJson(data);
+  }
+
+  @override
+  Future<void> createBlockRule(String promptRef) async {
+    await send(
+      'POST',
+      'rules',
+      body: {'kind': 'block_person', 'prompt_ref': promptRef},
+      expect: const {201},
+    );
+  }
+
+  @override
+  Future<void> createFileRule({
+    required String mailboxId,
+    required String messageId,
+    required String categoryId,
+  }) async {
+    await send(
+      'POST',
+      'rules',
+      body: {
+        'kind': 'file',
+        'mailbox_id': mailboxId,
+        'message_id': messageId,
+        'category_id': categoryId,
+      },
+      expect: const {201},
+    );
+  }
+
+  @override
+  Future<void> declineBlockPrompt(String promptRef) async {
+    await send(
+      'POST',
+      'block-prompts/decline',
+      body: {'prompt_ref': promptRef},
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<List<Mailbox>> listMailboxes() async {
+    final data = await send('GET', 'mailboxes');
+    final raw = data?['mailboxes'] as List<Object?>?;
+    if (raw == null) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Mailbox.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> disconnectMailbox(String mailboxId) async {
+    await send(
+      'DELETE',
+      'mailboxes/${Uri.encodeComponent(mailboxId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<DeleteAccountResult> deleteAccount() async {
+    final data = await send('DELETE', 'account', expect: const {202});
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return DeleteAccountResult.fromJson(data);
+  }
+
+  @override
+  Future<List<Category>> listCategories() async {
+    final data = await send('GET', 'categories');
+    final raw = data?['categories'];
+    if (raw is! List<Object?>) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Category.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<Category> renameCategory(String categoryId, String name) async {
+    final data = await send(
+      'PATCH',
+      'categories/$categoryId',
+      body: {'name': name},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Category.fromJson(data);
+  }
+
+  @override
+  Future<void> deleteCategory(String categoryId) async {
+    await send('DELETE', 'categories/$categoryId', expect: const {204});
+  }
+
+  @override
+  Future<FiledMessagePage> listCategoryMessages(
+    String categoryId, {
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send(
+      'GET',
+      'categories/$categoryId/messages',
+      query: query,
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return FiledMessagePage.fromJson(data);
+  }
+
+  @override
+  Future<List<Rule>> listRules({RuleKind? kind}) async {
+    final data = await send(
+      'GET',
+      'rules',
+      query: kind == null ? null : {'kind': kind.wire},
+    );
+    final raw = data?['rules'];
+    if (raw is! List<Object?>) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Rule.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<Rule> setRuleEnabled(String ruleId, bool enabled) async {
+    final data = await send(
+      'PATCH',
+      'rules/${Uri.encodeComponent(ruleId)}',
+      body: {'enabled': enabled},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Rule.fromJson(data);
+  }
+
+  @override
+  Future<void> deleteRule(String ruleId) async {
+    await send(
+      'DELETE',
+      'rules/${Uri.encodeComponent(ruleId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<HistoryPage> listHistory({
+    HistoryFilter filter = HistoryFilter.all,
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'filter': filter.wire, 'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send('GET', 'history', query: query);
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return HistoryPage.fromJson(data);
+  }
+
+  @override
+  Future<Stats> getStats() async {
+    final data = await send('GET', 'stats');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Stats.fromJson(data);
+  }
+
+  @override
+  Future<Progress> getProgress() async {
+    final data = await send('GET', 'progress');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Progress.fromJson(data);
+  }
+
+  @override
+  Future<MyExperiments> getMyExperiments() async {
+    final data = await send('GET', 'me/experiments');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return MyExperiments.fromJson(data);
+  }
+
+  @override
+  Future<MyExperiments> putMyExperiments({
+    required bool optedIn,
+    required String consentVersion,
+  }) async {
+    final data = await send(
+      'PUT',
+      'me/experiments',
+      body: {
+        'classifier_bakeoff': {
+          'opted_in': optedIn,
+          'consent_version': consentVersion,
+        },
+      },
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return MyExperiments.fromJson(data);
+  }
+
+  Map<String, String>? _cursorQuery(String? cursor) =>
+      cursor == null ? null : {'cursor': cursor};
+
+  @override
+  Future<Paged<Invite>> listInvites({String? cursor}) async {
+    final data = await send(
+      'GET',
+      'admin/invites',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'invites', Invite.fromJson);
+  }
+
+  @override
+  Future<Invite> createInvite(String emailAddress) async {
+    final data = await send(
+      'POST',
+      'admin/invites',
+      body: {'email_address': emailAddress},
+      expect: const {200, 201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<Invite> resendInvite(String inviteId) async {
+    final data = await send(
+      'POST',
+      'admin/invites/${Uri.encodeComponent(inviteId)}/resend',
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<void> revokeInvite(String inviteId) async {
+    await send(
+      'DELETE',
+      'admin/invites/${Uri.encodeComponent(inviteId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<Paged<InviteRequest>> listInviteRequests({String? cursor}) async {
+    final data = await send(
+      'GET',
+      'admin/invite-requests',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'requests', InviteRequest.fromJson);
+  }
+
+  @override
+  Future<Invite> approveInviteRequest(String requestId) async {
+    final data = await send(
+      'POST',
+      'admin/invite-requests/${Uri.encodeComponent(requestId)}/approve',
+      expect: const {201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Invite.fromJson(data);
+  }
+
+  @override
+  Future<void> declineInviteRequest(String requestId) async {
+    await send(
+      'POST',
+      'admin/invite-requests/${Uri.encodeComponent(requestId)}/decline',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<Paged<AdminUser>> listUsers({String? cursor}) async {
+    final data = await send('GET', 'admin/users', query: _cursorQuery(cursor));
+    return Paged.parse(data, 'users', AdminUser.fromJson);
+  }
+
+  @override
+  Future<void> endUserSession(String userId) async {
+    await send(
+      'DELETE',
+      'admin/users/${Uri.encodeComponent(userId)}/sessions',
+      expect: const {204},
+    );
+  }
+
+  static const _bakeoff = 'admin/bakeoff';
+
+  @override
+  Future<BakeoffReport> getBakeoff(BakeoffQuery q) async {
+    final data = await send('GET', _bakeoff, query: q.toQuery());
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return BakeoffReport.fromJson(data);
+  }
+
+  @override
+  Future<List<int>> getBakeoffCsv(BakeoffQuery q) =>
+      _getCsv(_bakeoff, q.toQuery());
+
+  @override
+  Future<ClassifierExperiment> getClassifierExperiment() async {
+    final data = await send('GET', 'admin/experiments/classifier');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return ClassifierExperiment.fromJson(data);
+  }
+
+  @override
+  Future<ClassifierExperiment> setModelEnabled(
+    String model,
+    bool enabled,
+  ) async {
+    final data = await send(
+      'PATCH',
+      'admin/experiments/classifier',
+      body: {
+        'models': [
+          {'model': model, 'enabled': enabled},
+        ],
+      },
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return ClassifierExperiment.fromJson(data);
+  }
+
+  @override
+  Future<Snapshot> createSnapshot(String name, BakeoffQuery q) async {
+    final data = await send(
+      'POST',
+      '$_bakeoff/snapshots',
+      body: {'name': name, 'query': q.toJson()},
+      expect: const {201},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Snapshot.fromJson(data);
+  }
+
+  @override
+  Future<Paged<SnapshotSummary>> listSnapshots({String? cursor}) async {
+    final data = await send(
+      'GET',
+      '$_bakeoff/snapshots',
+      query: _cursorQuery(cursor),
+    );
+    return Paged.parse(data, 'snapshots', SnapshotSummary.fromJson);
+  }
+
+  @override
+  Future<Snapshot> getSnapshot(String id) async {
+    final data = await send(
+      'GET',
+      '$_bakeoff/snapshots/${Uri.encodeComponent(id)}',
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Snapshot.fromJson(data);
+  }
+
+  @override
+  Future<List<int>> getSnapshotCsv(String id) =>
+      _getCsv('$_bakeoff/snapshots/${Uri.encodeComponent(id)}', null);
+
+  @override
+  Future<void> deleteSnapshot(String id) async {
+    await send(
+      'DELETE',
+      '$_bakeoff/snapshots/${Uri.encodeComponent(id)}',
+      expect: const {204},
+    );
+  }
+
+  /// GET with `Accept: text/csv`; the session cookie rides on the client.
+  Future<List<int>> _getCsv(String path, Map<String, String>? query) async {
+    final resolved = _resolvePath(path);
+    final uri = query == null
+        ? resolved
+        : resolved.replace(queryParameters: query);
+    http.Response response;
+    try {
+      final request = http.Request('GET', uri)..headers['Accept'] = 'text/csv';
+      response = await http.Response.fromStream(await _client.send(request));
+    } on http.ClientException {
+      throw const NetworkException();
+    }
+    if (response.statusCode == 200) {
+      return response.bodyBytes;
+    }
+    final exception = _parseProblem(response);
+    if (response.statusCode == 401) {
+      onUnauthenticated();
+    }
+    throw exception;
+  }
+
+  @override
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send('GET', 'needs-attention', query: query);
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return NeedsAttentionPage.fromJson(data);
+  }
+
+  @override
+  Future<void> resolveNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/resolve', expect: const {204});
+  }
+
+  @override
+  Future<void> dismissNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/dismiss', expect: const {204});
+  }
+
   /// Shared plumbing for every endpoint added by later tasks.
   Future<Map<String, Object?>?> send(
     String method,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String>? query,
     String? idempotencyKey,
     Set<int> expect = const {200},
   }) async {
@@ -59,6 +609,7 @@ class HttpApiClient implements ApiClient {
       method,
       path,
       body: body,
+      query: query,
       idempotencyKey: idempotencyKey,
       expect: expect,
       canRetryCsrf: true,
@@ -69,11 +620,15 @@ class HttpApiClient implements ApiClient {
     String method,
     String path, {
     Map<String, Object?>? body,
+    Map<String, String>? query,
     String? idempotencyKey,
     required Set<int> expect,
     required bool canRetryCsrf,
   }) async {
-    final uri = _resolvePath(path);
+    final resolved = _resolvePath(path);
+    final uri = query == null || query.isEmpty
+        ? resolved
+        : resolved.replace(queryParameters: query);
     final upperMethod = method.toUpperCase();
 
     final headers = <String, String>{'Accept': 'application/json'};
@@ -147,6 +702,7 @@ class HttpApiClient implements ApiClient {
         method,
         path,
         body: body,
+        query: query,
         idempotencyKey: idempotencyKey,
         expect: expect,
         canRetryCsrf: false,
@@ -177,6 +733,7 @@ class HttpApiClient implements ApiClient {
           mailboxId: mailboxId,
           retryAfterSeconds: retryAfterSeconds,
           fields: fields,
+          problem: decoded,
         );
       }
     } catch (_) {
