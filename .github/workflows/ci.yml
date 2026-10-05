@@ -94,6 +94,7 @@ jobs:
         with:
           install_components: cloud-firestore-emulator,beta
       - run: ../scripts/firestore-emulator.sh
+        working-directory: backend
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
