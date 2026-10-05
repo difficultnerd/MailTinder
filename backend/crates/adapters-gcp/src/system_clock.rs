@@ -12,3 +12,9 @@ impl Clock for SystemClock {
         OffsetDateTime::now_utc()
     }
 }
+
+impl obs::Clock for SystemClock {
+    fn now(&self) -> OffsetDateTime {
+        OffsetDateTime::now_utc()
+    }
+}

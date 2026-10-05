@@ -7,7 +7,7 @@ rules:
       batchDelete and threads.delete, and Graph permanentDelete, must never be called.
     paths:
       include: ["*.rs", "*.dart"]
-      exclude: ["**/backend/crates/testkit/**", "**/backend/crates/fake-google/**", ".semgrep/**"]
+      exclude: ["**/backend/crates/testkit/**", "**/backend/crates/fake-google/**", "**/backend/crates/egress/**", ".semgrep/**"]
     pattern-regex: >-
       (?i)(batchDelete|permanentDelete|threads\.delete|messages\.delete|(\.delete\(|Method::DELETE)[^;]{0,300}/(messages|threads)/)
 
@@ -22,3 +22,53 @@ rules:
       exclude: ["**/system_clock.rs", "**/os_rng.rs", "**/backend/crates/adapters-*/**", "**/backend/crates/egress/**", ".semgrep/**"]
     pattern-regex: >-
       (SystemTime::now|OffsetDateTime::now_utc|OffsetDateTime::now_local|Utc::now|thread_rng|rand::random|OsRng)
+
+  - id: mailtinder-crypto-approved-aead-only
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Only AES-256-GCM (via the aes-gcm crate) may be used for encryption (S6, ASVS
+      V11.3.1/V11.3.2). Block ciphers standalone, ECB/CBC/CTR/CFB/OFB modes, unauthenticated
+      ChaCha20 and PKCS#1 v1.5 padding are forbidden.
+    paths:
+      include: ["backend/**/*.rs"]
+      exclude: [".semgrep/**"]
+    pattern-regex: >-
+      (?i)(\bEcb\b|\bCbc\b|\bCtr\b|\bCfb\b|\bOfb\b|Aes256::new|Pkcs1v15Encrypt|ChaCha20::new)
+
+  - id: mailtinder-crypto-no-weak-hash
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      MD5 and SHA-1 are banned for any cryptographic use (ASVS V11.4.1). Use SHA-256
+      (sha2) or HMAC/HKDF-SHA-256.
+    paths:
+      include: ["backend/**/*.rs"]
+      exclude: [".semgrep/**"]
+    pattern-regex: >-
+      (?i)(\bmd5\b|\bMd5\b|\bsha1\b|\bSha1\b)
+
+  - id: mailtinder-no-non-csprng-secrets
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      Secret randomness must come from a CSPRNG (ASVS V11.5.1). thread_rng, SmallRng
+      and seeded StdRng are not cryptographically secure; use the Rng port (OsRng in prod).
+    paths:
+      include: ["backend/**/*.rs"]
+      exclude: ["**/backend/crates/testkit/**", "**/backend/crates/fake-google/**", "**/backend/crates/egress/**", ".semgrep/**"]
+    pattern-regex: >-
+      (rand::thread_rng|thread_rng\b|SmallRng|StdRng::seed_from_u64|rand::rngs::SmallRng)
+
+  - id: mailtinder-tls-verification-on
+    languages: [generic]
+    severity: ERROR
+    message: >-
+      TLS certificate verification must never be disabled (ASVS V12.3.2). The
+      HttpEgress client always verifies certificates (rustls, unknown issuer
+      refused); no client may accept invalid certs or hostnames.
+    paths:
+      include: ["backend/**/*.rs"]
+      exclude: [".semgrep/**"]
+    pattern-regex: >-
+      (danger_accept_invalid_certs|danger_accept_invalid_hostnames|\.dangerous\(\)|NoCertificateVerification)

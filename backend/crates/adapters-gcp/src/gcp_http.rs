@@ -140,6 +140,40 @@ impl GcpHttp {
         Err(map_status(status.as_u16(), code, message))
     }
 
+    /// Performs a request that expects no response body (e.g. a `DELETE`),
+    /// refusing any URL whose host is not allowed. A 2xx status is success;
+    /// other statuses map to `GcpError` from the error envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `GcpError` for refused hosts, transport failures and
+    /// non-success status codes.
+    pub async fn send(&self, method: Method, url: &Url) -> Result<(), GcpError> {
+        self.check_host(url)?;
+        let token = self.tokens.bearer().await?;
+        let resp = self
+            .client
+            .request(method, url.clone())
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .map_err(|_| GcpError::Unavailable)?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        let code = body
+            .pointer("/error/status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let message = body
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Err(map_status(status.as_u16(), code, message))
+    }
+
     fn check_host(&self, url: &Url) -> Result<(), GcpError> {
         if let Some(emulator) = self.emulator {
             if url.scheme() == "http"

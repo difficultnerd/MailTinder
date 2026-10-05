@@ -639,7 +639,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | V11.2.1 | 2 | Verify that industry-validated implementations (including libraries and hardware-accelerated implementations) are used for cryptographic operations. | Vetted crates and Cloud KMS only; cargo-deny allowlist | backend/crypto | ci | Planned |
-| V11.2.2 | 2 | Verify that the application is designed with crypto agility such that random number, authenticated encryption, MAC, or hashing algorithms, key lengths, rounds, ciphers and modes can be reconfigured, upgraded, or swapped at any time, to protect against cryptographic breaks. Similarly, it must also be possible to replace keys and passwords and re-encrypt data. This will allow for seamless upgrades to post-quantum cryptography (PQC), once high-assurance implementations of approved PQC schemes or standards are widely available. | Scheme version stored with each ciphertext and sealed token; re-encrypt path | backend/crypto | test `asvs_v11_2_2_*` | Planned |
+| V11.2.2 | 2 | Verify that the application is designed with crypto agility such that random number, authenticated encryption, MAC, or hashing algorithms, key lengths, rounds, ciphers and modes can be reconfigured, upgraded, or swapped at any time, to protect against cryptographic breaks. Similarly, it must also be possible to replace keys and passwords and re-encrypt data. This will allow for seamless upgrades to post-quantum cryptography (PQC), once high-assurance implementations of approved PQC schemes or standards are widely available. | Scheme version stored with each ciphertext and sealed token; re-encrypt path | backend/crypto | test `asvs_v11_2_2_*` | Tested |
 | V11.2.3 | 2 | Verify that all cryptographic primitives utilize a minimum of 128-bits of security based on the algorithm, key size, and configuration. For example, a 256-bit ECC key provides roughly 128 bits of security where RSA requires a 3072-bit key to achieve 128 bits of security. | AES-256, SHA-256 and P-256 or stronger | backend/crypto | review | Planned |
 
 ## V11.3 Encryption Algorithms
@@ -650,9 +650,9 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| V11.3.1 | 1 | Verify that insecure block modes (e.g., ECB) and weak padding schemes (e.g., PKCS#1 v1.5) are not used. | AES-GCM only; no ECB or PKCS#1 v1.5 | backend/crypto | semgrep | Planned |
-| V11.3.2 | 1 | Verify that only approved ciphers and modes such as AES with GCM are used. | AES-256-GCM only | backend/crypto | semgrep | Planned |
-| V11.3.3 | 2 | Verify that encrypted data is protected against unauthorized modification preferably by using an approved authenticated encryption method or by combining an approved encryption method with an approved MAC algorithm. | AEAD with associated data binding (user, field or token type) | backend/crypto | test `asvs_v11_3_3_*` | Planned |
+| V11.3.1 | 1 | Verify that insecure block modes (e.g., ECB) and weak padding schemes (e.g., PKCS#1 v1.5) are not used. | AES-GCM only; no ECB or PKCS#1 v1.5 | backend/crypto | mailtinder-crypto-approved-aead-only | Tested |
+| V11.3.2 | 1 | Verify that only approved ciphers and modes such as AES with GCM are used. | AES-256-GCM only | backend/crypto | mailtinder-crypto-approved-aead-only | Tested |
+| V11.3.3 | 2 | Verify that encrypted data is protected against unauthorized modification preferably by using an approved authenticated encryption method or by combining an approved encryption method with an approved MAC algorithm. | AEAD with associated data binding (user, field or token type) | backend/crypto | test `asvs_v11_3_3_*` | Tested |
 
 ## V11.4 Hashing and Hash-based Functions
 
@@ -662,7 +662,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| V11.4.1 | 1 | Verify that only approved hash functions are used for general cryptographic use cases, including digital signatures, HMAC, KDF, and random bit generation. Disallowed hash functions, such as MD5, must not be used for any cryptographic purpose. | SHA-256, HMAC-SHA-256, HKDF-SHA-256; MD5 and SHA-1 banned | backend/ | semgrep | Planned |
+| V11.4.1 | 1 | Verify that only approved hash functions are used for general cryptographic use cases, including digital signatures, HMAC, KDF, and random bit generation. Disallowed hash functions, such as MD5, must not be used for any cryptographic purpose. | SHA-256, HMAC-SHA-256, HKDF-SHA-256; MD5 and SHA-1 banned | backend/ | mailtinder-crypto-no-weak-hash | Tested |
 | V11.4.2 | 2 | Verify that passwords are stored using an approved, computationally intensive, key derivation function (also known as a "password hashing function"), with parameter settings configured based on current guidance. The settings should balance security and performance to make brute-force attacks sufficiently challenging for the required level of security. | N/A: no passwords stored | - | - | N/A |
 | V11.4.3 | 2 | Verify that hash functions used in digital signatures, as part of data authentication or data integrity are collision resistant and have appropriate bit-lengths. If collision resistance is required, the output length must be at least 256 bits. If only resistance to second pre-image attacks is required, the output length must be at least 128 bits. | SHA-256 for every integrity use | backend/crypto | review | Planned |
 | V11.4.4 | 2 | Verify that the application uses approved key derivation functions with key stretching parameters when deriving secret keys from passwords. The parameters in use must balance security and performance to prevent brute-force attacks from compromising the resulting cryptographic key. | N/A: no keys derived from passwords; HKDF inputs are high entropy | - | - | N/A |
@@ -675,7 +675,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| V11.5.1 | 2 | Verify that all random numbers and strings which are intended to be non-guessable must be generated using a cryptographically secure pseudo-random number generator (CSPRNG) and have at least 128 bits of entropy. Note that UUIDs do not respect this condition. | OS CSPRNG for IDs, tokens, nonces and keys; UUIDs never used as secrets | backend/ | semgrep | Planned |
+| V11.5.1 | 2 | Verify that all random numbers and strings which are intended to be non-guessable must be generated using a cryptographically secure pseudo-random number generator (CSPRNG) and have at least 128 bits of entropy. Note that UUIDs do not respect this condition. | OS CSPRNG for IDs, tokens, nonces and keys; UUIDs never used as secrets | backend/ | mailtinder-no-non-csprng-secrets | Tested |
 
 ## V11.6 Public Key Cryptography
 

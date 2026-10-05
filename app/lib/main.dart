@@ -9,7 +9,10 @@ import 'state/sign_in_model.dart';
 import 'state/step_up_controller.dart';
 
 void main() {
-  final origin = Uri.base;
+  // API base URL: override with --dart-define=API_ORIGIN=http://host:port,
+  // otherwise default to the same origin the app is served from.
+  const apiOrigin = String.fromEnvironment('API_ORIGIN');
+  final origin = apiOrigin.isNotEmpty ? Uri.parse(apiOrigin) : Uri.base;
   late final SessionModel sessionModel;
 
   final apiClient = HttpApiClient(

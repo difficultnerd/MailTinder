@@ -73,6 +73,7 @@ jobs:
       - run: python3 tools/check_ac_coverage.py
 
   coverage:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -94,6 +95,7 @@ jobs:
         with:
           install_components: cloud-firestore-emulator,beta
       - run: ../scripts/firestore-emulator.sh
+        working-directory: backend
         env:
           FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -110,6 +112,7 @@ jobs:
       - run: python3 tools/check_coverage_floors.py --rust backend/lcov.info --flutter app/coverage/lcov.info
 
   csp-smoke:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

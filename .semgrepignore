@@ -10,3 +10,6 @@ backend/crates/fake-google/**
 # Third-party / generated:
 build/**
 .node_modules/**
+
+# Rule test fixtures (positive/negative cases for the rules themselves):
+.semgrep/tests/**
