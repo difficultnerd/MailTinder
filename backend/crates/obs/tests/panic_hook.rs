@@ -9,7 +9,12 @@ use std::sync::Arc;
 #[test]
 fn panic_hook_writes_no_payload() {
     let sink = CaptureSink::default();
-    init("test", Arc::new(sink.clone())).expect("init once");
+    init(
+        "test",
+        Arc::new(sink.clone()),
+        obs::arc(obs::FixedClock::default()),
+    )
+    .expect("init once");
     let result = std::panic::catch_unwind(|| {
         panic!("CANARY-SECRET-123");
     });

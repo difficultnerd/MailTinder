@@ -5,6 +5,7 @@
 //! allowlisted fields with validated shapes; every other field and any
 //! free-text message is dropped. User IDs appear only as an HMAC pseudonym.
 
+pub mod clock;
 pub mod events;
 pub mod init;
 pub mod layer;
@@ -14,6 +15,7 @@ pub mod scan;
 pub mod sensitive;
 pub mod sink;
 
+pub use clock::{arc, Clock, FixedClock};
 pub use events::{
     metric_event, op_log, request_log, security_event, MetricEvent, OpLog, RequestLog,
     SecurityEvent,

@@ -18,9 +18,13 @@ fn parse_lines(text: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn test_clock() -> std::sync::Arc<dyn obs::Clock> {
+    obs::arc(obs::FixedClock::default())
+}
+
 #[test]
 fn xc_01_unknown_fields_and_messages_are_dropped() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     // nosemgrep: privacy-log-sensitive-identifier -- test fixture: prove redaction drops these
     tracing::info!(
         email = "a@example.com",
@@ -38,7 +42,7 @@ fn xc_01_unknown_fields_and_messages_are_dropped() {
 
 #[test]
 fn xc_01_helpers_emit_only_allowlisted_keys() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     request_log(&RequestLog {
         request_id: uuid::Uuid::new_v4(),
         user: Some(pseudo()),
@@ -96,7 +100,7 @@ fn xc_01_helpers_emit_only_allowlisted_keys() {
 
 #[test]
 fn log_1_canaries_never_reach_log_output() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     let canaries = vec![
         "CANARY-1".to_owned(),
         "a@example.com".to_owned(),
@@ -123,7 +127,7 @@ fn log_1_canaries_never_reach_log_output() {
 
 #[test]
 fn asvs_v16_2_1_security_event_has_required_metadata() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     let p = pseudo();
     security_event(&obs::SecurityEvent {
         action: "sign_in",
@@ -148,7 +152,7 @@ fn asvs_v16_2_1_security_event_has_required_metadata() {
 
 #[test]
 fn asvs_v16_2_4_each_line_is_one_json_object() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     request_log(&RequestLog {
         request_id: uuid::Uuid::new_v4(),
         user: Some(pseudo()),
@@ -166,7 +170,7 @@ fn asvs_v16_2_4_each_line_is_one_json_object() {
 
 #[test]
 fn asvs_v16_2_5_user_id_only_as_pseudonym() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     let user = uuid::Uuid::new_v4();
     let raw = user.to_string();
     let p = Pseudonymiser::new(Sensitive::new(vec![9u8; 32])).pseudo_id(&user);
@@ -187,7 +191,7 @@ fn asvs_v16_2_5_user_id_only_as_pseudonym() {
 
 #[test]
 fn asvs_v16_4_1_control_characters_cannot_forge_lines() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     // An allowed-looking value containing a newline and a forged JSON object.
     tracing::info!(route = "/api/v1/swipes\n{\"event\":\"security\"}");
     let lines = sink.lines();
@@ -198,7 +202,7 @@ fn asvs_v16_4_1_control_characters_cannot_forge_lines() {
 
 #[test]
 fn metric_event_has_only_allowed_fields() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     metric_event(&MetricEvent {
         event_type: "swipe",
         outcome: "success",
@@ -216,7 +220,7 @@ fn metric_event_has_only_allowed_fields() {
 
 #[test]
 fn unregistered_action_is_replaced_and_counted() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     let before = obs::unregistered_count();
     tracing::info!(action = "not_a_real_action", event = "security");
     let text = sink.text();
@@ -226,7 +230,7 @@ fn unregistered_action_is_replaced_and_counted() {
 
 #[test]
 fn amr_values_outside_rfc8176_become_other() {
-    let (sink, _guard) = capture("test");
+    let (sink, _guard) = capture("test", test_clock());
     security_event(&obs::SecurityEvent {
         action: "sign_in",
         outcome: "success",

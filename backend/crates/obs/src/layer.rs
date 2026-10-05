@@ -9,6 +9,7 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
+use crate::clock::Clock;
 use crate::registry;
 use crate::sink::LogSink;
 
@@ -52,11 +53,16 @@ fn checks() -> &'static [(&'static str, Check)] {
 pub struct AllowlistJsonLayer {
     service: &'static str,
     sink: Arc<dyn LogSink>,
+    clock: Arc<dyn Clock>,
 }
 
 impl AllowlistJsonLayer {
-    pub fn new(service: &'static str, sink: Arc<dyn LogSink>) -> Self {
-        Self { service, sink }
+    pub fn new(service: &'static str, sink: Arc<dyn LogSink>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            service,
+            sink,
+            clock,
+        }
     }
 }
 
@@ -64,7 +70,12 @@ impl<S: Subscriber> Layer<S> for AllowlistJsonLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let mut visitor = AllowlistVisitor::default();
         event.record(&mut visitor);
-        let line = render_line(self.service, *event.metadata().level(), &visitor);
+        let line = render_line(
+            self.service,
+            *event.metadata().level(),
+            &visitor,
+            &*self.clock,
+        );
         self.sink.write_line(&line);
     }
 }
@@ -180,7 +191,12 @@ fn validate(check: &Check, value: &Value) -> Option<Value> {
 }
 
 /// Build the one-line JSON object for an event.
-fn render_line(service: &'static str, level: tracing::Level, v: &AllowlistVisitor) -> String {
+fn render_line(
+    service: &'static str,
+    level: tracing::Level,
+    v: &AllowlistVisitor,
+    clock: &dyn Clock,
+) -> String {
     let event = v
         .fields
         .get("event")
@@ -198,7 +214,7 @@ fn render_line(service: &'static str, level: tracing::Level, v: &AllowlistVisito
         }
     };
     let mut obj = Map::new();
-    obj.insert("time".to_owned(), json!(now_rfc3339()));
+    obj.insert("time".to_owned(), json!(now_rfc3339(clock)));
     obj.insert("severity".to_owned(), json!(severity));
     obj.insert("service".to_owned(), json!(service));
     obj.insert("event".to_owned(), json!(event));
@@ -213,8 +229,8 @@ fn render_line(service: &'static str, level: tracing::Level, v: &AllowlistVisito
     serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|_| "{}".to_owned())
 }
 
-fn now_rfc3339() -> String {
-    let now = time::OffsetDateTime::now_utc();
+fn now_rfc3339(clock: &dyn Clock) -> String {
+    let now = clock.now();
     now.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }

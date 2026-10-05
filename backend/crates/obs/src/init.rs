@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::clock::Clock;
 use crate::layer::AllowlistJsonLayer;
 use crate::registry;
 use crate::sink::{CaptureSink, LogSink};
@@ -29,25 +30,32 @@ static INIT: std::sync::OnceLock<Result<(), ObsError>> = std::sync::OnceLock::ne
 /// # Errors
 ///
 /// Returns `ObsError` if `init` has already been called in this process.
-pub fn init(service: &'static str, sink: Arc<dyn LogSink>) -> Result<(), ObsError> {
+pub fn init(
+    service: &'static str,
+    sink: Arc<dyn LogSink>,
+    clock: Arc<dyn Clock>,
+) -> Result<(), ObsError> {
     INIT.get_or_init(|| {
-        let subscriber =
-            tracing_subscriber::registry().with(AllowlistJsonLayer::new(service, sink.clone()));
+        let subscriber = tracing_subscriber::registry().with(AllowlistJsonLayer::new(
+            service,
+            sink.clone(),
+            clock.clone(),
+        ));
         subscriber.init();
-        install_panic_hook(service, sink);
+        install_panic_hook(service, sink, clock);
         Ok(())
     })
     .clone()
 }
 
-fn install_panic_hook(service: &'static str, sink: Arc<dyn LogSink>) {
+fn install_panic_hook(service: &'static str, sink: Arc<dyn LogSink>, clock: Arc<dyn Clock>) {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // One line, no payload, no location. Release builds never print the
         // panic message, which can hold data.
         let line = format!(
             "{{\"time\":\"{}\",\"severity\":\"CRITICAL\",\"service\":\"{}\",\"event\":\"panic\"}}",
-            now_rfc3339(),
+            now_rfc3339(&*clock),
             service
         );
         sink.write_line(&line);
@@ -59,10 +67,16 @@ fn install_panic_hook(service: &'static str, sink: Arc<dyn LogSink>) {
 /// For tests: a scoped subscriber on the current thread. Returns the capture
 /// sink and a guard that restores the previous subscriber when dropped.
 #[must_use]
-pub fn capture(service: &'static str) -> (CaptureSink, tracing::subscriber::DefaultGuard) {
+pub fn capture(
+    service: &'static str,
+    clock: Arc<dyn Clock>,
+) -> (CaptureSink, tracing::subscriber::DefaultGuard) {
     let sink = CaptureSink::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(AllowlistJsonLayer::new(service, Arc::new(sink.clone())));
+    let subscriber = tracing_subscriber::registry().with(AllowlistJsonLayer::new(
+        service,
+        Arc::new(sink.clone()),
+        clock,
+    ));
     let guard = tracing::subscriber::set_default(subscriber);
     (sink, guard)
 }
@@ -73,8 +87,8 @@ pub fn unregistered_count() -> u64 {
     registry::unregistered_count()
 }
 
-fn now_rfc3339() -> String {
-    let now = time::OffsetDateTime::now_utc();
+fn now_rfc3339(clock: &dyn Clock) -> String {
+    let now = clock.now();
     now.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
