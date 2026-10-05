@@ -18,6 +18,17 @@ env:
   GITLEAKS_VERSION: "8.24.0"
 
 jobs:
+  # All five jobs below run on every event. main's branch protection lists
+  # gitleaks, semgrep, cargo-audit, cargo-deny and dart-licenses as required
+  # status checks with strict=true and enforce_admins=true, so gating any of
+  # them off pull_request would leave every pull request permanently
+  # unmergeable ("Expected - Waiting for status to be reported").
+  #
+  # GitHub bills each job rounded up to a whole runner minute, so this
+  # workflow costs a minimum of five runner minutes on every trigger no matter
+  # how fast the individual jobs are. Cutting that means merging jobs into
+  # fewer ones, which changes the check names and therefore has to be done
+  # together with an update to the required status checks in branch protection.
   gitleaks:
     runs-on: ubuntu-latest
     steps:
@@ -31,15 +42,7 @@ jobs:
       - name: Scan full history
         run: ./gitleaks git --config .gitleaks.toml --redact --verbose .
 
-  # GitHub bills every job rounded up to a whole runner minute, so a job that
-  # takes 20 seconds still costs a minute. The three jobs below query things
-  # that change with no code change at all - the community semgrep rule packs
-  # and the RustSec advisory database - so they run on pushes to main and on
-  # the weekly schedule, not on every pull-request push. gitleaks above and
-  # dart-licenses below still run on every event, because a leaked secret and
-  # a new dependency are both per-commit facts.
   semgrep:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -54,7 +57,6 @@ jobs:
             --exclude optional/ .
 
   cargo-audit:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -67,7 +69,6 @@ jobs:
       - run: cargo audit --file backend/Cargo.lock --deny warnings
 
   cargo-deny:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
