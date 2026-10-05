@@ -52,9 +52,17 @@ pub struct FakeGoogle;
 
 impl FakeGoogle {
     pub async fn start(clock: Arc<dyn ports::Clock>) -> Result<FakeGoogleHandle, std::io::Error> {
+        Self::start_on("127.0.0.1:0", clock).await
+    }
+
+    /// Bind a specific address (used by the binary for a fixed dev port).
+    pub async fn start_on(
+        addr: &str,
+        clock: Arc<dyn ports::Clock>,
+    ) -> Result<FakeGoogleHandle, std::io::Error> {
         let state = Arc::new(std::sync::Mutex::new(FakeState::default()));
         let app = build_router(state.clone(), clock.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown_guard = Arc::new(ShutdownGuard {

@@ -10,7 +10,7 @@ use fake_google::FakeGoogle;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("FAKE_GOOGLE_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_owned());
     let clock = Arc::new(testkit::clock::VirtualClock::new(testkit::T0));
-    let handle = FakeGoogle::start(clock).await?;
+    let handle = FakeGoogle::start_on(&addr, clock).await?;
     // Print the bound address as one line (println! is banned by Clippy).
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", handle.addr)?;
