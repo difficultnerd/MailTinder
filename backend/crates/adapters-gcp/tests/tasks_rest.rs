@@ -2,6 +2,7 @@
 //! local `axum` stub of the Cloud Tasks REST API, wired through
 //! `GcpHttp::with_emulator`.
 
+#![cfg(feature = "test-support")]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::HashMap;
