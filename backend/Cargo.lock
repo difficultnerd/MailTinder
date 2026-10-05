@@ -85,9 +85,22 @@ dependencies = [
 name = "api"
 version = "0.1.0"
 dependencies = [
+ "adapters-gcp",
+ "aes-gcm",
+ "async-trait",
+ "base64 0.22.1",
  "domain",
  "obs",
  "ports",
+ "proptest",
+ "serde",
+ "serde_json",
+ "testkit",
+ "thiserror",
+ "time",
+ "tokio",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
