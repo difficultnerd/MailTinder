@@ -1,6 +1,7 @@
 import 'models/auth.dart';
 import 'models/category.dart';
 import 'models/feed.dart';
+import 'models/needs_attention.dart';
 import 'models/session.dart';
 import 'models/swipe.dart';
 
@@ -64,6 +65,18 @@ abstract class ApiClient {
     String? cursor,
     int limit = 20,
   });
+
+  /// GET /api/v1/needs-attention (API-NA-1).
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// POST /api/v1/needs-attention/{item_id}/resolve (API-NA-2).
+  Future<void> resolveNeedsAttention(String itemId);
+
+  /// POST /api/v1/needs-attention/{item_id}/dismiss (API-NA-3).
+  Future<void> dismissNeedsAttention(String itemId);
 }
 
 class ApiException implements Exception {

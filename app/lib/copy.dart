@@ -99,6 +99,31 @@ abstract final class Copy {
   static const other = 'Other';
   static const dismiss = 'Dismiss';
 
+  static const nothingNeedsYou = 'Nothing needs you.';
+  static const openUnsubscribePage = 'Open unsubscribe page';
+  static const done = 'Done';
+
+  static const naHttpsOnlyUnsubscribe =
+      'This sender needs you to unsubscribe on their website.';
+  static const naOneClickRedirect =
+      'The unsubscribe request was redirected, so we stopped. '
+      'Open the page to finish.';
+  static const naOneClickAddressRefused =
+      "We couldn't safely send this unsubscribe request. "
+      "Check the sender's own unsubscribe options.";
+  static const naUnsubscribeIgnored = 'Mail still arriving after unsubscribe';
+  static const naUnsubscribeFailed =
+      "We couldn't unsubscribe you from this sender. "
+      'Open the page to finish.';
+  static const naJobExpired =
+      "The unsubscribe request didn't finish in time. "
+      'Open the page to finish.';
+  static const naOther = 'This needs your attention.';
+
+  /// {"Couldn't unsubscribe from $sender. Sign in again to $address."}
+  static String naMailboxNeedsSignIn(String sender, String address) =>
+      "Couldn't unsubscribe from $sender. Sign in again to $address.";
+
   /// {"File under $n"} (FL-03 AC1).
   static String fileUnder(String name) => 'File under $name';
 

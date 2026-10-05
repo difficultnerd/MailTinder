@@ -5,6 +5,7 @@ import 'api_client.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
 import 'models/feed.dart';
+import 'models/needs_attention.dart';
 import 'models/session.dart';
 import 'models/swipe.dart';
 
@@ -214,6 +215,32 @@ class HttpApiClient implements ApiClient {
       throw const NetworkException();
     }
     return FiledMessagePage.fromJson(data);
+  }
+
+  @override
+  Future<NeedsAttentionPage> listNeedsAttention({
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send('GET', 'needs-attention', query: query);
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return NeedsAttentionPage.fromJson(data);
+  }
+
+  @override
+  Future<void> resolveNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/resolve', expect: const {204});
+  }
+
+  @override
+  Future<void> dismissNeedsAttention(String itemId) async {
+    await send('POST', 'needs-attention/$itemId/dismiss', expect: const {204});
   }
 
   /// Shared plumbing for every endpoint added by later tasks.
