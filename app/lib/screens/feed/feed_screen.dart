@@ -11,11 +11,13 @@ import '../../api/models/swipe.dart';
 import '../../copy.dart';
 import '../../platform/browser.dart';
 import '../../platform/haptics.dart';
+import '../../platform/on_device_model.dart';
 import '../../platform/sound_player.dart';
 import '../../state/categories_cache.dart';
 import '../../state/feed_model.dart';
 import '../../state/feedback_model.dart';
 import '../../state/id_generator.dart';
+import '../../state/name_proposer.dart';
 import '../../state/play_prefs.dart';
 import '../../state/progress_model.dart';
 import '../../state/round_tracker.dart';
@@ -113,7 +115,7 @@ class _FeedScreenState extends State<FeedScreen> {
             prefs:
                 context.getInheritedWidgetOfExactType<AppScope>()?.playPrefs ??
                 PlayPrefs(),
-            sound: const SoundPlayerImpl(),
+            sound: SoundPlayerImpl(),
             haptics: const HapticsImpl(),
           );
       model.addListener(_onFeedChanged);
@@ -132,8 +134,14 @@ class _FeedScreenState extends State<FeedScreen> {
         ids: IdGenerator(),
         contextProvider: () => context,
         categories: categories,
-        fileLauncher: (context, card) =>
-            showFilingSheet(context, card, cache: categories),
+        fileLauncher: (context, card) => showFilingSheet(
+          context,
+          card,
+          cache: categories,
+          proposer: OnDeviceNameProposer(
+            const OnDeviceModelImpl(),
+          ).forSheet(() => categories.categories),
+        ),
       )..addListener(_onSwipeChanged);
       _eventsSub = _swipe!.events.listen(_onSwipeEvent);
       _blitz = BlitzModel(feed: model, swipes: _swipe!);

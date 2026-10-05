@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/api/api_client.dart';
 import 'package:app/api/fake_api_client.dart';
 import 'package:app/api/models/category.dart';
@@ -235,6 +237,56 @@ void main() {
     expect(swipe['new_category_name'], 'Tax invoices');
     expect(swipe['category_id'], isNull);
   });
+
+  testWidgets('FL-02 AC2 proposed name is pre-filled and editable', (
+    tester,
+  ) async {
+    await _openSheet(
+      tester,
+      card: buildCard(),
+      api: FakeApiClient(),
+      proposer: (_) async => 'Receipts',
+    );
+
+    expect(find.widgetWithText(TextField, 'Receipts'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'Receipts 2');
+    await tester.pump();
+    expect(find.widgetWithText(TextField, 'Receipts 2'), findsOneWidget);
+  });
+
+  testWidgets('FL-02 AC2 no model leaves the field empty', (tester) async {
+    await _openSheet(
+      tester,
+      card: buildCard(),
+      api: FakeApiClient(),
+      proposer: (_) async => null,
+    );
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller?.text, isEmpty);
+  });
+
+  testWidgets(
+    'FL-02 AC2 typing before the proposal arrives is never overwritten',
+    (tester) async {
+      final late = Completer<String?>();
+      await _openSheet(
+        tester,
+        card: buildCard(),
+        api: FakeApiClient(),
+        proposer: (_) => late.future,
+        settle: false,
+      );
+      await tester.pump(const Duration(seconds: 1));
+      await tester.enterText(find.byType(TextField), 'Mine');
+      await tester.pump();
+      late.complete('Receipts');
+      await tester.pumpAndSettle();
+
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller?.text, 'Mine');
+    },
+  );
 
   testWidgets(
     'FL-03 AC1 learned sender shows File under with Other collapsed',

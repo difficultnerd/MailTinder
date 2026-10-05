@@ -10,7 +10,7 @@ import '../../state/filed_model.dart' show categoryNameIsValid;
 import '../../state/swipe_controller.dart' show FilingChoice;
 
 /// The hook for an on-device model that proposes a category name (FL-02 AC2).
-/// v1 passes no proposer, so the name field starts empty.
+/// With no proposer (or no model) the name field starts empty.
 typedef NameProposer = Future<String?> Function(FeedCard card);
 
 /// Opens the filing sheet for [card] and returns the chosen filing, or null
@@ -68,6 +68,7 @@ class _FilingSheetState extends State<FilingSheet> {
   bool _naming = false;
   bool _expanded = false;
   String? _nameError;
+  bool _userTyped = false;
 
   @override
   void initState() {
@@ -98,7 +99,7 @@ class _FilingSheetState extends State<FilingSheet> {
   Future<void> _prefill(NameProposer proposer) async {
     try {
       final proposed = await proposer(widget.card);
-      if (!mounted || proposed == null) return;
+      if (!mounted || proposed == null || _userTyped) return;
       setState(() {
         _name.text = proposed;
       });
@@ -278,6 +279,7 @@ class _FilingSheetState extends State<FilingSheet> {
           hintText: Copy.categoryNameHint,
           errorText: _nameError,
         ),
+        onChanged: (_) => _userTyped = true,
         onSubmitted: (_) => _submitName(),
       ),
       const SizedBox(height: 16),
