@@ -2,6 +2,7 @@ name: security
 
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "17 3 * * 1" # weekly: new advisories appear without code changes
