@@ -1,22 +1,49 @@
 import 'package:flutter/material.dart';
 
 import 'api/api_client.dart';
+import 'api/models/auth.dart';
+import 'api/models/category.dart';
 import 'api/models/session.dart';
+import 'platform/browser.dart';
+import 'screens/filed/category_messages_screen.dart';
 import 'screens/home/home_shell.dart';
+import 'screens/admin/admin_screen.dart';
+import 'screens/admin/bakeoff_screen.dart';
 import 'screens/request_invite/request_invite_screen.dart';
+import 'screens/settings/account_screen.dart';
+import 'screens/settings/connected_accounts_screen.dart';
+import 'screens/settings/experiments_screen.dart';
+import 'screens/settings/history_screen.dart';
+import 'screens/settings/rules_screen.dart';
+import 'screens/settings/stats_screen.dart';
+import 'screens/sign_in/auth_result_screen.dart';
 import 'screens/sign_in/sign_in_screen.dart';
 import 'state/session_model.dart';
+import 'state/sign_in_model.dart';
 
 abstract final class Routes {
   static const home = '/';
   static const signIn = '/sign-in';
+  static const invite = '/invite';
+  static const authResult = '/auth/result';
   static const requestInvite = '/request-invite';
+  static const filedCategory = '/filed/category';
+  static const settingsAccounts = '/settings/accounts';
+  static const settingsAccount = '/settings/account';
+  static const settingsHistory = '/settings/history';
+  static const settingsRules = '/settings/rules';
+  static const settingsStats = '/settings/stats';
+  static const settingsExperiments = '/settings/experiments';
+  static const settingsAdmin = '/settings/admin';
+  static const settingsBakeoff = '/settings/bakeoff';
 }
 
 Route<Object?>? onGenerateRoute(
   RouteSettings settings,
   SessionModel session,
   ApiClient api,
+  SignInModel signInModel,
+  Browser browser,
 ) {
   final uri = Uri.parse(settings.name ?? Routes.home);
   final path = uri.path.isEmpty ? Routes.home : uri.path;
@@ -26,18 +53,86 @@ Route<Object?>? onGenerateRoute(
     builder: (context) {
       switch (path) {
         case Routes.signIn:
-          return const SignInScreen();
+          // Signed out (AU-07 AC1): show the default state whenever the
+          // session is not authenticated and no outcome or invite token is
+          // being shown.
+          final state = session.session?.state;
+          if (state != SessionState.authenticated) {
+            signInModel.resetToDefault();
+          }
+          return SignInScreen(model: signInModel, browser: browser);
+        case Routes.invite:
+          final token = uri.queryParameters['t'];
+          if (token != null) {
+            // Defer until after the frame: acceptInviteToken notifies
+            // listeners, which must not happen during the route build.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              signInModel.acceptInviteToken(token);
+            });
+          }
+          browser.replaceAddress('/');
+          return SignInScreen(model: signInModel, browser: browser);
+        case Routes.authResult:
+          final outcome = parseAuthOutcome(uri.queryParameters['outcome']);
+          return AuthResultScreen(
+            outcome: outcome,
+            session: session,
+            signInModel: signInModel,
+            browser: browser,
+          );
         case Routes.requestInvite:
-          return const RequestInviteScreen();
+          return RequestInviteScreen(
+            session: session,
+            api: api,
+            signInModel: signInModel,
+          );
+        case Routes.settingsAccounts:
+          final args = settings.arguments;
+          return ConnectedAccountsScreen(
+            outcome: args is AuthOutcome ? args : null,
+          );
+        case Routes.settingsAccount:
+          return const AccountScreen();
+        case Routes.settingsHistory:
+          return const HistoryScreen();
+        case Routes.settingsRules:
+          return const RulesScreen();
+        case Routes.settingsStats:
+          return const StatsScreen();
+        case Routes.settingsExperiments:
+          return const ExperimentsScreen();
+        case Routes.settingsAdmin:
+          return const AdminScreen();
+        case Routes.settingsBakeoff:
+          return const BakeoffScreen();
+        case Routes.filedCategory:
+          final arguments = settings.arguments;
+          if (arguments is Category) {
+            return CategoryMessagesScreen(
+              category: arguments,
+              api: api,
+              session: session,
+              browser: browser,
+            );
+          }
+          return const SizedBox.shrink();
         case Routes.home:
         default:
           final state = session.session?.state;
           return switch (state) {
-            SessionState.authenticated => const HomeShell(),
-            SessionState.pendingInviteRequest => const RequestInviteScreen(),
+            SessionState.authenticated => HomeShell(
+              session: session,
+              api: api,
+              browser: browser,
+            ),
+            SessionState.pendingInviteRequest => RequestInviteScreen(
+              session: session,
+              api: api,
+              signInModel: signInModel,
+            ),
             SessionState.anonymous ||
             SessionState.preAuth ||
-            null => const SignInScreen(),
+            null => SignInScreen(model: signInModel, browser: browser),
           };
       }
     },

@@ -7,16 +7,30 @@ import 'package:app/screens/home/home_shell.dart';
 import 'package:app/screens/request_invite/request_invite_screen.dart';
 import 'package:app/screens/sign_in/sign_in_screen.dart';
 import 'package:app/state/session_model.dart';
+import 'package:app/state/sign_in_model.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/fake_browser.dart';
+
 void main() {
+  Widget buildApp(FakeApiClient fakeApi) {
+    final model = SessionModel(api: fakeApi);
+    final browser = FakeBrowser();
+    final signInModel = SignInModel(api: fakeApi, browser: browser);
+    return MailTinderApp(
+      session: model,
+      api: fakeApi,
+      signInModel: signInModel,
+      browser: browser,
+    );
+  }
+
   testWidgets('anonymous session shows sign-in screen', (tester) async {
     final fakeApi = FakeApiClient();
     fakeApi.session = const Session(state: SessionState.anonymous);
-    final model = SessionModel(api: fakeApi);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(buildApp(fakeApi));
     await tester.pumpAndSettle();
 
     expect(find.byType(SignInScreen), findsOneWidget);
@@ -29,9 +43,8 @@ void main() {
   ) async {
     final fakeApi = FakeApiClient();
     fakeApi.session = const Session(state: SessionState.pendingInviteRequest);
-    final model = SessionModel(api: fakeApi);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(buildApp(fakeApi));
     await tester.pumpAndSettle();
 
     expect(find.byType(RequestInviteScreen), findsOneWidget);
@@ -43,9 +56,8 @@ void main() {
   ) async {
     final fakeApi = FakeApiClient();
     fakeApi.session = const Session(state: SessionState.authenticated);
-    final model = SessionModel(api: fakeApi);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(buildApp(fakeApi));
     await tester.pumpAndSettle();
 
     expect(find.byType(HomeShell), findsOneWidget);
@@ -70,9 +82,8 @@ void main() {
   testWidgets('XC-03 bottom tabs have semantics labels', (tester) async {
     final fakeApi = FakeApiClient();
     fakeApi.session = const Session(state: SessionState.authenticated);
-    final model = SessionModel(api: fakeApi);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(buildApp(fakeApi));
     await tester.pumpAndSettle();
 
     // In NavigationDestination, icon has Semantics(label: Copy.tab*), or find by predicate
@@ -113,8 +124,17 @@ void main() {
     final fakeApi = FakeApiClient();
     fakeApi.session = const Session(state: SessionState.authenticated);
     final model = SessionModel(api: fakeApi);
+    final browser = FakeBrowser();
+    final signInModel = SignInModel(api: fakeApi, browser: browser);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(
+      MailTinderApp(
+        session: model,
+        api: fakeApi,
+        signInModel: signInModel,
+        browser: browser,
+      ),
+    );
     await tester.pumpAndSettle();
 
     // App is authenticated showing HomeShell
@@ -134,9 +154,8 @@ void main() {
   ) async {
     final fakeApi = FakeApiClient();
     fakeApi.nextError = const NetworkException();
-    final model = SessionModel(api: fakeApi);
 
-    await tester.pumpWidget(MailTinderApp(session: model, api: fakeApi));
+    await tester.pumpWidget(buildApp(fakeApi));
     await tester.pumpAndSettle();
 
     expect(find.text(Copy.offline), findsOneWidget);

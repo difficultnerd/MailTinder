@@ -297,4 +297,140 @@ void main() {
     final s4 = Session.fromJson({'state': 'unknown_state'});
     expect(s4.state, equals(SessionState.anonymous));
   });
+
+  test('categories endpoints use the S7 paths, verbs and payloads', () async {
+    final requests = <http.Request>[];
+
+    final client = MockClient((request) async {
+      requests.add(request);
+      final path = request.url.path;
+      if (path.endsWith('/api/v1/categories') && request.method == 'GET') {
+        return http.Response(
+          jsonEncode({
+            'categories': [
+              {
+                'category_id': 'c-1',
+                'name': 'Tax invoices',
+                'message_count': 12431,
+                'per_mailbox': [
+                  {'mailbox_id': 'm-1', 'message_count': 12431},
+                ],
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (path.endsWith('/api/v1/categories/c-1') &&
+          request.method == 'PATCH') {
+        return http.Response(
+          jsonEncode({
+            'category_id': 'c-1',
+            'name': 'Invoices',
+            'message_count': 12431,
+            'per_mailbox': const <Object?>[],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (path.endsWith('/api/v1/categories/c-1') &&
+          request.method == 'DELETE') {
+        return http.Response('', 204);
+      }
+      // GET /api/v1/categories/c-1/messages
+      return http.Response(
+        jsonEncode({
+          'messages': [
+            {
+              'mailbox_id': 'm-1',
+              'message_id': 'msg-1',
+              'sender_name': 'Acme Billing',
+              'subject': 'Your invoice',
+              'received_at': '2026-10-03T09:00:00Z',
+              'provider_web_url':
+                  'https://mail.google.com/mail/u/0/#inbox/msg-1',
+            },
+          ],
+          'next_cursor': 'cursor-2',
+          'mailbox_errors': [
+            {'mailbox_id': 'm-2', 'code': 'provider_unavailable'},
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+
+    final api = HttpApiClient(
+      client: client,
+      origin: testOrigin,
+      onUnauthenticated: () {},
+    );
+
+    final categories = await api.listCategories();
+    expect(categories.length, 1);
+    expect(categories.single.name, 'Tax invoices');
+    expect(categories.single.messageCount, 12431);
+    expect(categories.single.perMailbox.single.mailboxId, 'm-1');
+
+    final renamed = await api.renameCategory('c-1', 'Invoices');
+    expect(renamed.name, 'Invoices');
+    expect(requests[1].method, 'PATCH');
+    expect(jsonDecode(requests[1].body), {'name': 'Invoices'});
+
+    await api.deleteCategory('c-1');
+    expect(requests[2].method, 'DELETE');
+    expect(requests[2].url.path, endsWith('/api/v1/categories/c-1'));
+
+    final page = await api.listCategoryMessages('c-1', limit: 20);
+    expect(page.messages.single.senderName, 'Acme Billing');
+    expect(page.messages.single.subject, 'Your invoice');
+    expect(page.messages.single.receivedAt, DateTime.utc(2026, 10, 3, 9));
+    expect(page.nextCursor, 'cursor-2');
+    expect(page.mailboxErrors.single.mailboxId, 'm-2');
+    expect(requests[3].url.path, endsWith('/api/v1/categories/c-1/messages'));
+    expect(requests[3].url.queryParameters['limit'], '20');
+    expect(requests[3].url.queryParameters.containsKey('cursor'), isFalse);
+  });
+
+  test('listCategoryMessages sends the cursor when given', () async {
+    Uri? seen;
+    final client = MockClient((request) async {
+      seen = request.url;
+      return http.Response(
+        jsonEncode({
+          'messages': const <Object?>[],
+          'next_cursor': null,
+          'mailbox_errors': const <Object?>[],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    final api = HttpApiClient(
+      client: client,
+      origin: testOrigin,
+      onUnauthenticated: () {},
+    );
+
+    await api.listCategoryMessages('c-1', cursor: 'cursor-2', limit: 5);
+
+    expect(seen?.queryParameters['cursor'], 'cursor-2');
+    expect(seen?.queryParameters['limit'], '5');
+  });
+
+  test('listCategories throws NetworkException on a malformed body', () async {
+    final client = MockClient(
+      (request) async => http.Response('{"categories": {}}', 200),
+    );
+    final api = HttpApiClient(
+      client: client,
+      origin: testOrigin,
+      onUnauthenticated: () {},
+    );
+
+    await expectLater(api.listCategories(), throwsA(isA<NetworkException>()));
+  });
 }
