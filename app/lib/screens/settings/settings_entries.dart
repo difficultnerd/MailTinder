@@ -20,6 +20,9 @@ final List<SettingsEntry> settingsEntries = [
     title: Copy.settingsConnectedAccounts,
     route: Routes.settingsAccounts,
   ),
+  const SettingsEntry(title: Copy.history, route: Routes.settingsHistory),
+  const SettingsEntry(title: Copy.rules, route: Routes.settingsRules),
+  const SettingsEntry(title: Copy.stats, route: Routes.settingsStats),
   const SettingsEntry(
     title: Copy.settingsAccount,
     route: Routes.settingsAccount,

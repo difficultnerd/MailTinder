@@ -1,7 +1,10 @@
 import 'models/auth.dart';
 import 'models/category.dart';
 import 'models/feed.dart';
+import 'models/history.dart';
+import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/stats.dart';
 import 'models/swipe.dart';
 
 abstract class ApiClient {
@@ -65,6 +68,25 @@ abstract class ApiClient {
     String? cursor,
     int limit = 20,
   });
+
+  /// GET /api/v1/rules (API-RULE-1).
+  Future<List<Rule>> listRules({RuleKind? kind});
+
+  /// PATCH /api/v1/rules/{rule_id} {enabled} (API-RULE-3).
+  Future<Rule> setRuleEnabled(String ruleId, bool enabled);
+
+  /// DELETE /api/v1/rules/{rule_id} (API-RULE-4).
+  Future<void> deleteRule(String ruleId);
+
+  /// GET /api/v1/history (API-HIST-1).
+  Future<HistoryPage> listHistory({
+    HistoryFilter filter = HistoryFilter.all,
+    String? cursor,
+    int limit = 20,
+  });
+
+  /// GET /api/v1/stats (API-STAT-1).
+  Future<Stats> getStats();
 }
 
 class ApiException implements Exception {

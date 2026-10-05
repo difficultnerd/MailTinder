@@ -5,7 +5,10 @@ import 'api_client.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
 import 'models/feed.dart';
+import 'models/history.dart';
+import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/stats.dart';
 import 'models/swipe.dart';
 
 typedef UnauthenticatedHandler = void Function();
@@ -226,6 +229,71 @@ class HttpApiClient implements ApiClient {
       throw const NetworkException();
     }
     return FiledMessagePage.fromJson(data);
+  }
+
+  @override
+  Future<List<Rule>> listRules({RuleKind? kind}) async {
+    final data = await send(
+      'GET',
+      'rules',
+      query: kind == null ? null : {'kind': kind.wire},
+    );
+    final raw = data?['rules'];
+    if (raw is! List<Object?>) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Rule.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<Rule> setRuleEnabled(String ruleId, bool enabled) async {
+    final data = await send(
+      'PATCH',
+      'rules/${Uri.encodeComponent(ruleId)}',
+      body: {'enabled': enabled},
+    );
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Rule.fromJson(data);
+  }
+
+  @override
+  Future<void> deleteRule(String ruleId) async {
+    await send(
+      'DELETE',
+      'rules/${Uri.encodeComponent(ruleId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<HistoryPage> listHistory({
+    HistoryFilter filter = HistoryFilter.all,
+    String? cursor,
+    int limit = 20,
+  }) async {
+    final query = <String, String>{'filter': filter.wire, 'limit': '$limit'};
+    if (cursor != null) {
+      query['cursor'] = cursor;
+    }
+    final data = await send('GET', 'history', query: query);
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return HistoryPage.fromJson(data);
+  }
+
+  @override
+  Future<Stats> getStats() async {
+    final data = await send('GET', 'stats');
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return Stats.fromJson(data);
   }
 
   /// Shared plumbing for every endpoint added by later tasks.

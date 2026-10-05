@@ -10,6 +10,9 @@ import 'screens/home/home_shell.dart';
 import 'screens/request_invite/request_invite_screen.dart';
 import 'screens/settings/account_screen.dart';
 import 'screens/settings/connected_accounts_screen.dart';
+import 'screens/settings/history_screen.dart';
+import 'screens/settings/rules_screen.dart';
+import 'screens/settings/stats_screen.dart';
 import 'screens/sign_in/auth_result_screen.dart';
 import 'screens/sign_in/sign_in_screen.dart';
 import 'state/session_model.dart';
@@ -24,6 +27,9 @@ abstract final class Routes {
   static const filedCategory = '/filed/category';
   static const settingsAccounts = '/settings/accounts';
   static const settingsAccount = '/settings/account';
+  static const settingsHistory = '/settings/history';
+  static const settingsRules = '/settings/rules';
+  static const settingsStats = '/settings/stats';
 }
 
 Route<Object?>? onGenerateRoute(
@@ -81,6 +87,12 @@ Route<Object?>? onGenerateRoute(
           );
         case Routes.settingsAccount:
           return const AccountScreen();
+        case Routes.settingsHistory:
+          return const HistoryScreen();
+        case Routes.settingsRules:
+          return const RulesScreen();
+        case Routes.settingsStats:
+          return const StatsScreen();
         case Routes.filedCategory:
           final arguments = settings.arguments;
           if (arguments is Category) {

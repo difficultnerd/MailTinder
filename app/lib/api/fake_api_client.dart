@@ -4,7 +4,10 @@ import 'api_client.dart';
 import 'models/auth.dart';
 import 'models/category.dart';
 import 'models/feed.dart';
+import 'models/history.dart';
+import 'models/rule.dart';
 import 'models/session.dart';
+import 'models/stats.dart';
 import 'models/swipe.dart';
 
 class FakeCall {
@@ -386,5 +389,108 @@ class FakeApiClient implements ApiClient {
       nextCursor: null,
       mailboxErrors: [],
     );
+  }
+
+  /// Rules returned by [listRules]; [setRuleEnabled] and [deleteRule] update it.
+  final List<Rule> rules = [];
+
+  /// When set, the matching rules call throws it (and clears it).
+  Object? nextListRulesError;
+  Object? nextSetRuleError;
+  Object? nextDeleteRuleError;
+
+  /// History pages returned by [listHistory], consumed in order. When empty,
+  /// [listHistory] returns an empty page.
+  final List<HistoryPage> historyPages = [];
+
+  /// When set, [listHistory] throws it (and clears it).
+  Object? nextHistoryError;
+
+  /// Returned by [getStats].
+  Stats stats = const Stats(
+    emailsTriaged: 0,
+    sendersUnsubscribed: 0,
+    unsubscribesConfirmed: 0,
+    mailStoppedPerYear: 0,
+    achievements: [],
+  );
+
+  /// When set, [getStats] throws it (and clears it).
+  Object? nextStatsError;
+
+  @override
+  Future<List<Rule>> listRules({RuleKind? kind}) async {
+    calls.add(FakeCall('GET', '/api/v1/rules', {'kind': kind?.wire}));
+    if (nextListRulesError != null) {
+      final err = nextListRulesError;
+      nextListRulesError = null;
+      throw err!;
+    }
+    return [
+      for (final r in rules)
+        if (kind == null || r.kind == kind) r,
+    ];
+  }
+
+  @override
+  Future<Rule> setRuleEnabled(String ruleId, bool enabled) async {
+    calls.add(FakeCall('PATCH', '/api/v1/rules/$ruleId', {'enabled': enabled}));
+    if (nextSetRuleError != null) {
+      final err = nextSetRuleError;
+      nextSetRuleError = null;
+      throw err!;
+    }
+    final index = rules.indexWhere((r) => r.ruleId == ruleId);
+    if (index < 0) {
+      throw ApiException(status: 404, code: 'not_found', requestId: 'fake');
+    }
+    rules[index] = rules[index].copyWith(enabled: enabled);
+    return rules[index];
+  }
+
+  @override
+  Future<void> deleteRule(String ruleId) async {
+    calls.add(FakeCall('DELETE', '/api/v1/rules/$ruleId'));
+    if (nextDeleteRuleError != null) {
+      final err = nextDeleteRuleError;
+      nextDeleteRuleError = null;
+      throw err!;
+    }
+    rules.removeWhere((r) => r.ruleId == ruleId);
+  }
+
+  @override
+  Future<HistoryPage> listHistory({
+    HistoryFilter filter = HistoryFilter.all,
+    String? cursor,
+    int limit = 20,
+  }) async {
+    calls.add(
+      FakeCall('GET', '/api/v1/history', {
+        'filter': filter.wire,
+        'cursor': cursor,
+        'limit': limit,
+      }),
+    );
+    if (nextHistoryError != null) {
+      final err = nextHistoryError;
+      nextHistoryError = null;
+      throw err!;
+    }
+    if (historyPages.isNotEmpty) {
+      return historyPages.removeAt(0);
+    }
+    return const HistoryPage(entries: [], nextCursor: null);
+  }
+
+  @override
+  Future<Stats> getStats() async {
+    calls.add(FakeCall('GET', '/api/v1/stats'));
+    if (nextStatsError != null) {
+      final err = nextStatsError;
+      nextStatsError = null;
+      throw err!;
+    }
+    return stats;
   }
 }

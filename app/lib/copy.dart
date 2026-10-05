@@ -1,3 +1,4 @@
+import 'format.dart';
 import 'state/swipe_controller.dart';
 
 abstract final class Copy {
@@ -182,4 +183,53 @@ abstract final class Copy {
   static String disconnectQuestion(String a) =>
       'Disconnect $a? Its cards leave your Feed and its queued unsubscribes are cancelled.';
   static String stepUpDisconnect(String a) => 'to disconnect $a';
+
+  // History, Rules and Stats (S9 7.2 to 7.4).
+  static const history = 'History';
+  static const rules = 'Rules';
+  static const stats = 'Stats';
+  static const historyEmpty = 'Nothing here yet.';
+  static const historyAll = 'All';
+  static const historyUnsubscribes = 'Unsubscribes';
+  static const historyRuleActions = 'Rule actions';
+  static const historyFiling = 'Filing';
+  static const rulesRejectList = 'Reject list';
+  static const rulesBlockedPeople = 'Blocked people';
+  static const rulesFiling = 'Filing rules';
+  static const ruleOnSwitch = 'Rule on';
+  static const deleteRuleQuestion =
+      'Delete this rule? It stops acting on new mail.';
+  static const emailsTriaged = 'Emails triaged';
+  static const sendersUnsubscribed = 'Senders unsubscribed';
+  static const unsubscribesConfirmed = 'Unsubscribes confirmed working';
+  static const achievementUnknown = 'Achievement';
+  static const yearlyUnknown = 'Emails a year stopped: unknown';
+
+  static String yearlyStopped(int n) => 'About $n emails a year stopped';
+  static String actedOn(int n) => 'Acted on $n messages';
+  static String mailStoppedTotal(int n) =>
+      'About ${formatCount(n)} emails a year stopped';
+  static String achievementLocked(String title) => '$title, locked';
+
+  /// History action words.
+  static String historyAction(String action) => switch (action) {
+    'trashed_by_rule' => 'Trashed by rule',
+    'unsubscribe' => 'Unsubscribe',
+    'filed' => 'Filed',
+    'filed_by_rule' => 'Filed by rule',
+    'blocked' => 'Blocked',
+    'reported_spam' => 'Reported as spam',
+    _ => action,
+  };
+
+  /// History outcome words.
+  static String historyOutcome(String outcome) => switch (outcome) {
+    'sent' => 'Sent',
+    'needs_attention' => 'Needs attention',
+    'failed' => 'Failed',
+    'cancelled' => 'Cancelled',
+    'expired' => 'Expired',
+    'done' => 'Done',
+    _ => outcome,
+  };
 }
