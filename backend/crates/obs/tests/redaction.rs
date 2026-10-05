@@ -21,6 +21,7 @@ fn parse_lines(text: &str) -> Vec<serde_json::Value> {
 #[test]
 fn xc_01_unknown_fields_and_messages_are_dropped() {
     let (sink, _guard) = capture("test");
+    // nosemgrep: privacy-log-sensitive-identifier -- test fixture: prove redaction drops these
     tracing::info!(
         email = "a@example.com",
         url = "https://x.example.com",
@@ -104,6 +105,7 @@ fn log_1_canaries_never_reach_log_output() {
     // Free text.
     tracing::info!("free text {}", "CANARY-1");
     // Unknown keys.
+    // nosemgrep: privacy-log-sensitive-identifier -- test fixture: prove redaction drops these
     tracing::info!(subject = "a@example.com", body = "CANARY-1");
     // Allowed keys with bad values.
     tracing::info!(
@@ -113,6 +115,7 @@ fn log_1_canaries_never_reach_log_output() {
     );
     // Debug of Sensitive.
     let s = Sensitive::new("a@example.com");
+    // nosemgrep: privacy-log-sensitive-identifier -- test fixture: prove redaction drops these
     tracing::info!(secret = ?s);
     let leaks = scan_for_leaks(&sink.text(), &canaries);
     assert!(leaks.is_empty(), "leaks found: {leaks:?}");
