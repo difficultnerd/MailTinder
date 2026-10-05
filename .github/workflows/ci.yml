@@ -73,6 +73,7 @@ jobs:
       - run: python3 tools/check_ac_coverage.py
 
   coverage:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -111,6 +112,7 @@ jobs:
       - run: python3 tools/check_coverage_floors.py --rust backend/lcov.info --flutter app/coverage/lcov.info
 
   csp-smoke:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
