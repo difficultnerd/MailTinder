@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   GITLEAKS_VERSION: "8.24.0"
 
@@ -27,7 +31,15 @@ jobs:
       - name: Scan full history
         run: ./gitleaks git --config .gitleaks.toml --redact --verbose .
 
+  # GitHub bills every job rounded up to a whole runner minute, so a job that
+  # takes 20 seconds still costs a minute. The three jobs below query things
+  # that change with no code change at all - the community semgrep rule packs
+  # and the RustSec advisory database - so they run on pushes to main and on
+  # the weekly schedule, not on every pull-request push. gitleaks above and
+  # dart-licenses below still run on every event, because a leaked secret and
+  # a new dependency are both per-commit facts.
   semgrep:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -42,6 +54,7 @@ jobs:
             --exclude optional/ .
 
   cargo-audit:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -54,6 +67,7 @@ jobs:
       - run: cargo audit --file backend/Cargo.lock --deny warnings
 
   cargo-deny:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
