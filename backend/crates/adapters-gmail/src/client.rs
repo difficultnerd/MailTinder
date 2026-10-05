@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use obs::{op_log, OpLog, Sensitive};
-use ports::{Clock, EgressError, EgressRequest, HttpEgress, HttpMethod, MailError, MailboxCtx};
+use ports::{
+    Clock, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod, MailError,
+    MailboxCtx,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -79,6 +82,82 @@ impl GmailHttp {
     /// The clock, for HTTP-date `Retry-After` values.
     pub fn now(&self) -> time::OffsetDateTime {
         self.clock.now()
+    }
+
+    /// The base URL this client was built with. The Drive store joins its API
+    /// paths onto it, so production and `fake-google` share one code path.
+    pub fn base(&self) -> &Url {
+        &self.base
+    }
+
+    /// Send a request to an absolute `url` and return the raw response.
+    ///
+    /// Only transport-level failures (an egress refusal, or a body over
+    /// [`MAX_RESPONSE_BYTES`]) become a [`MailError`]; an HTTP error status is
+    /// returned for the caller to map with [`GmailHttp::map_response`]. That
+    /// lets the Drive store turn a `412` into a conflict rather than a generic
+    /// provider error, while a `404` still reads as `NotFound`.
+    pub async fn call_raw(
+        &self,
+        mb: &MailboxCtx,
+        method: HttpMethod,
+        url: Url,
+        extra_headers: &[(String, String)],
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+    ) -> Result<EgressResponse, MailError> {
+        let route = route_for_url(method, &url);
+        let mut headers = vec![
+            (
+                "Authorization".to_owned(),
+                Sensitive::new(format!("Bearer {}", mb.access_token.expose())),
+            ),
+            (
+                "Accept".to_owned(),
+                Sensitive::new("application/json".to_owned()),
+            ),
+        ];
+        for (key, value) in extra_headers {
+            headers.push((key.clone(), Sensitive::new(value.clone())));
+        }
+        if let Some(ct) = content_type {
+            headers.push(("Content-Type".to_owned(), Sensitive::new(ct.to_owned())));
+        }
+        let request = EgressRequest {
+            method,
+            url,
+            headers,
+            body,
+            timeout: Duration::from_secs(GMAIL_TIMEOUT_S),
+        };
+        let response = match self.egress.call(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                log_op(route, "failure", None);
+                return Err(map_egress_error(&e));
+            }
+        };
+        if response.body.len() > MAX_RESPONSE_BYTES {
+            log_op(route, "failure", Some(response.status));
+            return Err(MailError::Transient);
+        }
+        if (200..300).contains(&response.status) {
+            log_op(route, "success", Some(response.status));
+        } else {
+            log_op(route, "failure", Some(response.status));
+        }
+        Ok(response)
+    }
+
+    /// Map a non-2xx response to a [`MailError`] with the same rules as a
+    /// typed call.
+    pub fn map_response(&self, response: &EgressResponse) -> MailError {
+        map_gmail_error(
+            response.status,
+            retry_after(&response.headers),
+            &response.body,
+            self.clock.now(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -184,6 +263,25 @@ fn route_for(path: &str) -> &'static str {
         "gmail.labels.list"
     } else {
         "gmail.messages.get"
+    }
+}
+
+/// The registered operation name for a Drive request. Drive calls carry
+/// ciphertext, so only the route template and status are ever logged.
+fn route_for_url(method: HttpMethod, url: &Url) -> &'static str {
+    let path = url.path();
+    if path == "/drive/v3/files" {
+        "drive.files.list"
+    } else if path.starts_with("/drive/v2/files") {
+        "drive.files.get.v2"
+    } else if path.starts_with("/upload/drive/v3/files") {
+        "drive.files.create"
+    } else if path.starts_with("/upload/drive/v2/files") {
+        "drive.files.update"
+    } else if matches!(method, HttpMethod::Delete) {
+        "drive.files.delete"
+    } else {
+        "drive.files.get"
     }
 }
 

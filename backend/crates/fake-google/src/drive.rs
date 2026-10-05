@@ -33,9 +33,9 @@ const MAX_UPLOAD: usize = 5 * 1024 * 1024;
 /// Build the Drive router (mounted at the root; paths are absolute).
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/drive/v3/files", get(list_files).delete(delete_file))
+        .route("/drive/v3/files", get(list_files))
+        .route("/drive/v3/files/{id}", get(get_file_v3).delete(delete_file))
         .route("/drive/v2/files/{id}", get(get_file_v2))
-        .route("/drive/v3/files/{id}", get(get_file_v3))
         .route("/upload/drive/v3/files", post(create_file))
         .route("/upload/drive/v2/files/{id}", put(update_file))
 }

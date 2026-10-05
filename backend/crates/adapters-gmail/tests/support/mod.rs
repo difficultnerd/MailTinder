@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use adapters_gmail::{GmailHttp, GmailProvider};
+use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
 use async_trait::async_trait;
 use domain::MailboxId;
 use fake_google::{FakeGoogle, FakeGoogleHandle, FakeMailboxKey, GMAIL_MODIFY};
@@ -79,6 +79,21 @@ impl HttpEgress for PassthroughEgress {
 pub async fn start() -> FakeGoogleHandle {
     let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new(testkit::T0));
     FakeGoogle::start(clock).await.expect("start fake-google")
+}
+
+/// Start a `fake-google` on a caller-held virtual clock, so a test can advance
+/// time (for example to make two app-folder files differ by `modifiedTime`).
+pub async fn start_on_clock(clock: Arc<VirtualClock>) -> FakeGoogleHandle {
+    FakeGoogle::start(clock).await.expect("start fake-google")
+}
+
+/// A Drive app-folder store pointed at the fake's root.
+pub fn drive_store(handle: &FakeGoogleHandle, clock: Arc<dyn Clock>) -> DriveAppFolder {
+    DriveAppFolder::new(GmailHttp::new(
+        Arc::new(PassthroughEgress),
+        handle.base_url(),
+        clock,
+    ))
 }
 
 /// A provider pointed at the fake, sharing the given clock.

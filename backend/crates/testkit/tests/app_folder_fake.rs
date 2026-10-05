@@ -21,7 +21,7 @@ impl AppFolderControl for Control {
 }
 
 #[tokio::test]
-async fn app_folder_store_contract_in_memory() {
+async fn app_folder_store_contract_fake() {
     let result = app_folder_store(|| async {
         let fake = Arc::new(InMemoryAppFolder::new());
         AppFolderTarget {

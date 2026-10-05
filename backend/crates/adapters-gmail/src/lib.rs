@@ -30,6 +30,7 @@
 
 mod auth_results;
 mod client;
+mod drive;
 mod errors;
 mod headers;
 mod modify;
@@ -37,6 +38,7 @@ mod read;
 mod send;
 
 pub use client::GmailHttp;
+pub use drive::DriveAppFolder;
 pub use read::GmailProvider;
 pub use send::INVITE_BODY_TEMPLATE;
 pub use send::INVITE_SUBJECT;
@@ -55,6 +57,7 @@ mod tests {
         let allowed = [
             "GmailProvider",
             "GmailHttp",
+            "DriveAppFolder",
             "INVITE_SUBJECT",
             "INVITE_BODY_TEMPLATE",
         ];
