@@ -7,8 +7,10 @@ import 'platform/browser.dart';
 import 'routes.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/request_invite/request_invite_screen.dart';
+import 'screens/settings/app_scope.dart';
 import 'screens/sign_in/sign_in_screen.dart';
 import 'screens/step_up/confirm_its_you_overlay.dart';
+import 'state/play_prefs.dart';
 import 'state/session_model.dart';
 import 'state/sign_in_model.dart';
 import 'state/step_up_controller.dart';
@@ -38,6 +40,7 @@ class MailTinderApp extends StatefulWidget {
 class _MailTinderAppState extends State<MailTinderApp> {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   SessionState? _lastState;
+  final PlayPrefs _playPrefs = PlayPrefs();
 
   @override
   void initState() {
@@ -67,9 +70,16 @@ class _MailTinderAppState extends State<MailTinderApp> {
       title: Copy.productName,
       theme: ThemeData(fontFamily: 'Roboto'),
       navigatorKey: _navigatorKey,
-      builder: (context, child) => StepUpOverlayHost(
-        controller: widget.stepUp,
-        child: child ?? const SizedBox.shrink(),
+      builder: (context, child) => AppScope(
+        session: widget.session,
+        api: widget.api,
+        browser: widget.browser,
+        stepUp: widget.stepUp,
+        playPrefs: _playPrefs,
+        child: StepUpOverlayHost(
+          controller: widget.stepUp,
+          child: child ?? const SizedBox.shrink(),
+        ),
       ),
       onGenerateRoute: (settings) => onGenerateRoute(
         settings,

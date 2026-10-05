@@ -144,6 +144,37 @@ class HttpApiClient implements ApiClient {
     );
   }
 
+  @override
+  Future<List<Mailbox>> listMailboxes() async {
+    final data = await send('GET', 'mailboxes');
+    final raw = data?['mailboxes'] as List<Object?>?;
+    if (raw == null) {
+      throw const NetworkException();
+    }
+    return raw
+        .whereType<Map<String, Object?>>()
+        .map(Mailbox.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<void> disconnectMailbox(String mailboxId) async {
+    await send(
+      'DELETE',
+      'mailboxes/${Uri.encodeComponent(mailboxId)}',
+      expect: const {204},
+    );
+  }
+
+  @override
+  Future<DeleteAccountResult> deleteAccount() async {
+    final data = await send('DELETE', 'account', expect: const {202});
+    if (data == null) {
+      throw const NetworkException();
+    }
+    return DeleteAccountResult.fromJson(data);
+  }
+
   /// Shared plumbing for every endpoint added by later tasks.
   Future<Map<String, Object?>?> send(
     String method,

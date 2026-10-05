@@ -38,6 +38,15 @@ abstract class ApiClient {
 
   /// POST /api/v1/block-prompts/decline (API-RULE-5).
   Future<void> declineBlockPrompt(String promptRef);
+
+  /// GET /api/v1/mailboxes (API-MBX-1).
+  Future<List<Mailbox>> listMailboxes();
+
+  /// DELETE /api/v1/mailboxes/{id} -> 204 (API-MBX-2). Needs step-up.
+  Future<void> disconnectMailbox(String mailboxId);
+
+  /// DELETE /api/v1/account -> 202 (API-ACCT-1). Needs step-up.
+  Future<DeleteAccountResult> deleteAccount();
 }
 
 class ApiException implements Exception {
@@ -68,4 +77,36 @@ class NetworkException implements Exception {
 
   @override
   String toString() => 'NetworkException()';
+}
+
+/// DELETE /account 202 body (API-ACCT-1).
+class DeleteAccountResult {
+  const DeleteAccountResult({
+    required this.deletionDueBy,
+    required this.appFoldersNotDeleted,
+  });
+
+  factory DeleteAccountResult.fromJson(Map<String, Object?> json) {
+    final due = json['deletion_due_by'] as String?;
+    final raw = json['app_folders_not_deleted'] as List<Object?>?;
+    return DeleteAccountResult(
+      deletionDueBy: due != null
+          ? DateTime.parse(due).toUtc()
+          : DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      appFoldersNotDeleted: raw == null
+          ? const []
+          : raw
+                .whereType<Map<String, Object?>>()
+                .map(
+                  (m) => (
+                    mailboxId: (m['mailbox_id'] as String?) ?? '',
+                    emailAddress: (m['email_address'] as String?) ?? '',
+                  ),
+                )
+                .toList(growable: false),
+    );
+  }
+
+  final DateTime deletionDueBy;
+  final List<({String mailboxId, String emailAddress})> appFoldersNotDeleted;
 }

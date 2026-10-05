@@ -124,4 +124,37 @@ abstract final class Copy {
   /// `kPersonalBlockThreshold`).
   static String blockQuestion(String name) =>
       "You've rejected $name $kPersonalBlockThreshold times. Block them?";
+
+  // Settings, Connected accounts and Account (S9 7, 7.1, 7.5).
+  static const settingsConnectedAccounts = 'Connected accounts';
+  static const settingsAccount = 'Account';
+  static const addGmail = 'Add Gmail';
+  static const disconnect = 'Disconnect';
+  static const statusConnected = 'Connected';
+  static const statusNeedsSignIn = 'Needs sign-in';
+  static const mailboxAdded = 'Mailbox added.';
+  static const mailboxLinkedElsewhere =
+      'That Google account is already linked to another Mail Tinder account. Nothing was linked.';
+  static const onlyMailbox =
+      'This is your only mailbox. To remove it, delete your account instead.';
+  static const goToAccount = 'Go to Account';
+  static const appFolderMoveFailed =
+      "Couldn't move your Mail Tinder data to another mailbox, so nothing was disconnected. Try again.";
+  static const stepUpAddGmail = 'to add a Gmail account';
+  static const stepUpDeleteAccount = 'to delete your account';
+  static const sounds = 'Sounds';
+  static const signOut = 'Sign out';
+  static const deleteAccount = 'Delete account';
+  static const deleteAccountExplain =
+      'Delete your Mail Tinder account? We delete your Mail Tinder settings file from your Google Drive, cancel queued unsubscribes, disconnect your mailboxes and destroy your encryption key. Labels already on your messages stay in your mailbox.';
+  static const deleteAccountConfirm =
+      "This can't be undone. Delete your account now?";
+  static const appFoldersNotDeleted =
+      "We couldn't delete your Mail Tinder settings file from these mailboxes. Remove it in Google Drive, under Settings, Manage apps:";
+  static const accountDeleted = 'Your account is deleted.';
+  static const continueButton = 'Continue';
+
+  static String disconnectQuestion(String a) =>
+      'Disconnect $a? Its cards leave your Feed and its queued unsubscribes are cancelled.';
+  static String stepUpDisconnect(String a) => 'to disconnect $a';
 }

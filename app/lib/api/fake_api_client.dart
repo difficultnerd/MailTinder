@@ -226,4 +226,52 @@ class FakeApiClient implements ApiClient {
       throw err!;
     }
   }
+
+  /// Mailboxes returned by [listMailboxes]; [disconnectMailbox] removes from it.
+  final List<Mailbox> mailboxes = [];
+
+  /// When set, [disconnectMailbox] throws it (and clears it).
+  Object? nextDisconnectError;
+
+  /// When set, [deleteAccount] throws it (and clears it).
+  Object? nextDeleteError;
+
+  /// Returned by [deleteAccount].
+  DeleteAccountResult deleteResult = DeleteAccountResult(
+    deletionDueBy: DateTime.utc(2026, 10, 6),
+    appFoldersNotDeleted: const [],
+  );
+
+  @override
+  Future<List<Mailbox>> listMailboxes() async {
+    calls.add(FakeCall('GET', '/api/v1/mailboxes'));
+    if (nextError != null) {
+      final err = nextError;
+      nextError = null;
+      throw err!;
+    }
+    return List<Mailbox>.of(mailboxes);
+  }
+
+  @override
+  Future<void> disconnectMailbox(String mailboxId) async {
+    calls.add(FakeCall('DELETE', '/api/v1/mailboxes/$mailboxId'));
+    if (nextDisconnectError != null) {
+      final err = nextDisconnectError;
+      nextDisconnectError = null;
+      throw err!;
+    }
+    mailboxes.removeWhere((m) => m.mailboxId == mailboxId);
+  }
+
+  @override
+  Future<DeleteAccountResult> deleteAccount() async {
+    calls.add(FakeCall('DELETE', '/api/v1/account'));
+    if (nextDeleteError != null) {
+      final err = nextDeleteError;
+      nextDeleteError = null;
+      throw err!;
+    }
+    return deleteResult;
+  }
 }

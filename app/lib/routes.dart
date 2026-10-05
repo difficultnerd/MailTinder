@@ -6,7 +6,8 @@ import 'api/models/session.dart';
 import 'platform/browser.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/request_invite/request_invite_screen.dart';
-import 'screens/settings/settings_screen.dart';
+import 'screens/settings/account_screen.dart';
+import 'screens/settings/connected_accounts_screen.dart';
 import 'screens/sign_in/auth_result_screen.dart';
 import 'screens/sign_in/sign_in_screen.dart';
 import 'state/session_model.dart';
@@ -19,6 +20,7 @@ abstract final class Routes {
   static const authResult = '/auth/result';
   static const requestInvite = '/request-invite';
   static const settingsAccounts = '/settings/accounts';
+  static const settingsAccount = '/settings/account';
 }
 
 Route<Object?>? onGenerateRoute(
@@ -70,8 +72,12 @@ Route<Object?>? onGenerateRoute(
             signInModel: signInModel,
           );
         case Routes.settingsAccounts:
-          // Placeholder: shows the Settings tab (T-1006a replaces its builder).
-          return const SettingsScreen();
+          final args = settings.arguments;
+          return ConnectedAccountsScreen(
+            outcome: args is AuthOutcome ? args : null,
+          );
+        case Routes.settingsAccount:
+          return const AccountScreen();
         case Routes.home:
         default:
           final state = session.session?.state;
