@@ -28,6 +28,8 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/healthz",
     "/api/v1/auth/{provider}/start",
     "/api/v1/auth/{provider}/callback",
+    "/api/v1/auth/sign-out",
+    "/api/v1/session",
     "/api/v1/invite-requests",
     "/api/v1/admin/invites",
     "/api/v1/admin/invites/{invite_id}/resend",
@@ -199,6 +201,10 @@ async fn request_log_layer(req: Request, next: Next) -> Response {
 fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
     if path == "/api/v1/healthz" {
         "/api/v1/healthz"
+    } else if path == "/api/v1/session" {
+        "/api/v1/session"
+    } else if path == "/api/v1/auth/sign-out" {
+        "/api/v1/auth/sign-out"
     } else if path.starts_with("/api/v1/auth/") {
         if path.ends_with("/start") {
             "/api/v1/auth/{provider}/start"

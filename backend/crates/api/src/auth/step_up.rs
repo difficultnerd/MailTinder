@@ -44,14 +44,17 @@ pub fn require_step_up(session: &AuthedSession, clock: &dyn Clock) -> Result<(),
     }
 }
 
-/// `recent_auth_at` plus the step-up window, or `None` (S7 API-AUTH-3, for
-/// T-506).
+/// `recent_auth_at` plus the step-up window while that instant is still in the
+/// future, else `None` (S7 API-AUTH-3, for T-506: the app skips a round trip
+/// that would return `403 step_up_required`).
 #[must_use]
 pub fn step_up_valid_until(
     session_recent_auth_at: Option<OffsetDateTime>,
-    _now: OffsetDateTime,
+    now: OffsetDateTime,
 ) -> Option<OffsetDateTime> {
-    session_recent_auth_at.map(|auth_time| auth_time + Duration::seconds(STEP_UP_WINDOW_S))
+    session_recent_auth_at
+        .map(|auth_time| auth_time + Duration::seconds(STEP_UP_WINDOW_S))
+        .filter(|until| *until > now)
 }
 
 /// Start a step-up round trip (API-AUTH-1 `intent: "step_up"`).

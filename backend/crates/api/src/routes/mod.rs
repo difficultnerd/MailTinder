@@ -2,15 +2,19 @@
 
 pub mod invite_requests;
 pub mod invites;
+pub mod session;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
 
 use crate::state::AppState;
 
-/// The invite and invite-request routes (T-505), relative to the app root.
+/// The invite, invite-request and session routes (T-505, T-506), relative to the
+/// app root.
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/session", get(session::get_session))
+        .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(
             "/api/v1/admin/invites",
