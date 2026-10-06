@@ -23,6 +23,8 @@ pub const ACTIONS: &[&str] = &[
     "invite_request_approve",
     "invite_request_decline",
     "experiments_consent",
+    "experiments_opt_in",
+    "experiments_opt_out",
     "kill_switch_change",
     "snapshot_save",
     "snapshot_delete",
