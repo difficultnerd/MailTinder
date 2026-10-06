@@ -65,6 +65,23 @@ pub const OUTCOMES: &[&str] = &[
     "revoke_failed",
     "token_invalid",
     "rate_limited",
+    // Sign-in and invite outcomes (T-502b, S7 3.4).
+    "signed_in",
+    "joined",
+    "linked",
+    "reconnected",
+    "stepped_up",
+    "not_invited",
+    "not_registered",
+    "invite_invalid",
+    "email_mismatch",
+    "email_unverified",
+    "mailbox_linked_elsewhere",
+    "step_up_wrong_account",
+    "consent_blocked",
+    "state_invalid",
+    "id_token_invalid",
+    "used",
     // S7 section 4 error codes.
     "invalid_request",
     "unauthenticated",
@@ -111,6 +128,10 @@ pub const OPS: &[&str] = &[
     "firestore.commit",
     "firestore.run_query",
     "identity_config_error",
+    // Sign-in and invite operations (T-502b).
+    "token_revoke",
+    "sign_in_store_grant",
+    "join_missing_grant",
 ];
 
 pub const AMR_VALUES: &[&str] = &[

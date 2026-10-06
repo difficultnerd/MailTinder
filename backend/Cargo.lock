@@ -121,6 +121,7 @@ name = "api"
 version = "0.1.0"
 dependencies = [
  "adapters-gcp",
+ "adapters-gmail",
  "aes-gcm",
  "async-trait",
  "axum 0.7.9",

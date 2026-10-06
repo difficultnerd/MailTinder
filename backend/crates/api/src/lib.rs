@@ -1,5 +1,6 @@
 //! The `MailTinder` API service.
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod http;
@@ -16,12 +17,17 @@ use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use ports::Ports;
 use tower_http::catch_panic::CatchPanicLayer;
 
-pub const ROUTE_TEMPLATES: &[&str] = &["/api/v1/healthz", "/api/v1"];
+pub const ROUTE_TEMPLATES: &[&str] = &[
+    "/api/v1",
+    "/api/v1/healthz",
+    "/api/v1/auth/{provider}/start",
+    "/api/v1/auth/{provider}/callback",
+];
 
 use crate::config::ApiConfig;
 use crate::error::{render_problem, ApiError};
@@ -46,6 +52,14 @@ pub fn build_router_with_routes(
 ) -> Router {
     routes(Router::new())
         .route("/api/v1/healthz", get(healthz))
+        .route(
+            "/api/v1/auth/:provider/start",
+            post(crate::auth::start::start_handler),
+        )
+        .route(
+            "/api/v1/auth/:provider/callback",
+            get(crate::auth::callback::callback_handler),
+        )
         .fallback(fallback)
         .layer(CatchPanicLayer::custom(|_| {
             ApiError::Internal.into_response()
@@ -176,6 +190,12 @@ async fn request_log_layer(req: Request, next: Next) -> Response {
 fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
     if path == "/api/v1/healthz" {
         "/api/v1/healthz"
+    } else if path.starts_with("/api/v1/auth/") {
+        if path.ends_with("/start") {
+            "/api/v1/auth/{provider}/start"
+        } else {
+            "/api/v1/auth/{provider}/callback"
+        }
     } else {
         "/api/v1"
     }
