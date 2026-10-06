@@ -205,6 +205,7 @@ async fn seed_job(
                 list_key_hash: ListKeyHash([7u8; 32]),
                 method: JobMethod::OneClick,
                 target: Some(Ciphertext(vec![1, 2, 3])),
+                sender_display: None,
                 due_at: now + Duration::minutes(5),
                 status,
                 attempts: 0,

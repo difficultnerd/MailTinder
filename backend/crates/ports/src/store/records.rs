@@ -130,6 +130,17 @@ pub enum JobOutcomeCode {
     TokenInvalid,
     Expired,
     Cancelled,
+    /// Another job for the same list already sent, so this one sent nothing
+    /// (UN-01 AC2, T-701).
+    Batched,
+    /// The job's mailbox no longer exists (T-701 step 5).
+    MailboxRemoved,
+    /// The mailbox belongs to a different user than the job (T-701 step 5,
+    /// ASVS V8.3.1).
+    OwnerMismatch,
+    /// The target was invalid, the method unavailable, or the mailto quota or
+    /// provider refused (T-701 step 12).
+    Refused,
 }
 
 /// The outcome of a finished job.
@@ -152,6 +163,12 @@ pub struct JobRecord {
     pub method: JobMethod,
     /// None once terminal.
     pub target: Option<Ciphertext>,
+    /// The sender display for a Needs Attention item, sealed under the owning
+    /// user's `data_key` (`aad_fields::JOB_SENDER_DISPLAY`, scope = job ID).
+    /// Written by T-605, read and cleared at finish (T-701 trap 3). Absent on
+    /// records written before the field existed, so it defaults to `None`.
+    #[serde(default)]
+    pub sender_display: Option<Ciphertext>,
     #[serde(with = "time::serde::rfc3339")]
     pub due_at: OffsetDateTime,
     pub status: JobStatus,

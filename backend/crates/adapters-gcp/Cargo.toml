@@ -21,6 +21,7 @@ url.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
+jsonwebtoken.workspace = true
 aes-gcm = { workspace = true, features = ["aes", "zeroize"] }
 zeroize.workspace = true
 crc32c.workspace = true
