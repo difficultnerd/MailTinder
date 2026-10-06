@@ -6,6 +6,7 @@ pub mod invites;
 pub mod mailboxes;
 pub mod progress;
 pub mod session;
+pub mod swipes;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -23,6 +24,8 @@ pub fn router() -> Router<AppState> {
             delete(mailboxes::disconnect_mailbox),
         )
         .route("/api/v1/feed/next", post(feed::next_page_handler))
+        .route("/api/v1/swipes", post(swipes::create))
+        .route("/api/v1/swipes/undo", post(swipes::undo))
         .route("/api/v1/progress", get(progress::get_progress))
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
