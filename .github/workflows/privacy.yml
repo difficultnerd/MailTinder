@@ -31,3 +31,22 @@ jobs:
           components: clippy
       - name: Clippy with logging macros disallowed
         run: cargo clippy --manifest-path backend/Cargo.toml --all-targets --all-features --locked -- -D warnings
+
+  # Integrity guard, as in ci.yml: a skipped required check reads as a pass in
+  # branch protection, so this job is required and fails unless the gate above
+  # actually ran and succeeded. Unique name: see ci.yml.
+  privacy-integrity:
+    runs-on: ubuntu-latest
+    needs: [privacy-checks]
+    if: always()
+    env:
+      R_PRIVACY: ${{ needs.privacy-checks.result }}
+    steps:
+      - name: Assert the privacy gate ran and passed
+        run: |
+          if [ "$R_PRIVACY" = "success" ]; then
+            echo "OK   privacy-checks"
+          else
+            echo "FAIL privacy-checks -> $R_PRIVACY (a skipped or cancelled gate is not a pass)"
+            exit 1
+          fi
