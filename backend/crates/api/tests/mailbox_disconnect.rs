@@ -951,3 +951,169 @@ async fn cancel_queued_job_is_idempotent() -> Result<(), Box<dyn std::error::Err
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// AU-05 AC2 / INV-2: two disconnects that race on the user's two mailboxes
+// cannot leave the user with zero mailboxes (security review F2).
+// ---------------------------------------------------------------------------
+
+/// A store whose mailbox `by_user` serves one stale read, so the step-3 guard
+/// sees the two-mailbox picture both racing requests saw, and later reads are
+/// live.
+struct StaleOnceStore {
+    inner: Arc<InMemoryServerStore>,
+    mailboxes: StaleOnceMailboxes,
+}
+
+struct StaleOnceMailboxes {
+    inner: Arc<InMemoryServerStore>,
+    stale: Vec<Versioned<MailboxRecord>>,
+    served: AtomicBool,
+}
+
+#[async_trait]
+impl Repo<MailboxId, MailboxRecord> for StaleOnceMailboxes {
+    async fn get(&self, key: &MailboxId) -> Result<Option<Versioned<MailboxRecord>>, StoreError> {
+        self.inner.mailboxes().get(key).await
+    }
+
+    async fn put(&self, record: &MailboxRecord, pre: Precondition) -> Result<Version, StoreError> {
+        self.inner.mailboxes().put(record, pre).await
+    }
+
+    async fn delete(&self, key: &MailboxId, pre: Precondition) -> Result<(), StoreError> {
+        self.inner.mailboxes().delete(key, pre).await
+    }
+}
+
+#[async_trait]
+impl MailboxRepo for StaleOnceMailboxes {
+    async fn by_user(&self, user: &UserId) -> Result<Vec<Versioned<MailboxRecord>>, StoreError> {
+        if !self.served.swap(true, Ordering::SeqCst) {
+            return Ok(self.stale.clone());
+        }
+        self.inner.mailboxes().by_user(user).await
+    }
+
+    async fn by_subject(
+        &self,
+        provider: Provider,
+        subject: &ProviderSubjectId,
+    ) -> Result<Option<Versioned<MailboxRecord>>, StoreError> {
+        self.inner.mailboxes().by_subject(provider, subject).await
+    }
+
+    async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
+        self.inner.mailboxes().delete_all_for_user(user).await
+    }
+}
+
+#[async_trait]
+impl ServerStore for StaleOnceStore {
+    fn users(&self) -> &dyn UserRepo {
+        self.inner.users()
+    }
+    fn mailboxes(&self) -> &dyn MailboxRepo {
+        &self.mailboxes
+    }
+    fn invites(&self) -> &dyn InviteRepo {
+        self.inner.invites()
+    }
+    fn invite_requests(&self) -> &dyn InviteRequestRepo {
+        self.inner.invite_requests()
+    }
+    fn jobs(&self) -> &dyn JobRepo {
+        self.inner.jobs()
+    }
+    fn needs_attention(&self) -> &dyn NeedsAttentionRepo {
+        self.inner.needs_attention()
+    }
+    fn sessions(&self) -> &dyn SessionRepo {
+        self.inner.sessions()
+    }
+    fn classifier_eval(&self) -> &dyn ClassifierEvalRepo {
+        self.inner.classifier_eval()
+    }
+    fn bakeoff_snapshots(&self) -> &dyn BakeoffSnapshotRepo {
+        self.inner.bakeoff_snapshots()
+    }
+    fn config(&self) -> &dyn ConfigRepo {
+        self.inner.config()
+    }
+    fn rate_limits(&self) -> &dyn RateLimitRepo {
+        self.inner.rate_limits()
+    }
+}
+
+/// The other racing request has already removed the primary, but this one's
+/// guard read still saw two mailboxes. The disconnect must refuse and put the
+/// mailbox it deleted back rather than leave the user unreachable.
+#[tokio::test]
+async fn au_05_ac2_concurrent_disconnect_cannot_leave_zero_mailboxes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (mut ports, fakes) = fake_ports();
+    let user = seed_user(&fakes).await?;
+    let primary = seed_mailbox(
+        &fakes,
+        user,
+        "sub-race-primary",
+        "primary@example.com",
+        true,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    let other = seed_mailbox(
+        &fakes,
+        user,
+        "sub-race-other",
+        "other@example.com",
+        false,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    // What both racing requests read at step 3.
+    let stale = fakes.store.mailboxes().by_user(&user).await?;
+    // The other request's delete lands first.
+    fakes
+        .store
+        .mailboxes()
+        .delete(&primary, Precondition::None)
+        .await?;
+    ports.store = Arc::new(StaleOnceStore {
+        inner: Arc::clone(&fakes.store),
+        mailboxes: StaleOnceMailboxes {
+            inner: Arc::clone(&fakes.store),
+            stale,
+            served: AtomicBool::new(false),
+        },
+    });
+    let state = app_state(Arc::new(ports), Arc::new(config()?));
+    let router = build_router(state.clone());
+    let (cookie, record) = SessionService::new(&state)
+        .establish(None, &user, Some(fakes.clock.now() - Duration::seconds(10)))
+        .await?;
+    let a = Authed {
+        cookie: cookie
+            .0
+            .to_str()?
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        csrf: record.record.csrf_token.clone(),
+        user,
+    };
+
+    let resp = disconnect(&router, &a, &other).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(code_of(resp).await?, "last_mailbox");
+    let left = fakes.store.mailboxes().by_user(&user).await?;
+    assert_eq!(left.len(), 1, "the user keeps exactly one mailbox");
+    assert_eq!(left[0].record.mailbox_id, other);
+    assert_eq!(
+        left[0].record.status,
+        MailboxStatus::NeedsSignIn,
+        "the restored mailbox has no grant, so it needs a sign-in"
+    );
+    Ok(())
+}

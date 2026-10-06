@@ -136,7 +136,13 @@ async fn create_linked_mailbox(
         provider: Provider::Gmail,
         provider_subject_id: sub.clone(),
         email_address: Ciphertext(sealed_email),
-        status: MailboxStatus::Connected,
+        // Written `needs_sign_in` with no grant: `TokenService::store_refresh_token`
+        // is the single writer of the sealed token and moves the mailbox to
+        // `connected` (via `next_status(OAuthSucceeded)`), so a failed grant
+        // write can never leave a row claiming `connected` with no grant
+        // (T-601a security review F4). A retry takes the "already yours" branch
+        // below and stores the token.
+        status: MailboxStatus::NeedsSignIn,
         linked_at: app.ports.clock.now(),
         is_primary,
         refresh_token: None,
@@ -185,9 +191,15 @@ async fn create_linked_mailbox(
 
 /// Finish a `reconnect` round trip (ST-03 AC1).
 ///
-/// The mailbox named in the OAuth state must still belong to the caller and
-/// must be the same Google account (`sub`) the round trip was started for;
-/// otherwise the new tokens are dropped and the outcome is `failed`.
+/// The mailbox named in the OAuth state must still belong to the caller, be
+/// the same Google account (`sub`) the round trip was started for, and be in
+/// `needs_sign_in`; otherwise the new tokens are dropped and the outcome is
+/// `failed`.
+///
+/// The status check is S7 3.4 ("refreshes the tokens of a mailbox in
+/// `needs_sign_in` state"): `next_status(OAuthSucceeded)` also moves
+/// `consent_blocked` to `connected`, so without it a caller could clear their
+/// own consent block without a real consent fix (T-601a security review F3).
 ///
 /// # Errors
 ///
@@ -204,6 +216,7 @@ pub async fn complete_reconnect(
     };
     if versioned.record.user_id != session.user
         || versioned.record.provider_subject_id.as_str() != claims.sub
+        || versioned.record.status != MailboxStatus::NeedsSignIn
     {
         return Ok(LinkOutcome::Failed);
     }

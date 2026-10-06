@@ -356,6 +356,26 @@ async fn redeem(
     email: &str,
     sub: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let granted = adapters_gmail::scopes::GMAIL_SCOPES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    redeem_with(router, state, fakes, token, email, sub, granted, true).await
+}
+
+/// The same, with the granted scopes (and the refresh token) under the test's
+/// control, so a partial-consent refresh can be driven (security review F1).
+#[allow(clippy::too_many_arguments)]
+async fn redeem_with(
+    router: &Router,
+    state: &AppState,
+    fakes: &testkit::Fakes,
+    token: &str,
+    email: &str,
+    sub: &str,
+    granted_scopes: Vec<String>,
+    with_refresh: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
     let (cookie, created) = SessionService::new(state).create_anonymous().await?;
     let cookie = cookie_pair(&cookie.0)?;
     let body = serde_json::json!({ "intent": "join", "invite_token": token, "mailbox_id": null });
@@ -379,13 +399,10 @@ async fn redeem(
         .ok_or("state")?;
     fakes.identity.script_exchange(Ok(TokenSet {
         access_token: Sensitive::new("access-token-A".to_owned()),
-        refresh_token: Some(Sensitive::new("refresh-token-R".to_owned())),
+        refresh_token: with_refresh.then(|| Sensitive::new("refresh-token-R".to_owned())),
         id_token: Sensitive::new("id-token-I".to_owned()),
         expires_in_s: 3600,
-        granted_scopes: adapters_gmail::scopes::GMAIL_SCOPES
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect(),
+        granted_scopes,
     }));
     let issued = OffsetDateTime::from_unix_timestamp(1_700_000_000)?;
     fakes.identity.script_claims(Ok(IdClaims {
@@ -539,6 +556,112 @@ async fn au_01_ac2_reinvite_resends_new_token_old_refused() -> TestResult {
     assert_eq!(
         redeem(&router, &state, &fakes, &new, INVITEE, "sub-new").await?,
         "joined"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Security review F1: a join that does not deliver the whole Gmail grant is
+// refused BEFORE the single-use invite is claimed, so the invitee can retry
+// with the same link instead of needing a new invite from the admin.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn au_01_ac1_partial_consent_does_not_burn_the_invite() -> TestResult {
+    let (state, fakes, _serial) = fixture().await?;
+    let router = build_router(state.clone());
+    let admin = admin(&state, &fakes, "sub-admin", true).await?;
+
+    assert_eq!(
+        invite(&router, &admin, INVITEE).await?.status(),
+        StatusCode::CREATED
+    );
+    let token = last_token(&fakes)?;
+    // Granular consent: the invitee unticked all but the first two scopes.
+    let partial = adapters_gmail::scopes::GMAIL_SCOPES[..2]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    assert_eq!(
+        redeem_with(
+            &router,
+            &state,
+            &fakes,
+            &token,
+            INVITEE,
+            "sub-partial",
+            partial,
+            true
+        )
+        .await?,
+        "failed"
+    );
+    let stored = fakes
+        .store
+        .invites()
+        .by_token_hash(&sha(&token))
+        .await?
+        .ok_or("the invite record survives")?;
+    assert_eq!(
+        stored.record.status,
+        domain::InviteStatus::Pending,
+        "the single-use invite is not burned by a partial grant"
+    );
+    assert_eq!(
+        count(&fakes, "mailboxes"),
+        1,
+        "nothing is linked beyond the admin's own mailbox"
+    );
+    // The full-grant retry with the same token now works.
+    assert_eq!(
+        redeem(&router, &state, &fakes, &token, INVITEE, "sub-partial").await?,
+        "joined"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Security review F1: a join whose refresh token is missing does not burn the
+// invite either.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn au_01_ac1_missing_grant_does_not_burn_the_invite() -> TestResult {
+    let (state, fakes, _serial) = fixture().await?;
+    let router = build_router(state.clone());
+    let admin = admin(&state, &fakes, "sub-admin", true).await?;
+
+    assert_eq!(
+        invite(&router, &admin, INVITEE).await?.status(),
+        StatusCode::CREATED
+    );
+    let token = last_token(&fakes)?;
+    let full = adapters_gmail::scopes::GMAIL_SCOPES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    assert_eq!(
+        redeem_with(
+            &router,
+            &state,
+            &fakes,
+            &token,
+            INVITEE,
+            "sub-nogrant",
+            full,
+            false
+        )
+        .await?,
+        "failed"
+    );
+    let stored = fakes
+        .store
+        .invites()
+        .by_token_hash(&sha(&token))
+        .await?
+        .ok_or("the invite record survives")?;
+    assert_eq!(
+        stored.record.status,
+        domain::InviteStatus::Pending,
+        "a missing grant does not burn the invite"
     );
     Ok(())
 }

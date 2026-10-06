@@ -583,3 +583,47 @@ async fn sign_out_without_csrf_token_refused() -> Result<(), Box<dyn std::error:
     assert_eq!(code_of(resp).await?, "csrf_failed");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// ASVS V2.4.1: a write refused by the CSRF layer still spends the caller's
+// write budget, so a client cannot drive CSRF failures for free (T-501
+// security review F4).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn asvs_v2_4_1_csrf_refused_writes_are_still_rate_limited(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = test_router(state.clone());
+    let a = authed(&state, &fakes, None).await?;
+    // `writes` is 30 per minute keyed by the user (S7 section 6). Every one of
+    // these is refused for its token, and every one still counts.
+    for attempt in 0..30 {
+        let resp = authed_post(
+            &router,
+            "/api/v1/auth/sign-out",
+            &a.cookie,
+            Some("wrong-token"),
+        )
+        .await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "attempt {attempt} is refused for its token, not the limit"
+        );
+        assert_eq!(code_of(resp).await?, "csrf_failed");
+    }
+    let resp = authed_post(
+        &router,
+        "/api/v1/auth/sign-out",
+        &a.cookie,
+        Some("wrong-token"),
+    )
+    .await?;
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the 31st write is limited, so CSRF failures are counted"
+    );
+    assert_eq!(code_of(resp).await?, "rate_limited");
+    Ok(())
+}

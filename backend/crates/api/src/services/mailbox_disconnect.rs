@@ -75,6 +75,32 @@ pub async fn disconnect(
         .delete(mailbox, Precondition::None)
         .await?;
 
+    // 9b. The guard at step 3 is a read that a concurrent disconnect of the
+    //     user's other mailbox can race past, so re-check after the write: if
+    //     the user would be left with no mailbox, put this one back (its grant
+    //     is revoked, so it comes back `needs_sign_in`) and refuse (AU-05 AC2,
+    //     INV-2; security review F2).
+    if app
+        .ports
+        .store
+        .mailboxes()
+        .by_user(&session.user)
+        .await?
+        .is_empty()
+    {
+        let mut restore = target.record.clone();
+        restore.status = MailboxStatus::NeedsSignIn;
+        restore.refresh_token = None;
+        restore.is_primary = true;
+        let _ = app
+            .ports
+            .store
+            .mailboxes()
+            .put(&restore, Precondition::MustNotExist)
+            .await;
+        return Err(ApiError::LastMailbox);
+    }
+
     // 10. One pseudonymous security event, no address or token (DEL-3, S5).
     security_event(app, "mailbox_unlink", "success", &session.user);
     Ok(())
