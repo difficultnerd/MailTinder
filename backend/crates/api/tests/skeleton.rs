@@ -45,6 +45,19 @@ async fn call(
     }
     Ok(router.oneshot(req.body(Body::from(body))?).await?)
 }
+async fn call_headers(
+    router: Router,
+    method: Method,
+    uri: &str,
+    body: &'static str,
+    headers: &[(&str, &str)],
+) -> Result<Response, Box<dyn std::error::Error>> {
+    let mut req = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    Ok(router.oneshot(req.body(Body::from(body))?).await?)
+}
 async fn problem(resp: Response) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(
         &axum::body::to_bytes(resp.into_body(), 16384).await?,
@@ -135,12 +148,31 @@ async fn asvs_v16_5_1_panic_gives_generic_problem() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn asvs_v1_5_2_unknown_field_is_400_with_pointer_not_value(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = call(
-        test_router(fixture()?.0),
+    let (state, _) = fixture()?;
+    // The CSRF layer now guards every unsafe method (T-501), so the request
+    // carries a real anonymous session, its token and the app origin.
+    let (cookie, record) = api::session::store::SessionService::new(&state)
+        .create_anonymous()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let cookie = cookie
+        .0
+        .to_str()?
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let response = call_headers(
+        test_router(state),
         Method::POST,
         "/api/v1/__t/echo",
         r#"{"value":"ok","intruder":"CANARY"}"#,
-        Some("application/json"),
+        &[
+            ("content-type", "application/json"),
+            ("cookie", &cookie),
+            ("origin", "https://mailtinder.test"),
+            ("x-csrf-token", &record.record.csrf_token),
+        ],
     )
     .await?;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

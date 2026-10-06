@@ -157,6 +157,14 @@ impl ApiError {
     }
 }
 
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 impl From<MailError> for ApiError {
     fn from(e: MailError) -> Self {
         match e {
