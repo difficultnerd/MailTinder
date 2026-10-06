@@ -207,9 +207,12 @@ async fn au_06_ac1_records_swept_within_24_hours() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-/// F1: the sweep runs through the worker's API-INT-2 entry point (T-706 calls
-/// it), so the 24-hour backstop is wired to something, not an uncalled
-/// function.
+/// F1: the sweep is reachable through the worker's API-INT-2 entry point
+/// (`run_sweeps`). This test drives the entry point directly: it proves the
+/// entry point completes a failed deletion, not that a production caller
+/// exists. T-706 mounts the route that calls it, and its test
+/// `api_int_2_calls_the_deleted_user_sweep` is the hard gate for the
+/// "within 24 hours" clause of AU-06 AC1.
 #[tokio::test]
 async fn au_06_ac1_sweep_entry_point_completes_a_failed_deletion(
 ) -> Result<(), Box<dyn std::error::Error>> {

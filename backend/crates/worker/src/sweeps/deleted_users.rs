@@ -5,7 +5,8 @@
 //! deletes the user record first, so a failure after that point leaves
 //! orphans, never a half-deleted user who can still sign in. The worker's
 //! sweep entry point ([`crate::sweeps::run_sweeps`]) calls
-//! [`sweep_deleted_users`] on every API-INT-2 run (T-706).
+//! [`sweep_deleted_users`]; T-706's API-INT-2 route is what calls the entry
+//! point in production (it does not exist yet).
 //!
 //! Orphans are found through the jobs, Needs Attention items, sessions and
 //! mailboxes, each scanned in pages: `expires_at` ascending for the first

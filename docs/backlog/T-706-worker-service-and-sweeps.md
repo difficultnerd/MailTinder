@@ -57,7 +57,7 @@ Handler:
 
 `run_sweep`: `now = clock.now()` once; run every step in this order; a failing step adds its name to `failed_steps`, logs the error kind (no values) and the next step still runs.
 
-After the steps below, call `sweeps::run_sweeps(ports.store.as_ref(), &pseudonymiser)` (T-803 step 11, already built and tested): it deletes the records of a user whose account deletion the request could not finish. Without this call the 24-hour backstop of S2 AU-06 AC1 has no caller. Record its `deleted_records` in `SweepCounts`.
+After the steps below, call `sweeps::run_sweeps(ports.store.as_ref(), &pseudonymiser)` (T-803 step 11, already built and tested): it deletes the records of a user whose account deletion the request could not finish. Without this call the 24-hour backstop of S2 AU-06 AC1 has no caller, so **this call and its test `api_int_2_calls_the_deleted_user_sweep` are a hard gate**: until they pass on this route, AU-06 AC1's "within 24 hours" clause is not met and T-803 must not be read as done for that clause. Record its `deleted_records` in `SweepCounts`.
 
 `expire_and_purge_jobs`:
 
@@ -132,10 +132,11 @@ After the steps below, call `sweeps::run_sweeps(ports.store.as_ref(), &pseudonym
 
 - Firestore TTL policies and the Cloud Scheduler job: T-1102.
 - Deleting collected job outcomes after the History append: T-609.
-- Account deletion sweeps (24-hour sweep of a deleted user's records): T-803.
+- The deleted-user sweep *implementation* (`worker::sweeps::sweep_deleted_users`, its paging and its tests): T-803, already built. T-706 owns the production caller: the `run_sweeps` call in this task's `run_sweep` and the route that reaches it are in scope here, not deferred.
 
 ## Done when
 
 - The tests above pass and every required check is green (S10 10.1).
 - Definition of done in S10 10.4.
 - `cargo run -p worker` starts and answers `401` to an unauthenticated sweep.
+- `api_int_2_calls_the_deleted_user_sweep` passes on the API-INT-2 route. This is a hard gate for the "within 24 hours" clause of S2 AU-06 AC1: until it passes, the deleted-user sweep has no production caller (T-803 step 11 ships the library function and its tests only) and AU-06 AC1 must not be read as met.
