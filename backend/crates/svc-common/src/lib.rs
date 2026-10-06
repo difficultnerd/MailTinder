@@ -17,4 +17,5 @@
 )]
 
 pub mod invites;
+pub mod links;
 pub mod mint;

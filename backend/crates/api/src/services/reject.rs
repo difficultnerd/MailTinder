@@ -29,6 +29,7 @@ use ports::{
     NeedsAttentionRecord, Precondition, StoreError, WrappedKey,
 };
 use serde::{Deserialize, Serialize};
+use svc_common::links::safe_link;
 use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
@@ -370,6 +371,12 @@ async fn rollback_job(
 
 /// Step 4: the https-only Needs Attention item, keyed on user and sender so a
 /// retry or a second reject of the same sender does not duplicate it.
+///
+/// The link is sanitised by `svc_common::links::safe_link` (T-704, ASVS
+/// V1.2.2) before it is encrypted: only an `https` URL with a host, no
+/// username or password, no control characters or whitespace and at most
+/// `MAX_LINK_CHARS` characters is stored. Anything else becomes `None`, so the
+/// item shows no "Open unsubscribe page" link rather than an unsafe one.
 async fn raise_item(
     app: &AppState,
     user: &UserId,
@@ -385,7 +392,7 @@ async fn raise_item(
     let item_id = NeedsAttentionId(Uuid::new_v5(&NS_NA_ITEM, &bytes));
     let item = NewNeedsAttention::new(
         NeedsAttentionReason::HttpsOnlyUnsubscribe,
-        link.cloned(),
+        link.and_then(|u| safe_link(u.as_str())),
         now,
         tunables,
     );
