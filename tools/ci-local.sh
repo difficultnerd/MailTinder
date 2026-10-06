@@ -151,13 +151,19 @@ want coverage --full && {
     run "flutter coverage" bash -c "cd app && flutter pub get && flutter test --coverage"
     run "coverage floors" python3 tools/check_coverage_floors.py --rust backend/lcov.info --flutter app/coverage/lcov.info
   else
-    echo "===== coverage ====="; echo "skip: cargo-llvm-cov not installed (cargo install cargo-llvm-cov)"
+    skip_fail coverage "cargo-llvm-cov not installed (cargo install cargo-llvm-cov)"
   fi
 }
 
 # ---- Summary ----
 echo ""
 echo "=============================================="
+if [ "$RAN" -eq 0 ]; then
+  echo "!! NO CHECKS RAN: the request matched nothing."
+  echo "!! A gate that never ran is NOT a pass. Check the check names; note that the"
+  echo "!! heavy checks (coverage, csp-smoke) need --full as well as their own name."
+  FAILED=1
+fi
 if [ "$FAILED" -eq 0 ]; then
   echo "All requested local checks passed ($RAN checks)."
 else

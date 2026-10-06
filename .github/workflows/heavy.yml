@@ -81,11 +81,14 @@ jobs:
       - run: scripts/csp_check.sh
 
   # Same integrity guard as the other workflows: a gate that silently does not
-  # run must not read as a pass.
-  check-integrity:
+  # run must not read as a pass. Unique name across the repository - see ci.yml.
+  heavy-integrity:
     runs-on: ubuntu-latest
     needs: [coverage, csp-smoke]
     if: always()
+    env:
+      R_COVERAGE: ${{ needs.coverage.result }}
+      R_CSP: ${{ needs.csp-smoke.result }}
     steps:
       - name: Assert every expected deep scan ran and passed
         run: |
@@ -98,6 +101,6 @@ jobs:
               fail=1
             fi
           }
-          report coverage "${{ needs.coverage.result }}"
-          report csp-smoke "${{ needs.csp-smoke.result }}"
+          report coverage  "$R_COVERAGE"
+          report csp-smoke "$R_CSP"
           exit $fail

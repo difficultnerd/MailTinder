@@ -84,10 +84,19 @@ jobs:
   # is required, and fails unless every gate above actually ran and succeeded -
   # making "the check did not execute" indistinguishable from "the check
   # failed", which is the safe direction to be wrong in.
-  check-integrity:
+  #
+  # The job name is unique across the repository (ci-/security-/privacy-/
+  # heavy-integrity). Branch protection keys on the bare check name, so four
+  # jobs sharing one name would make it ambiguous which run gates a merge.
+  ci-integrity:
     runs-on: ubuntu-latest
     needs: [rust, dart, language-policy, ac-coverage]
     if: always()
+    env:
+      R_RUST: ${{ needs.rust.result }}
+      R_DART: ${{ needs.dart.result }}
+      R_LANG: ${{ needs.language-policy.result }}
+      R_AC: ${{ needs.ac-coverage.result }}
     steps:
       - name: Assert every expected gate ran and passed
         run: |
@@ -100,8 +109,8 @@ jobs:
               fail=1
             fi
           }
-          report rust            "${{ needs.rust.result }}"
-          report dart            "${{ needs.dart.result }}"
-          report language-policy "${{ needs.language-policy.result }}"
-          report ac-coverage     "${{ needs.ac-coverage.result }}"
+          report rust            "$R_RUST"
+          report dart            "$R_DART"
+          report language-policy "$R_LANG"
+          report ac-coverage     "$R_AC"
           exit $fail

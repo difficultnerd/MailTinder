@@ -97,11 +97,17 @@ jobs:
 
   # Integrity guard, as in ci.yml: a skipped required check reads as a pass in
   # branch protection, so this job is required and fails unless all five gates
-  # actually ran and succeeded.
-  check-integrity:
+  # actually ran and succeeded. Unique name: see ci.yml.
+  security-integrity:
     runs-on: ubuntu-latest
     needs: [gitleaks, semgrep, cargo-audit, cargo-deny, dart-licenses]
     if: always()
+    env:
+      R_GITLEAKS: ${{ needs.gitleaks.result }}
+      R_SEMGREP: ${{ needs.semgrep.result }}
+      R_AUDIT: ${{ needs.cargo-audit.result }}
+      R_DENY: ${{ needs.cargo-deny.result }}
+      R_LICENSES: ${{ needs.dart-licenses.result }}
     steps:
       - name: Assert every expected gate ran and passed
         run: |
@@ -114,9 +120,9 @@ jobs:
               fail=1
             fi
           }
-          report gitleaks      "${{ needs.gitleaks.result }}"
-          report semgrep       "${{ needs.semgrep.result }}"
-          report cargo-audit   "${{ needs.cargo-audit.result }}"
-          report cargo-deny    "${{ needs.cargo-deny.result }}"
-          report dart-licenses "${{ needs.dart-licenses.result }}"
+          report gitleaks      "$R_GITLEAKS"
+          report semgrep       "$R_SEMGREP"
+          report cargo-audit   "$R_AUDIT"
+          report cargo-deny    "$R_DENY"
+          report dart-licenses "$R_LICENSES"
           exit $fail
