@@ -232,14 +232,15 @@ async fn seed_user(
     Ok(user)
 }
 
-async fn seed_mailbox(
+/// Build (but do not store) a mailbox record for a user's Google `sub`.
+async fn mailbox_record(
     fakes: &testkit::Fakes,
     user: UserId,
     sub: &str,
     email: &str,
     is_primary: bool,
     status: MailboxStatus,
-) -> Result<MailboxId, Box<dyn std::error::Error>> {
+) -> Result<MailboxRecord, Box<dyn std::error::Error>> {
     let subject = ProviderSubjectId::new(sub)?;
     let address = EmailAddress::parse(email)?;
     let mailbox_id = ports::mailbox_id_for(Provider::Gmail, &subject);
@@ -258,23 +259,33 @@ async fn seed_mailbox(
             address.as_str().as_bytes(),
         )
         .await?;
+    Ok(MailboxRecord {
+        mailbox_id,
+        user_id: user,
+        provider: Provider::Gmail,
+        provider_subject_id: subject,
+        email_address: Ciphertext(sealed),
+        status,
+        linked_at: fakes.clock.now(),
+        is_primary,
+        refresh_token: None,
+    })
+}
+
+async fn seed_mailbox(
+    fakes: &testkit::Fakes,
+    user: UserId,
+    sub: &str,
+    email: &str,
+    is_primary: bool,
+    status: MailboxStatus,
+) -> Result<MailboxId, Box<dyn std::error::Error>> {
+    let record = mailbox_record(fakes, user, sub, email, is_primary, status).await?;
+    let mailbox_id = record.mailbox_id;
     fakes
         .store
         .mailboxes()
-        .put(
-            &MailboxRecord {
-                mailbox_id,
-                user_id: user,
-                provider: Provider::Gmail,
-                provider_subject_id: subject,
-                email_address: Ciphertext(sealed),
-                status,
-                linked_at: fakes.clock.now(),
-                is_primary,
-                refresh_token: None,
-            },
-            Precondition::MustNotExist,
-        )
+        .put(&record, Precondition::MustNotExist)
         .await?;
     Ok(mailbox_id)
 }
@@ -786,10 +797,10 @@ async fn st_03_ac1_reconnect_with_other_account_fails() -> Result<(), Box<dyn st
 }
 
 // ---------------------------------------------------------------------------
-// INV-3: two users racing to link the same `sub` — exactly one owns it.
+// INV-3: two users linking the same `sub` in turn — exactly one owns it.
 // ---------------------------------------------------------------------------
 #[tokio::test]
-async fn inv_3_concurrent_link_one_owner() -> Result<(), Box<dyn std::error::Error>> {
+async fn inv_3_second_linker_of_same_sub_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (state, fakes) = fixture()?;
     let router = build_router(state.clone());
     let a = authed(&state, &fakes).await?;
@@ -813,6 +824,93 @@ async fn inv_3_concurrent_link_one_owner() -> Result<(), Box<dyn std::error::Err
     assert!(
         fakes.identity.revoked().is_empty(),
         "the loser's grant is never revoked"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// INV-3: two users racing to link the same `sub` — the loser's write hits the
+// store's `AlreadyExists` and the recovery branch refuses it without taking
+// the winner's mailbox (the sequential path above never reaches that branch).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn inv_3_racing_link_one_owner_recovers_from_already_exists(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    // The other user's record is staged to land between A's `by_subject`
+    // pre-check and A's `put` — exactly the race the recovery branch handles.
+    let winner = seed_user(&fakes, false).await?;
+    let staged = mailbox_record(
+        &fakes,
+        winner,
+        "sub-race",
+        "race@example.com",
+        true,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    fakes.store.race_mailbox_put(staged);
+    let (_, outcome) = link(&router, &fakes, &a, "sub-race", "race@example.com").await?;
+    assert_eq!(
+        outcome, "mailbox_linked_elsewhere",
+        "the race loser is refused, not a failure"
+    );
+    assert_eq!(count(&fakes, "mailboxes"), 1, "exactly one mailbox");
+    let mailbox_id = ports::mailbox_id_for(Provider::Gmail, &ProviderSubjectId::new("sub-race")?);
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox_id)
+        .await?
+        .ok_or("mailbox")?;
+    assert_eq!(
+        stored.record.user_id, winner,
+        "the winner keeps the mailbox"
+    );
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the loser's grant is never stored"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// INV-3: a user whose own link races itself reuses the mailbox rather than
+// failing (the same-user arm of the recovery branch).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn inv_3_racing_same_user_reuses_the_mailbox() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let staged = mailbox_record(
+        &fakes,
+        a.user,
+        "sub-self",
+        "self@example.com",
+        true,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    fakes.store.race_mailbox_put(staged);
+    let (cookie, outcome) = link(&router, &fakes, &a, "sub-self", "self@example.com").await?;
+    assert_eq!(outcome, "linked", "the racing link still succeeds");
+    assert_eq!(count(&fakes, "mailboxes"), 1, "one mailbox, reused");
+    let (_, json) = mailboxes_json(&router, &cookie).await?;
+    let list = json["mailboxes"].as_array().ok_or("mailboxes array")?;
+    assert_eq!(list.len(), 1);
+    let mailbox_id = ports::mailbox_id_for(Provider::Gmail, &ProviderSubjectId::new("sub-self")?);
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox_id)
+        .await?
+        .ok_or("mailbox")?;
+    assert!(
+        stored.record.refresh_token.is_some(),
+        "the raced grant is stored onto the existing mailbox"
     );
     Ok(())
 }
