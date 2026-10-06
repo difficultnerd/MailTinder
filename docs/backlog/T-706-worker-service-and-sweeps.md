@@ -57,6 +57,8 @@ Handler:
 
 `run_sweep`: `now = clock.now()` once; run every step in this order; a failing step adds its name to `failed_steps`, logs the error kind (no values) and the next step still runs.
 
+After the steps below, call `sweeps::run_sweeps(ports.store.as_ref(), &pseudonymiser)` (T-803 step 11, already built and tested): it deletes the records of a user whose account deletion the request could not finish. Without this call the 24-hour backstop of S2 AU-06 AC1 has no caller. Record its `deleted_records` in `SweepCounts`.
+
 `expire_and_purge_jobs`:
 
 1. `jobs().expires_by(now, SWEEP_BATCH)`; if the result length equals `SWEEP_BATCH`, set `more = true`.
@@ -115,6 +117,7 @@ Handler:
 - `api_int_2_rejects_non_scheduler_caller` (service integration: a valid token for the Cloud Tasks account is refused)
 - `api_int_2_failed_step_returns_500_and_others_run` (service integration: fake store fails `sessions().expires_by`; the other counts are still non-zero)
 - `api_int_2_more_flag_when_batch_full` (service integration: 501 expired items)
+- `api_int_2_calls_the_deleted_user_sweep` (service integration: an orphaned user's records are gone after one sweep; T-803 step 11)
 
 ## Edge cases and traps
 

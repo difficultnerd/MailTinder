@@ -524,9 +524,9 @@ impl SessionRepo for TraceSessions {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<SessionHash>, StoreError> {
-        self.inner.sessions().expires_by(now, limit).await
+        page: PageRequest,
+    ) -> Result<Page<SessionHash>, StoreError> {
+        self.inner.sessions().expires_by(now, page).await
     }
 
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {

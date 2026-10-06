@@ -406,6 +406,17 @@ impl MailboxRepo for MailboxesImpl {
             .map_err(map_err)?;
         Ok(docs.first().map(decode_doc::<MailboxRecord>).transpose()?)
     }
+    async fn list(&self, page: PageRequest) -> Result<Page<Versioned<MailboxRecord>>, StoreError> {
+        run_paged(
+            &self.repo.fs,
+            "mailboxes",
+            None,
+            vec![("linked_at", "ASCENDING")],
+            page,
+            |r: &MailboxRecord| timestamp_value(r.linked_at),
+        )
+        .await
+    }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         bulk_delete_by_filter(
             &self.repo.fs,
@@ -661,18 +672,18 @@ impl JobRepo for JobsImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<Versioned<JobRecord>>, StoreError> {
+        page: PageRequest,
+    ) -> Result<Page<Versioned<JobRecord>>, StoreError> {
         let filter = cmp_filter("expires_at", "LESS_THAN_OR_EQUAL", timestamp_value(now));
-        let q = query(
+        run_paged(
+            &self.repo.fs,
             "jobs",
             Some(filter),
             vec![("expires_at", "ASCENDING")],
-            Some(limit),
-            None,
-        );
-        let docs = self.repo.fs.run_query("jobs", q).await.map_err(map_err)?;
-        docs.iter().map(decode_doc::<JobRecord>).collect()
+            page,
+            |r: &JobRecord| timestamp_value(r.expires_at),
+        )
+        .await
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         bulk_delete_by_filter(
@@ -747,30 +758,22 @@ impl NeedsAttentionRepo for NeedsAttentionImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<NeedsAttentionId>, StoreError> {
+        page: PageRequest,
+    ) -> Result<Page<NeedsAttentionId>, StoreError> {
         let filter = cmp_filter("expires_at", "LESS_THAN_OR_EQUAL", timestamp_value(now));
-        let q = query(
+        let paged = run_paged(
+            &self.repo.fs,
             "needs_attention",
             Some(filter),
             vec![("expires_at", "ASCENDING")],
-            Some(limit),
-            None,
-        );
-        let docs = self
-            .repo
-            .fs
-            .run_query("needs_attention", q)
-            .await
-            .map_err(map_err)?;
-        docs.iter()
-            .map(|d| {
-                let v = from_fields(&d.fields).map_err(|_| StoreError::Corrupt("fields"))?;
-                let r: NeedsAttentionRecord =
-                    serde_json::from_value(v).map_err(|_| StoreError::Corrupt("record"))?;
-                Ok(r.item_id)
-            })
-            .collect()
+            page,
+            |r: &NeedsAttentionRecord| timestamp_value(r.expires_at),
+        )
+        .await?;
+        Ok(Page {
+            items: paged.items.into_iter().map(|v| v.record.item_id).collect(),
+            next: paged.next,
+        })
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         bulk_delete_by_filter(
@@ -822,30 +825,26 @@ impl SessionRepo for SessionsImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<SessionHash>, StoreError> {
+        page: PageRequest,
+    ) -> Result<Page<SessionHash>, StoreError> {
         let filter = cmp_filter("expires_at", "LESS_THAN_OR_EQUAL", timestamp_value(now));
-        let q = query(
+        let paged = run_paged(
+            &self.repo.fs,
             "sessions",
             Some(filter),
             vec![("expires_at", "ASCENDING")],
-            Some(limit),
-            None,
-        );
-        let docs = self
-            .repo
-            .fs
-            .run_query("sessions", q)
-            .await
-            .map_err(map_err)?;
-        docs.iter()
-            .map(|d| {
-                let v = from_fields(&d.fields).map_err(|_| StoreError::Corrupt("fields"))?;
-                let r: SessionRecord =
-                    serde_json::from_value(v).map_err(|_| StoreError::Corrupt("record"))?;
-                Ok(r.session_hash)
-            })
-            .collect()
+            page,
+            |r: &SessionRecord| timestamp_value(r.expires_at),
+        )
+        .await?;
+        Ok(Page {
+            items: paged
+                .items
+                .into_iter()
+                .map(|v| v.record.session_hash)
+                .collect(),
+            next: paged.next,
+        })
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         bulk_delete_by_filter(

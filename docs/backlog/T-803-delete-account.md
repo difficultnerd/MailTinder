@@ -17,7 +17,7 @@
 | Create | `backend/crates/api/src/routes/account.rs` | Handler and DTO |
 | Create | `backend/crates/api/src/services/account_deletion.rs` | Ordered steps |
 | Create | `backend/crates/worker/src/sweeps/deleted_users.rs` | Orphan sweep for records whose user is gone |
-| Change | `backend/crates/worker/src/sweeps/mod.rs` | Call it from API-INT-2 (T-706) |
+| Change | `backend/crates/worker/src/sweeps/mod.rs` | The sweep entry point `run_sweeps` calls the deleted-user sweep; T-706 calls `run_sweeps` from API-INT-2 |
 | Change | `backend/crates/api/src/routes/mod.rs` | Mount; Firestore rate limit 3 per user per day |
 | Create | `backend/crates/api/tests/account_deletion.rs` | Service integration tests |
 | Create | `backend/crates/worker/tests/deleted_users_sweep.rs` | Sweep tests |
@@ -42,7 +42,7 @@ pub enum DeletionStep { AppFolderDeleted, JobsCancelled, TokensRevoked, KeyDestr
 pub async fn delete_account(app: &AppState, session: &AuthedSession) -> Result<(DeletionAccepted, Vec<DeletionStep>), ApiError>;
 
 // worker
-pub async fn sweep_deleted_users(store: &dyn ServerStore, limit: u32) -> Result<u64, StoreError>;
+pub async fn sweep_deleted_users(store: &dyn ServerStore, limit: u32, pseudo: &Pseudonymiser) -> Result<u64, StoreError>;
 ```
 
 ## Algorithm
@@ -65,7 +65,7 @@ In the request, in this order (AU-06 AC1, S7 5.10):
 
 Worker sweep (every run of API-INT-2):
 
-11. For jobs, needs_attention, mailboxes and sessions, find records whose `user_id` has no user document (bounded by `limit`), delete them, and return the count. Under the virtual clock, after a failed step 8 every record is gone by the next sweep, well within 24 hours (AU-06 AC1).
+11. For jobs, needs_attention, mailboxes and sessions, find records whose `user_id` has no user document (in pages of `limit`, so live records at the front of a scan cannot hide an orphan), delete every collection of each orphaned user including the `classifier_eval` records of the user's pseudonymous ID, and return the count. Under the virtual clock, after a failed step 8 every record is gone by the next sweep, well within 24 hours (AU-06 AC1). The sweep is called from the worker's API-INT-2 entry point, `worker::sweeps::run_sweeps`, which T-706 runs on every tick.
 
 Never touched: labels and categories already applied in the mailbox (AU-06 AC2), and `bakeoff_snapshots` (aggregate only, S5).
 
