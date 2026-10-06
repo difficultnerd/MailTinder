@@ -152,7 +152,7 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| V2.4.1 | 2 | Verify that anti-automation controls are in place to protect against excessive calls to application functions that could lead to data exfiltration, garbage-data creation, quota exhaustion, rate-limit breaches, denial-of-service, or overuse of costly resources. | Rate limits per user and per IP (S7 table) | backend/http | test `asvs_v2_4_1_*` | Planned |
+| V2.4.1 | 2 | Verify that anti-automation controls are in place to protect against excessive calls to application functions that could lead to data exfiltration, garbage-data creation, quota exhaustion, rate-limit breaches, denial-of-service, or overuse of costly resources. | Rate limits per user and per IP (S7 table) | backend/http | test `asvs_v2_4_1_*` | Tested |
 
 ## V3.2 Unintended Content Interpretation
 

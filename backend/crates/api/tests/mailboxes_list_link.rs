@@ -990,3 +990,86 @@ async fn link_callback_never_revokes_a_linked_grant() -> Result<(), Box<dyn std:
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// AU-04 AC1: a `link` whose grant write fails leaves a mailbox that does not
+// claim `connected`, so the stored row can never disagree with the missing
+// grant (T-601a security review F4).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn au_04_ac1_failed_grant_write_leaves_no_connected_mailbox(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    // The row is written first; sealing its refresh token then fails.
+    fakes.keys.fail_field(aad_fields::MAILBOX_REFRESH_TOKEN, 1);
+    let (_cookie, outcome) = link(&router, &fakes, &a, "sub-grant", "grant@example.com").await?;
+    assert_eq!(outcome, "failed");
+    let subject = ProviderSubjectId::new("sub-grant")?;
+    let mailbox_id = ports::mailbox_id_for(Provider::Gmail, &subject);
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox_id)
+        .await?
+        .ok_or("mailbox")?;
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the grant was not stored"
+    );
+    assert_eq!(
+        stored.record.status,
+        MailboxStatus::NeedsSignIn,
+        "a mailbox with no grant is never `connected`"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ST-03 AC1 (S7 3.4): `reconnect` refreshes a mailbox in `needs_sign_in` only,
+// so a caller cannot clear a state such as `consent_blocked` with it.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn st_03_ac1_reconnect_refused_for_a_connected_mailbox(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let mailbox = seed_mailbox(
+        &fakes,
+        a.user,
+        "sub-live",
+        "live@example.com",
+        true,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    let (rotated, oauth_state) =
+        begin(&router, &a.cookie, &a.csrf, &reconnect_body(&mailbox)).await?;
+    let resp = callback(
+        &router,
+        &fakes,
+        &rotated,
+        &oauth_state,
+        claims("sub-live", "live@example.com"),
+    )
+    .await?;
+    assert_eq!(
+        outcome(&resp),
+        "failed",
+        "reconnect is for needs_sign_in only"
+    );
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox)
+        .await?
+        .ok_or("mailbox")?;
+    assert_eq!(stored.record.status, MailboxStatus::Connected);
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the new grant is dropped"
+    );
+    Ok(())
+}

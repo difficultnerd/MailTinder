@@ -81,11 +81,17 @@ pub fn build_router_with_routes(
             ApiError::Internal.into_response()
         }))
         .layer(middleware::from_fn(request_log_layer))
+        // Order matters. `session_layer` loads the cookie first (the default
+        // limits key reads by session and writes by user), then
+        // `default_limit_layer` counts the request, then `csrf_layer` checks
+        // it. The limiter sits outside CSRF so a request refused for a bad
+        // token or `Origin` still spends its budget (T-501 security review
+        // F4): CSRF-refused writes used to be uncounted.
+        .layer(middleware::from_fn_with_state(state.clone(), csrf_layer))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             default_limit_layer,
         ))
-        .layer(middleware::from_fn_with_state(state.clone(), csrf_layer))
         .layer(middleware::from_fn_with_state(state.clone(), session_layer))
         .layer(middleware::from_fn(problem_layer))
         .layer(middleware::from_fn(security_headers_layer))
@@ -115,7 +121,10 @@ async fn default_limit_layer(State(state): State<AppState>, req: Request, next: 
         return next.run(req).await;
     };
     let Some(request_id) = req.extensions().get::<RequestId>().copied() else {
-        return next.run(req).await;
+        // `request_id_layer` is applied last and so runs first; this is
+        // unreachable. Fail closed rather than run the request unlimited if
+        // that order ever changes (T-501 security review F4).
+        return ApiError::Internal.into_response();
     };
     let loaded = req.extensions().get::<LoadedSession>();
     let user_id = loaded.and_then(|s| s.record.record.user_id);
