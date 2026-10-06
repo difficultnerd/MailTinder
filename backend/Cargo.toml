@@ -41,7 +41,7 @@ crc32c = "0.6"
 proptest = "1"
 toml = "0.8"
 mail-parser = "0.9"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 html5ever = "0.27"
 unicode-segmentation = "1"
 
