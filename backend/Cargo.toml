@@ -15,6 +15,7 @@ publish = false
 domain = { path = "crates/domain", version = "0.1.0" }
 ports = { path = "crates/ports", version = "0.1.0" }
 obs = { path = "crates/obs", version = "0.1.0" }
+svc-common = { path = "crates/svc-common", version = "0.1.0" }
 egress = { path = "crates/egress", version = "0.1.0" }
 testkit = { path = "crates/testkit", version = "0.1.0" }
 adapters-gmail = { path = "crates/adapters-gmail", version = "0.1.0" }

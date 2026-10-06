@@ -5,7 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use domain::{LabelSet, MailboxId, MessageId};
 use ports::{MailProvider, MailboxCtx};
-use testkit::contract::mail_provider::{mail_provider, CaseGroups, MailSeeder, MailTarget};
+use testkit::contract::mail_provider::{
+    self as contract, mail_provider, CaseGroups, MailSeeder, MailTarget,
+};
 use testkit::mailbox::state::SeedMessage;
 use testkit::mailbox::{FakeMailbox, SentRecord};
 
@@ -76,4 +78,56 @@ async fn inv_5_fake_mailbox_records_no_permanent_delete() {
         )
         .await;
     // FakeMailbox has no delete path; this just confirms it compiles and runs.
+}
+
+fn fresh_target() -> MailTarget {
+    let fake = Arc::new(FakeMailbox::new());
+    MailTarget {
+        ctx: MailboxCtx {
+            mailbox: MAILBOX,
+            access_token: obs::Sensitive::new("tok".to_owned()),
+        },
+        provider: Arc::clone(&fake) as Arc<dyn MailProvider>,
+        seeder: Arc::new(Seeder(fake)),
+    }
+}
+
+#[tokio::test]
+async fn xc_02_list_messages_contract_inbox_and_dates() {
+    let result = contract::list_messages_inbox_and_dates(&fresh_target()).await;
+    assert_eq!(result, Ok(()));
+}
+
+#[tokio::test]
+async fn xc_02_list_messages_contract_label_and_sender() {
+    let result = contract::list_messages_label_and_sender(&fresh_target()).await;
+    assert_eq!(result, Ok(()));
+}
+
+#[tokio::test]
+async fn xc_02_count_messages_contract_label_exact() {
+    let result = contract::count_messages_label_exact(&fresh_target()).await;
+    assert_eq!(result, Ok(()));
+}
+
+#[tokio::test]
+async fn xc_02_rename_label_contract() {
+    let result = contract::rename_label_cases(&fresh_target()).await;
+    assert_eq!(result, Ok(()));
+}
+
+#[tokio::test]
+async fn inv_5_remove_label_keeps_messages() {
+    let result = contract::remove_label_keeps_messages(&fresh_target()).await;
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn xc_02_fake_web_url_has_gmail_shape() {
+    let fake = FakeMailbox::new();
+    let id = MessageId::new("m0001").unwrap_or_else(|_| panic!("id"));
+    assert_eq!(
+        fake.web_url("me@example.com", &id),
+        "https://mail.google.com/mail/?authuser=me%40example.com#all/m0001"
+    );
 }

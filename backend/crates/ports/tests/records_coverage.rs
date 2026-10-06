@@ -146,6 +146,7 @@ fn pre_auth_and_session_debug_and_keyed() {
         pkce_verifier: ct(),
         invite_token_hash: None,
         pending_email: None,
+        mailbox_id: None,
         started_at: t(),
     };
     assert!(format!("{pre:?}").contains("PreAuthFields"));

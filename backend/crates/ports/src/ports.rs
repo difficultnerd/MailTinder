@@ -7,6 +7,7 @@ use crate::classifier::Classifier;
 use crate::clock::Clock;
 use crate::egress::HttpEgress;
 use crate::identity::IdentityProvider;
+use crate::invite_mailer::InviteMailer;
 use crate::keys::{KeyService, SystemKeyService};
 use crate::mail::MailProvider;
 use crate::rng::Rng;
@@ -28,6 +29,8 @@ pub struct Ports {
     pub scheduler: Arc<dyn JobScheduler>,
     pub egress: Arc<dyn HttpEgress>,
     pub identity: Arc<dyn IdentityProvider>,
+    /// Sends the fixed invite email (the Gmail adapter in production).
+    pub invite_mailer: Arc<dyn InviteMailer>,
     /// Bake-off models only; header rules is in-process (T-102).
     pub models: Vec<Arc<dyn Classifier>>,
     pub secrets: Arc<dyn Secrets>,

@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use fake_google::{
-    oidc::ISSUER, ClientReg, FakeGoogle, FakeGoogleHandle, NextLogin, TokenScenario,
+    oidc::{ISSUER, KID},
+    ClientReg, FakeGoogle, FakeGoogleHandle, NextLogin, TokenScenario,
 };
 use time::OffsetDateTime;
 
@@ -148,6 +149,14 @@ async fn fake_oidc_happy_path_code_pkce_id_token_validates() {
     .unwrap();
     let decoded = verify_id_token(&id_token, keys, t0().unix_timestamp());
     let claims = decoded.claims;
+    // The header carries the pinned `kid` so a relying party can select the key.
+    assert_eq!(
+        jsonwebtoken::decode_header(&id_token)
+            .unwrap()
+            .kid
+            .as_deref(),
+        Some(KID)
+    );
     assert_eq!(claims["iss"], ISSUER);
     assert_eq!(claims["aud"], CLIENT_ID);
     assert_eq!(claims["sub"], "sub-alice");
@@ -370,7 +379,7 @@ async fn fake_oidc_each_token_scenario_produces_its_defect() {
     register(&h);
     h.token_scenario(TokenScenario::NoKid);
     let (_, id) = happy_path(&h).await;
-    let _ = id;
+    assert!(jsonwebtoken::decode_header(&id).unwrap().kid.is_none());
 }
 
 #[tokio::test]
@@ -631,6 +640,12 @@ async fn fake_oidc_times_follow_injected_clock() {
     let claims = decode_id_token(&id_token);
     let iat = claims["iat"].as_i64().unwrap();
     let exp = claims["exp"].as_i64().unwrap();
-    assert_eq!(iat, t0().unix_timestamp());
     assert_eq!(exp - iat, 3600);
+    // `t0()` is wall-clock `now_utc()`, frozen into the virtual clock when the
+    // fake starts; a second may tick between that and this read, so allow one.
+    let frozen = t0().unix_timestamp();
+    assert!(
+        (iat - frozen).abs() <= 1,
+        "iat {iat} vs virtual clock {frozen}"
+    );
 }

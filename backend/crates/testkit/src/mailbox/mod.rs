@@ -8,7 +8,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use domain::{LabelSet, MailboxId, MailtoTarget, MessageId, MessageMeta, Provider, SenderKey};
 use ports::{
-    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
+    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, MessageQuery, PageToken,
+    ProviderCapabilities,
 };
 
 use self::state::{add_user_label, find_user_label_id, MailboxState, SeedMessage};
@@ -48,6 +49,10 @@ pub enum MailOp {
     EnsureLabel,
     SendMailto,
     InboxCount,
+    ListMessages,
+    CountMessages,
+    RenameLabel,
+    RemoveLabel,
 }
 
 /// An in-memory `MailProvider`.
@@ -453,6 +458,156 @@ impl MailProvider for FakeMailbox {
             })
             .count() as u64)
     }
+
+    async fn list_messages(
+        &self,
+        mb: &MailboxCtx,
+        q: &MessageQuery,
+        page: Option<PageToken>,
+        max: u32,
+    ) -> Result<MessagePage, MailError> {
+        self.check(MailOp::ListMessages, mb.access_token.expose())?;
+        let map = self
+            .mailboxes
+            .lock()
+            .unwrap_or_else(|_| panic!("mailbox poisoned"));
+        let Some(state) = map.get(&mb.mailbox) else {
+            return Ok(MessagePage {
+                items: vec![],
+                next: None,
+            });
+        };
+        let mut items: Vec<_> = state
+            .messages
+            .iter()
+            .filter(|(_, m)| matches_query(m, q))
+            .collect();
+        items.sort_by(|a, b| {
+            b.1.seed
+                .internal_date
+                .cmp(&a.1.seed.internal_date)
+                .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+        });
+        let offset = match &page {
+            Some(PageToken(s)) if s.starts_with("o:") => s[2..]
+                .parse::<usize>()
+                .map_err(|_| MailError::Invalid("bad_page_token".into()))?,
+            Some(_) => return Err(MailError::Invalid("bad_page_token".into())),
+            None => 0,
+        };
+        let size = max.clamp(1, 100) as usize;
+        let next_offset = offset + size;
+        let has_more = items.len() > next_offset;
+        let window = items
+            .iter()
+            .skip(offset)
+            .take(size)
+            .map(|(id, _)| Self::to_meta(state, &mb.mailbox, id))
+            .collect();
+        Ok(MessagePage {
+            items: window,
+            next: has_more.then(|| PageToken(format!("o:{next_offset}"))),
+        })
+    }
+
+    async fn count_messages(&self, mb: &MailboxCtx, q: &MessageQuery) -> Result<u64, MailError> {
+        self.check(MailOp::CountMessages, mb.access_token.expose())?;
+        let map = self
+            .mailboxes
+            .lock()
+            .unwrap_or_else(|_| panic!("mailbox poisoned"));
+        let Some(state) = map.get(&mb.mailbox) else {
+            return Ok(0);
+        };
+        Ok(state
+            .messages
+            .values()
+            .filter(|m| matches_query(m, q))
+            .count() as u64)
+    }
+
+    async fn rename_label(
+        &self,
+        mb: &MailboxCtx,
+        label_id: &str,
+        new_name: &str,
+    ) -> Result<(), MailError> {
+        self.check(MailOp::RenameLabel, mb.access_token.expose())?;
+        let mut map = self
+            .mailboxes
+            .lock()
+            .unwrap_or_else(|_| panic!("mailbox poisoned"));
+        let Some(state) = map.get_mut(&mb.mailbox) else {
+            return Err(MailError::NotFound);
+        };
+        let Some(old_name) = state.user_label_names.get(label_id).cloned() else {
+            return Err(MailError::NotFound);
+        };
+        let lowered = new_name.to_lowercase();
+        if state
+            .user_labels
+            .get(&lowered)
+            .is_some_and(|other| other != label_id)
+        {
+            return Err(MailError::Invalid("label_exists".into()));
+        }
+        state.user_labels.remove(&old_name.to_lowercase());
+        state.user_labels.insert(lowered, label_id.to_owned());
+        state
+            .user_label_names
+            .insert(label_id.to_owned(), new_name.to_owned());
+        Ok(())
+    }
+
+    async fn remove_label(&self, mb: &MailboxCtx, label_id: &str) -> Result<(), MailError> {
+        self.check(MailOp::RemoveLabel, mb.access_token.expose())?;
+        let mut map = self
+            .mailboxes
+            .lock()
+            .unwrap_or_else(|_| panic!("mailbox poisoned"));
+        let Some(state) = map.get_mut(&mb.mailbox) else {
+            return Err(MailError::NotFound);
+        };
+        let Some(name) = state.user_label_names.remove(label_id) else {
+            return Err(MailError::NotFound);
+        };
+        state.user_labels.remove(&name.to_lowercase());
+        // Only the label goes; every message stays (INV-5).
+        for msg in state.messages.values_mut() {
+            msg.labels.remove(label_id);
+        }
+        Ok(())
+    }
+
+    fn web_url(&self, mailbox_address: &str, id: &MessageId) -> String {
+        let encoded: String =
+            url::form_urlencoded::byte_serialize(id.as_str().as_bytes()).collect();
+        let Ok(mut url) = url::Url::parse("https://mail.google.com/mail/") else {
+            return "https://mail.google.com/mail/".to_owned();
+        };
+        url.query_pairs_mut()
+            .append_pair("authuser", mailbox_address);
+        url.set_fragment(Some(&format!("all/{encoded}")));
+        url.into()
+    }
+}
+
+/// Evaluate a typed query against one stored message.
+fn matches_query(m: &state::StoredMessage, q: &MessageQuery) -> bool {
+    let in_inbox = !q.in_inbox
+        || (m.labels.contains(SYS_INBOX)
+            && !m.labels.contains(SYS_TRASH)
+            && !m.labels.contains(SYS_SPAM));
+    let label = q.label.as_ref().map_or(true, |l| m.labels.contains(l));
+    let after = q.after.map_or(true, |t| m.seed.internal_date > t);
+    let before = q.before.map_or(true, |t| m.seed.internal_date < t);
+    let from = q.from.as_ref().map_or(true, |f| {
+        SenderKey::from_address(&m.seed.from_address).as_str() == f
+    });
+    let list = q.list_id.as_ref().map_or(true, |l| {
+        m.seed.facts.list_id.as_deref() == Some(l.as_str())
+    });
+    in_inbox && label && after && before && from && list
 }
 
 trait SeedInner {

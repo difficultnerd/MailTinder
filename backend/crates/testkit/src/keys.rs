@@ -1,7 +1,8 @@
 //! Fake key services with real AES-256-GCM and an in-memory key wrap.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -26,6 +27,8 @@ pub struct FakeKeyService {
     kek: [u8; 32],
     rng: Arc<dyn Rng>,
     calls: AtomicU64,
+    /// One-shot failures armed per AAD `field` (see [`FakeKeyService::fail_field`]).
+    fail_fields: Mutex<HashMap<String, u32>>,
 }
 
 impl FakeKeyService {
@@ -35,11 +38,42 @@ impl FakeKeyService {
             kek,
             rng,
             calls: AtomicU64::new(0),
+            fail_fields: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn unwrap_calls(&self) -> u64 {
         self.calls.load(Ordering::SeqCst)
+    }
+
+    /// Make the next `n` `seal`/`open` calls whose AAD `field` equals `field`
+    /// fail with `KeyError::Unavailable`, so a test can reach the failure path
+    /// around one specific sealed value (for example the refresh token of a
+    /// mailbox, `aad_fields::MAILBOX_REFRESH_TOKEN`) without touching the
+    /// others. Mirrors the one-shot `fail_*` hooks on the mailbox, app-folder
+    /// and store fakes.
+    pub fn fail_field(&self, field: &str, n: u32) {
+        let mut armed = self
+            .fail_fields
+            .lock()
+            .unwrap_or_else(|_| panic!("keys poisoned"));
+        let slot = armed.entry(field.to_owned()).or_insert(0);
+        *slot = slot.saturating_add(n);
+    }
+
+    /// Take one armed failure for `field`, if any is left.
+    fn take_failure(&self, field: &str) -> Result<(), KeyError> {
+        let mut armed = self
+            .fail_fields
+            .lock()
+            .unwrap_or_else(|_| panic!("keys poisoned"));
+        match armed.get_mut(field) {
+            Some(left) if *left > 0 => {
+                *left -= 1;
+                Err(KeyError::Unavailable)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn unwrap(&self, wrapped: &WrappedKey, user: &UserId) -> Result<[u8; 32], KeyError> {
@@ -91,6 +125,7 @@ impl KeyService for FakeKeyService {
         aad: &Aad,
         plaintext: &[u8],
     ) -> Result<Vec<u8>, KeyError> {
+        self.take_failure(aad.field)?;
         let dek = self.unwrap(wrapped, user)?;
         let cipher = Aes256Gcm::new_from_slice(&dek).map_err(|_| KeyError::Unavailable)?;
         let nonce = self.rng.bytes32()[..NONCE_LEN].to_vec();
@@ -116,6 +151,7 @@ impl KeyService for FakeKeyService {
         aad: &Aad,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, KeyError> {
+        self.take_failure(aad.field)?;
         let dek = self.unwrap(wrapped, user)?;
         if ciphertext.len() < NONCE_LEN + TAG_LEN {
             return Err(KeyError::Malformed);

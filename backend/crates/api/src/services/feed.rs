@@ -1,0 +1,855 @@
+//! The Feed: paging, merging and card building (T-602c).
+//!
+//! Message content flows from the provider to the response and nowhere else:
+//! nothing here is logged, and the only thing written is the user's state file
+//! (positions, skip queue, sender counts), which holds no subject or body.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
+
+use domain::feed::{card_visible, feed_order, is_boss};
+use domain::user_state::{MailboxPosition, SkipReturn, SkipState, UserState};
+use domain::{
+    header_guard, next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId,
+    MessageMeta, Provider, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
+};
+use futures::stream::{self, StreamExt};
+use ports::store::{aad_fields, MailboxRecord, Precondition, Versioned};
+use ports::{Aad, MailError, MailboxCtx, MessagePage, MessageQuery, WrappedKey};
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
+
+use crate::error::ApiError;
+use crate::routes::feed::{
+    BossDto, CardDto, ClassificationPayload, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto,
+    Phase, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
+};
+use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
+use crate::services::user_state_store::UserStateStore;
+use crate::session::extract::AuthedSession;
+use crate::state::AppState;
+use crate::text::{plain_text, PREVIEW_MAX_CHARS};
+
+/// `[DEFAULT]` matches the S4 5.7 model cap; keeps Gmail quota safe.
+pub const PROVIDER_CONCURRENCY: usize = 8;
+
+/// Schema lengths for the card strings (S7 5.4).
+const NAME_MAX: usize = 256;
+const ADDRESS_MAX: usize = 320;
+const SUBJECT_MAX: usize = 998;
+const REASON_MAX: usize = 200;
+/// The provider's largest page (`MailProvider::list_messages`).
+const PROVIDER_PAGE_MAX: u32 = 100;
+
+/// What the rules did to a page (T-609).
+#[derive(Debug, Default)]
+pub struct RuleApplication {
+    /// `(mailbox ID, message ID)` pairs the rules acted on; no cards for these.
+    pub acted_on: BTreeSet<(Uuid, String)>,
+    /// How many actions were applied.
+    pub applied: u32,
+}
+
+/// Hook for T-609: applies enabled sort rules to the freshly fetched mail and
+/// returns what it acted on. This task ships a no-op.
+///
+/// # Errors
+///
+/// None yet; T-609 returns the store and provider errors.
+#[allow(clippy::unused_async)]
+pub async fn apply_rules(
+    _app: &AppState,
+    _session: &AuthedSession,
+    _state: &UserState,
+    _metas: &[MessageMeta],
+) -> Result<RuleApplication, ApiError> {
+    Ok(RuleApplication::default())
+}
+
+/// A connected mailbox with a usable token for this request.
+struct Live {
+    id: MailboxId,
+    provider: Provider,
+    address: String,
+    ctx: MailboxCtx,
+}
+
+/// One mailbox's answer to a list call.
+struct Answer {
+    /// Messages kept after dropping the boundary IDs.
+    returned: usize,
+    /// The provider filled the page, so more may follow.
+    more: bool,
+}
+
+/// The result of one fetch round.
+#[derive(Default)]
+struct Fetched {
+    metas: Vec<MessageMeta>,
+    answers: BTreeMap<Uuid, Answer>,
+    /// Any mailbox failed in this round.
+    failed: bool,
+}
+
+/// A finished card and what the state file records about its sender.
+struct Built {
+    card: CardDto,
+    sender_key: String,
+    display: String,
+}
+
+/// Everything card building reads.
+struct Env<'a> {
+    app: &'a AppState,
+    live: HashMap<Uuid, &'a Live>,
+    state: &'a UserState,
+    skips: &'a SkipState,
+    sealer: &'a SealedTokens,
+    user: &'a UserId,
+    wrapped: &'a WrappedKey,
+    session: &'a AuthedSession,
+    tunables: &'a Tunables,
+    expires_at: OffsetDateTime,
+}
+
+/// The next page of cards across all the user's mailboxes (API-FEED-1).
+///
+/// # Errors
+///
+/// `InvalidRequest` for a `limit` outside 1 to 50 or a cursor that does not
+/// open; `MailboxNeedsSignIn` when the primary mailbox cannot reach the state
+/// file; `Internal` on a store or key failure. A failing mailbox is data in
+/// `mailbox_errors`, never an error.
+pub async fn next_page(
+    app: &AppState,
+    session: &AuthedSession,
+    req: FeedRequest,
+) -> Result<FeedPage, ApiError> {
+    if req.limit == 0 || req.limit > FEED_LIMIT_MAX {
+        return Err(ApiError::InvalidRequest {
+            fields: vec!["/limit".to_owned()],
+        });
+    }
+    let user = session.user;
+    let store = UserStateStore::new(Arc::new(app.clone()));
+    // Without the primary mailbox the state file is out of reach, so no page
+    // can be built: every mailbox is listed and the app asks for a sign-in.
+    let loaded = match store.load(&user).await {
+        Ok(loaded) => loaded,
+        Err(ApiError::MailboxNeedsSignIn { .. }) => return all_signed_out(app, &user).await,
+        Err(e) => return Err(e),
+    };
+    let wrapped = wrapped_key(app, &user).await?;
+    let sealer = SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
+    let tunables = Tunables::default();
+
+    // Steps 2 and 3: starting positions and the session-start reset.
+    let (mut positions, prior_phase) =
+        starting_positions(&sealer, session, &wrapped, &req, &loaded.state).await?;
+    let records = app.ports.store.mailboxes().by_user(&user).await?;
+    let session_id = session.session_record_id.0;
+    start_session(&mut positions, &records, session_id, req.refresh);
+    let mut skips = fresh_skips(&loaded.state.skips, session_id);
+
+    // Step 4: contexts.
+    let mut errors: BTreeMap<Uuid, &'static str> = BTreeMap::new();
+    let live = connect(app, &user, &wrapped, &records, &mut errors).await?;
+
+    // Steps 5 to 7: phase and fetching.
+    let start_positions = positions.clone();
+    let mut phase = phase_of(&positions, &live);
+    let mut phase_changed = prior_phase == Phase::New && phase == Phase::Backlog;
+    let mut fetched = fetch_round(app, &live, &positions, phase, req.limit, &mut errors).await;
+    if phase == Phase::New && !fetched.failed && fetched.metas.is_empty() {
+        for position in positions.values_mut() {
+            position.new_done = true;
+        }
+        phase = Phase::Backlog;
+        phase_changed = true;
+        fetched = fetch_round(app, &live, &positions, phase, req.limit, &mut errors).await;
+    }
+    let nothing_fetched = fetched.metas.is_empty();
+
+    // Step 8: merge, newest first, and take one page.
+    let mut candidates = std::mem::take(&mut fetched.metas);
+    candidates.sort_by(feed_order);
+    candidates.truncate(usize::try_from(req.limit).unwrap_or(usize::MAX));
+    let taken = candidates;
+    let next_positions = advance_positions(&positions, &taken, &fetched.answers, phase);
+
+    // Step 9: rules, then visibility (S3 "Card visibility").
+    let rules = apply_rules(app, session, &loaded.state, &taken).await?;
+    let page_metas = visible(&taken, &rules, &skips, &tunables);
+
+    // Step 10: skipped cards that are due come back at the end of the page.
+    let live_by_id: HashMap<Uuid, &Live> = live.iter().map(|l| (l.id.0, l)).collect();
+    let returns = take_due_skips(app, &live_by_id, &mut skips, &page_metas, &tunables).await;
+
+    // Step 11: cards.
+    let expires_at = app.ports.clock.now() + Duration::hours(SEALED_TTL_HOURS);
+    let env = Env {
+        app,
+        live: live_by_id,
+        state: &loaded.state,
+        skips: &skips,
+        sealer: &sealer,
+        user: &user,
+        wrapped: &wrapped,
+        session,
+        tunables: &tunables,
+        expires_at,
+    };
+    let all: Vec<MessageMeta> = page_metas.into_iter().chain(returns).collect();
+    let built: Vec<Option<Built>> = bounded(all.into_iter().map(|m| build_card(&env, m)))
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    let built: Vec<Built> = built.into_iter().flatten().collect();
+
+    // Steps 13 and 14: one state write, then the cursor.
+    persist(
+        &store,
+        &user,
+        start_positions,
+        skips.clone(),
+        &built,
+        app.ports.clock.now(),
+    )
+    .await?;
+    let next_cursor = if phase == Phase::Backlog && nothing_fetched && errors.is_empty() {
+        None
+    } else {
+        let payload = CursorPayload {
+            positions: next_positions,
+            phase,
+        };
+        Some(seal_cursor(&env, &payload).await?)
+    };
+
+    // Step 15: errors are data.
+    Ok(FeedPage {
+        cards: built.into_iter().map(|b| b.card).collect(),
+        next_cursor,
+        phase,
+        phase_changed,
+        mailbox_errors: errors
+            .into_iter()
+            .map(|(mailbox_id, code)| MailboxErrorDto { mailbox_id, code })
+            .collect(),
+        rule_actions_applied: rules.applied,
+    })
+}
+
+async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
+    let record = app
+        .ports
+        .store
+        .users()
+        .get(user)
+        .await?
+        .ok_or(ApiError::Unauthenticated)?;
+    Ok(record.record.wrapped_data_key)
+}
+
+/// SW-02 AC2: skip counts and the queue last only until a new session.
+fn fresh_skips(stored: &SkipState, session: Uuid) -> SkipState {
+    if stored.session_record_id == Some(session) {
+        stored.clone()
+    } else {
+        SkipState {
+            session_record_id: Some(session),
+            ..SkipState::default()
+        }
+    }
+}
+
+/// Step 13: one state write. The closure is pure: it only copies in values
+/// computed before the call, so a retry after an `ETag` conflict is safe.
+async fn persist(
+    store: &UserStateStore,
+    user: &UserId,
+    positions: BTreeMap<Uuid, MailboxPosition>,
+    skips: SkipState,
+    built: &[Built],
+    at: OffsetDateTime,
+) -> Result<(), ApiError> {
+    let seen: Vec<(String, String)> = built
+        .iter()
+        .map(|b| (b.sender_key.clone(), b.display.clone()))
+        .collect();
+    store
+        .update(user, move |s: &mut UserState| {
+            for (id, position) in &positions {
+                s.positions.insert(*id, position.clone());
+            }
+            s.skips = skips.clone();
+            for (key, display) in &seen {
+                let stats = s.sender_stats.entry(key.clone()).or_default();
+                stats.seen = stats.seen.saturating_add(1);
+                stats.display.clone_from(display);
+                stats.last_seen = Some(at);
+            }
+        })
+        .await
+}
+
+/// Step 14: the sealed cursor for the next page.
+async fn seal_cursor(env: &Env<'_>, payload: &CursorPayload) -> Result<String, ApiError> {
+    env.sealer
+        .seal(
+            TokenType::Cursor,
+            env.user,
+            env.wrapped,
+            &env.session.session_record_id,
+            env.expires_at,
+            payload,
+        )
+        .await
+        .map_err(seal_error)
+}
+
+/// The taken messages that may show: not acted on by a rule, not skipped past
+/// the limit (S3 "Card visibility").
+fn visible(
+    taken: &[MessageMeta],
+    rules: &RuleApplication,
+    skips: &SkipState,
+    tunables: &Tunables,
+) -> Vec<MessageMeta> {
+    taken
+        .iter()
+        .filter(|m| {
+            !rules
+                .acted_on
+                .contains(&(m.mailbox.0, m.id.as_str().to_owned()))
+        })
+        .filter(|m| card_visible(true, false, skip_count(skips, m), tunables))
+        .cloned()
+        .collect()
+}
+
+/// FD-02 AC3, S7 5.4: every mailbox failed, which is still a `200`.
+async fn all_signed_out(app: &AppState, user: &UserId) -> Result<FeedPage, ApiError> {
+    let records = app.ports.store.mailboxes().by_user(user).await?;
+    Ok(FeedPage {
+        cards: Vec::new(),
+        next_cursor: None,
+        phase: Phase::Backlog,
+        phase_changed: false,
+        mailbox_errors: records
+            .iter()
+            .map(|r| MailboxErrorDto {
+                mailbox_id: r.record.mailbox_id.0,
+                code: "mailbox_needs_sign_in",
+            })
+            .collect(),
+        rule_actions_applied: 0,
+    })
+}
+
+/// Step 2: the positions the page starts from, and the phase the caller was
+/// last shown.
+async fn starting_positions(
+    sealer: &SealedTokens,
+    session: &AuthedSession,
+    wrapped: &WrappedKey,
+    req: &FeedRequest,
+    state: &UserState,
+) -> Result<(BTreeMap<Uuid, MailboxPosition>, Phase), ApiError> {
+    let Some(token) = &req.cursor else {
+        let positions = state.positions.clone();
+        let prior = if positions.values().any(|p| !p.new_done) {
+            Phase::New
+        } else {
+            Phase::Backlog
+        };
+        return Ok((positions, prior));
+    };
+    let payload: CursorPayload = sealer
+        .open(
+            TokenType::Cursor,
+            &session.user,
+            wrapped,
+            &session.session_record_id,
+            token,
+        )
+        .await
+        .map_err(|e| {
+            let (status, _) = http_status_for(TokenType::Cursor, e);
+            if status == 503 {
+                ApiError::ProviderUnavailable {
+                    mailbox_id: None,
+                    retry_after_s: None,
+                }
+            } else {
+                ApiError::InvalidRequest {
+                    fields: vec!["/cursor".to_owned()],
+                }
+            }
+        })?;
+    Ok((payload.positions, payload.phase))
+}
+
+/// Step 3: a new session, or `refresh`, makes mail newer than the last card
+/// shown "new" again (FD-03 AC1, AC5). The first ever use starts in the
+/// backlog, because there is no earlier session to be newer than.
+fn start_session(
+    positions: &mut BTreeMap<Uuid, MailboxPosition>,
+    records: &[Versioned<MailboxRecord>],
+    session: Uuid,
+    refresh: bool,
+) {
+    for record in records {
+        if record.record.status != MailboxStatus::Connected {
+            continue;
+        }
+        let position = positions.entry(record.record.mailbox_id.0).or_default();
+        if refresh || position.session_record_id != Some(session) {
+            position.new_floor = position.newest_seen;
+            position.new_ceiling = None;
+            position.new_done = position.newest_seen.is_none();
+            position.session_record_id = Some(session);
+        }
+    }
+}
+
+pub(crate) fn error_code(e: &ApiError) -> Option<&'static str> {
+    match e {
+        ApiError::MailboxNeedsSignIn { .. } => Some("mailbox_needs_sign_in"),
+        ApiError::ProviderUnavailable { .. } => Some("provider_unavailable"),
+        ApiError::Internal => None,
+        _ => Some("provider_error"),
+    }
+}
+
+/// Step 4: a context and the decrypted address for each usable mailbox; every
+/// other mailbox becomes a `mailbox_errors` entry.
+async fn connect(
+    app: &AppState,
+    user: &UserId,
+    wrapped: &WrappedKey,
+    records: &[Versioned<MailboxRecord>],
+    errors: &mut BTreeMap<Uuid, &'static str>,
+) -> Result<Vec<Live>, ApiError> {
+    let mut live = Vec::new();
+    for record in records {
+        let id = record.record.mailbox_id;
+        match record.record.status {
+            MailboxStatus::NeedsSignIn => {
+                errors.insert(id.0, "mailbox_needs_sign_in");
+                continue;
+            }
+            MailboxStatus::ConsentBlocked => {
+                errors.insert(id.0, "consent_blocked");
+                continue;
+            }
+            MailboxStatus::Connected => {}
+        }
+        match app.tokens.mailbox_ctx(app, user, &id).await {
+            Ok(ctx) => {
+                let aad = Aad {
+                    user: *user,
+                    scope: id.0.to_string(),
+                    field: aad_fields::MAILBOX_EMAIL,
+                };
+                let plain = app
+                    .ports
+                    .keys
+                    .open(user, wrapped, &aad, &record.record.email_address.0)
+                    .await
+                    .map_err(|_| ApiError::Internal)?;
+                live.push(Live {
+                    id,
+                    provider: record.record.provider,
+                    address: String::from_utf8(plain).map_err(|_| ApiError::Internal)?,
+                    ctx,
+                });
+            }
+            Err(e) => {
+                let code = error_code(&e).ok_or(ApiError::Internal)?;
+                errors.insert(id.0, code);
+            }
+        }
+    }
+    Ok(live)
+}
+
+/// Step 5: `new` while any usable mailbox still has new mail to page.
+fn phase_of(positions: &BTreeMap<Uuid, MailboxPosition>, live: &[Live]) -> Phase {
+    let any_new = live
+        .iter()
+        .any(|l| positions.get(&l.id.0).is_some_and(|p| !p.new_done));
+    if any_new {
+        Phase::New
+    } else {
+        Phase::Backlog
+    }
+}
+
+/// Gmail `before:` is exclusive at second precision, so the bound is the
+/// ceiling's second plus one; `boundary_ids` removes the repeats.
+fn plus_one_second(t: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(t.unix_timestamp().saturating_add(1)).unwrap_or(t)
+}
+
+fn query_for(phase: Phase, position: &MailboxPosition) -> MessageQuery {
+    match phase {
+        Phase::New => MessageQuery {
+            in_inbox: true,
+            after: position.new_floor,
+            before: position.new_ceiling.map(plus_one_second),
+            ..MessageQuery::default()
+        },
+        Phase::Backlog => MessageQuery {
+            in_inbox: true,
+            before: position.backlog_ceiling.map(plus_one_second),
+            ..MessageQuery::default()
+        },
+    }
+}
+
+/// How a failed provider call shows in `mailbox_errors` (shared with the
+/// progress endpoint, T-603).
+pub(crate) fn mailbox_error_code(e: &MailError) -> &'static str {
+    match e {
+        MailError::Unauthorized => "mailbox_needs_sign_in",
+        MailError::RateLimited { .. } | MailError::Transient => "provider_unavailable",
+        MailError::Forbidden | MailError::NotFound | MailError::Invalid(_) => "provider_error",
+    }
+}
+
+/// A provider 401 means the grant is gone: the mailbox needs sign-in. Best
+/// effort; a lost race means someone else already moved it.
+async fn mark_needs_sign_in(app: &AppState, mailbox: &MailboxId) {
+    app.tokens.forget(mailbox);
+    let Ok(Some(current)) = app.ports.store.mailboxes().get(mailbox).await else {
+        return;
+    };
+    let mut record = current.record.clone();
+    record.status = next_status(record.status, MailboxEvent::TokenInvalid);
+    if record.status == current.record.status {
+        return;
+    }
+    let _ = app
+        .ports
+        .store
+        .mailboxes()
+        .put(&record, Precondition::Matches(current.version))
+        .await;
+}
+
+type ListResult<'a> = (
+    &'a Live,
+    u32,
+    HashSet<String>,
+    Result<MessagePage, MailError>,
+);
+
+async fn list_one<'a>(
+    app: &AppState,
+    live: &'a Live,
+    query: MessageQuery,
+    max: u32,
+    boundary: HashSet<String>,
+) -> ListResult<'a> {
+    let page = app
+        .ports
+        .mail(live.provider)
+        .list_messages(&live.ctx, &query, None, max)
+        .await;
+    (live, max, boundary, page)
+}
+
+/// Runs the futures with at most [`PROVIDER_CONCURRENCY`] in flight, keeping
+/// their order. The futures are built first so each borrows its own data.
+pub(crate) async fn bounded<I>(futures: I) -> Vec<<I::Item as std::future::Future>::Output>
+where
+    I: IntoIterator,
+    I::Item: std::future::Future,
+{
+    stream::iter(futures)
+        .buffered(PROVIDER_CONCURRENCY)
+        .collect()
+        .await
+}
+
+async fn fetch_skipped(
+    app: &AppState,
+    live: &HashMap<Uuid, &Live>,
+    entry: SkipReturn,
+) -> (SkipReturn, Result<MessageMeta, MailError>) {
+    let result = match (
+        live.get(&entry.mailbox_id.0),
+        MessageId::new(entry.message_id.clone()),
+    ) {
+        (Some(l), Ok(id)) => app.ports.mail(l.provider).get_meta(&l.ctx, &id).await,
+        (_, _) => Err(MailError::Transient),
+    };
+    (entry, result)
+}
+
+/// Step 6: list each mailbox, at most [`PROVIDER_CONCURRENCY`] in flight.
+async fn fetch_round(
+    app: &AppState,
+    live: &[Live],
+    positions: &BTreeMap<Uuid, MailboxPosition>,
+    phase: Phase,
+    limit: u32,
+    errors: &mut BTreeMap<Uuid, &'static str>,
+) -> Fetched {
+    let default = MailboxPosition::default();
+    let jobs: Vec<(&Live, MessageQuery, u32, HashSet<String>)> = live
+        .iter()
+        .filter(|l| !errors.contains_key(&l.id.0))
+        .filter_map(|l| {
+            let position = positions.get(&l.id.0).unwrap_or(&default);
+            if phase == Phase::New && position.new_done {
+                return None;
+            }
+            let boundary: HashSet<String> = position.boundary_ids.iter().cloned().collect();
+            let extra = u32::try_from(boundary.len()).unwrap_or(PROVIDER_PAGE_MAX);
+            let max = limit.saturating_add(extra).min(PROVIDER_PAGE_MAX);
+            Some((l, query_for(phase, position), max, boundary))
+        })
+        .collect();
+    let mut calls = Vec::with_capacity(jobs.len());
+    for (l, query, max, boundary) in jobs {
+        calls.push(list_one(app, l, query, max, boundary));
+    }
+    let results: Vec<ListResult<'_>> = bounded(calls).await;
+    let mut out = Fetched::default();
+    for (l, max, boundary, result) in results {
+        match result {
+            Ok(page) => {
+                let more = u32::try_from(page.items.len()).is_ok_and(|n| n >= max);
+                let kept: Vec<MessageMeta> = page
+                    .items
+                    .into_iter()
+                    .filter(|m| !boundary.contains(m.id.as_str()))
+                    .collect();
+                out.answers.insert(
+                    l.id.0,
+                    Answer {
+                        returned: kept.len(),
+                        more,
+                    },
+                );
+                out.metas.extend(kept);
+            }
+            Err(e) => {
+                out.failed = true;
+                errors.insert(l.id.0, mailbox_error_code(&e));
+                if e == MailError::Unauthorized {
+                    mark_needs_sign_in(app, &l.id).await;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Step 12: move each mailbox past the cards taken from it.
+fn advance_positions(
+    start: &BTreeMap<Uuid, MailboxPosition>,
+    taken: &[MessageMeta],
+    answers: &BTreeMap<Uuid, Answer>,
+    phase: Phase,
+) -> BTreeMap<Uuid, MailboxPosition> {
+    let mut next = start.clone();
+    for (id, answer) in answers {
+        let mine: Vec<&MessageMeta> = taken.iter().filter(|m| m.mailbox.0 == *id).collect();
+        let Some(position) = next.get_mut(id) else {
+            continue;
+        };
+        if let Some(newest) = mine.iter().map(|m| m.internal_date).max() {
+            position.newest_seen = Some(position.newest_seen.map_or(newest, |s| s.max(newest)));
+        }
+        if let Some(oldest) = mine.iter().map(|m| m.internal_date).min() {
+            let second = oldest.unix_timestamp();
+            let previous = match phase {
+                Phase::New => position.new_ceiling,
+                Phase::Backlog => position.backlog_ceiling,
+            };
+            let mut boundary: Vec<String> =
+                if previous.map(OffsetDateTime::unix_timestamp) == Some(second) {
+                    position.boundary_ids.clone()
+                } else {
+                    Vec::new()
+                };
+            for m in mine
+                .iter()
+                .filter(|m| m.internal_date.unix_timestamp() == second)
+            {
+                if !boundary.iter().any(|b| b == m.id.as_str()) {
+                    boundary.push(m.id.as_str().to_owned());
+                }
+            }
+            position.boundary_ids = boundary;
+            match phase {
+                Phase::New => position.new_ceiling = Some(oldest),
+                Phase::Backlog => position.backlog_ceiling = Some(oldest),
+            }
+        }
+        if phase == Phase::New && !answer.more && mine.len() == answer.returned {
+            position.new_done = true;
+        }
+    }
+    next
+}
+
+fn skip_key(mailbox: Uuid, id: &str) -> String {
+    format!("{mailbox}/{id}")
+}
+
+fn skip_count(skips: &SkipState, meta: &MessageMeta) -> u8 {
+    skips
+        .counts
+        .get(&skip_key(meta.mailbox.0, meta.id.as_str()))
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Step 10: count the page against the skip queue and fetch the entries that
+/// are due. A message that left the inbox is dropped silently (FD-04); one
+/// that could not be read stays queued for the next page.
+async fn take_due_skips(
+    app: &AppState,
+    live: &HashMap<Uuid, &Live>,
+    skips: &mut SkipState,
+    page: &[MessageMeta],
+    tunables: &Tunables,
+) -> Vec<MessageMeta> {
+    let shown = u32::try_from(page.len()).unwrap_or(u32::MAX);
+    let on_page: HashSet<(Uuid, &str)> =
+        page.iter().map(|m| (m.mailbox.0, m.id.as_str())).collect();
+    let mut waiting = Vec::new();
+    let mut due = Vec::new();
+    for mut entry in std::mem::take(&mut skips.queue) {
+        entry.after_cards = entry.after_cards.saturating_sub(shown);
+        if on_page.contains(&(entry.mailbox_id.0, entry.message_id.as_str())) {
+            continue;
+        }
+        if entry.after_cards == 0 {
+            due.push(entry);
+        } else {
+            waiting.push(entry);
+        }
+    }
+    let fetched: Vec<(SkipReturn, Result<MessageMeta, MailError>)> =
+        bounded(due.into_iter().map(|entry| fetch_skipped(app, live, entry))).await;
+    let mut returns = Vec::new();
+    for (entry, result) in fetched {
+        match result {
+            Ok(meta) if meta.labels.contains("INBOX") => {
+                let count = skip_count(skips, &meta);
+                let room =
+                    page.len() + returns.len() < usize::try_from(FEED_LIMIT_MAX).unwrap_or(0);
+                if !card_visible(true, false, count, tunables) {
+                    continue;
+                }
+                if room {
+                    returns.push(meta);
+                } else {
+                    waiting.push(entry);
+                }
+            }
+            // Out of the inbox, or gone: silently dropped.
+            Ok(_) | Err(MailError::NotFound) => {}
+            Err(_) => waiting.push(entry),
+        }
+    }
+    skips.queue = waiting;
+    returns
+}
+
+fn seal_error(e: TokenError) -> ApiError {
+    if e == TokenError::Unavailable {
+        ApiError::ProviderUnavailable {
+            mailbox_id: None,
+            retry_after_s: None,
+        }
+    } else {
+        ApiError::Internal
+    }
+}
+
+/// Step 11: one card. `None` drops the message silently (FD-04 AC1).
+async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, ApiError> {
+    let Some(live) = env.live.get(&meta.mailbox.0) else {
+        return Ok(None);
+    };
+    let provider = env.app.ports.mail(live.provider);
+    let preview = match provider.get_preview(&live.ctx, &meta.id).await {
+        Ok(text) => plain_text(&text, PREVIEW_MAX_CHARS),
+        Err(MailError::NotFound) => return Ok(None),
+        Err(_) => String::new(),
+    };
+    let header_rules = HeaderRules::classify(&meta.facts, &meta.sender);
+    let shown = header_guard(&meta.facts, &header_rules, Some(&header_rules)).classification;
+    let (method, one_click) = match HeaderRules::unsubscribe_route(&meta.facts) {
+        UnsubscribeRoute::OneClick(_) => ("one_click", true),
+        UnsubscribeRoute::Mailto(_) => ("mailto", false),
+        UnsubscribeRoute::ManualLink(_) => ("manual", false),
+        UnsubscribeRoute::None => ("none", false),
+    };
+    let payload = ClassificationPayload {
+        mailbox_id: meta.mailbox.0,
+        message_id: meta.id.as_str().to_owned(),
+        header_rules,
+        classifier_id: HEADER_RULES_ID.to_owned(),
+    };
+    let classification_token = env
+        .sealer
+        .seal(
+            TokenType::Classification,
+            env.user,
+            env.wrapped,
+            &env.session.session_record_id,
+            env.expires_at,
+            &payload,
+        )
+        .await
+        .map_err(seal_error)?;
+    let sender_key = meta.sender.as_str().to_owned();
+    let boss = if is_boss(&sender_key, &env.state.sender_stats, env.tunables) {
+        let query = MessageQuery {
+            in_inbox: true,
+            from: Some(sender_key.clone()),
+            ..MessageQuery::default()
+        };
+        provider
+            .count_messages(&live.ctx, &query)
+            .await
+            .ok()
+            .map(|remaining| BossDto { remaining })
+    } else {
+        None
+    };
+    let sender_name = plain_text(&meta.from_display, NAME_MAX);
+    let card = CardDto {
+        mailbox_id: meta.mailbox.0,
+        message_id: meta.id.as_str().to_owned(),
+        received_at: meta.internal_date,
+        sender_name: sender_name.clone(),
+        sender_address: plain_text(&meta.from_address, ADDRESS_MAX),
+        subject: plain_text(&meta.subject, SUBJECT_MAX),
+        preview,
+        bulk_score: shown.bulk_score,
+        bulk_reason: plain_text(&shown.bulk_reason, REASON_MAX),
+        class: shown.class.as_str(),
+        unsubscribe_method: method,
+        has_one_click: one_click && shown.class == domain::MessageClass::List,
+        suggestion: None,
+        keep_prompt: None,
+        skip_count: skip_count(env.skips, &meta),
+        boss,
+        provider_web_url: provider.web_url(&live.address, &meta.id),
+        classification_token,
+        classifier_id: env.session.is_admin.then(|| HEADER_RULES_ID.to_owned()),
+    };
+    Ok(Some(Built {
+        card,
+        sender_key,
+        display: sender_name,
+    }))
+}

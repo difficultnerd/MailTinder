@@ -40,3 +40,19 @@ pub use secrets::{SecretManagerSecrets, SecretsConfig};
 pub use system_clock::SystemClock;
 pub use tasks::{CloudTasksScheduler, TasksConfig};
 pub use token_source::{MetadataTokenSource, StaticTokenSource, TokenSource};
+
+use std::sync::Arc;
+
+/// The real `Clock` port. Built here so a composition root never has to name
+/// the adapter type itself (semgrep: time and randomness come only from the
+/// adapters, S10 1 rule 2).
+#[must_use]
+pub fn production_clock() -> Arc<dyn ports::Clock> {
+    Arc::new(SystemClock)
+}
+
+/// The real `Rng` port, as with [`production_clock`].
+#[must_use]
+pub fn production_rng() -> Arc<dyn ports::Rng> {
+    Arc::new(OsRng)
+}

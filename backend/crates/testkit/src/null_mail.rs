@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use domain::{LabelSet, MailtoTarget, MessageId, MessageMeta, Provider};
 use ports::{
-    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
+    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, MessageQuery, PageToken,
+    ProviderCapabilities,
 };
 
 /// A mail provider that returns `Invalid("no_mailbox_fake")` for every call.
@@ -65,5 +66,31 @@ impl MailProvider for NullMailProvider {
     }
     async fn inbox_count(&self, _mb: &MailboxCtx) -> Result<u64, MailError> {
         Err(MailError::Invalid("no_mailbox_fake".to_owned()))
+    }
+    async fn list_messages(
+        &self,
+        _mb: &MailboxCtx,
+        _q: &MessageQuery,
+        _page: Option<PageToken>,
+        _max: u32,
+    ) -> Result<MessagePage, MailError> {
+        Err(MailError::Invalid("no_mailbox_fake".to_owned()))
+    }
+    async fn count_messages(&self, _mb: &MailboxCtx, _q: &MessageQuery) -> Result<u64, MailError> {
+        Err(MailError::Invalid("no_mailbox_fake".to_owned()))
+    }
+    async fn rename_label(
+        &self,
+        _mb: &MailboxCtx,
+        _label_id: &str,
+        _new_name: &str,
+    ) -> Result<(), MailError> {
+        Err(MailError::Invalid("no_mailbox_fake".to_owned()))
+    }
+    async fn remove_label(&self, _mb: &MailboxCtx, _label_id: &str) -> Result<(), MailError> {
+        Err(MailError::Invalid("no_mailbox_fake".to_owned()))
+    }
+    fn web_url(&self, _mailbox_address: &str, _id: &MessageId) -> String {
+        String::new()
     }
 }

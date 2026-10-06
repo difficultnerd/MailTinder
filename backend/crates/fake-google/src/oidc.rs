@@ -70,7 +70,7 @@ pub fn build_id_token(opts: &IdTokenOptions<'_>, scenario: Option<TokenScenario>
     let now = opts.now;
     let exp = now + opts.exp_offset;
     let nbf = opts.not_before;
-    let mut kid: Option<String> = opts.kid.map(str::to_owned);
+    let mut kid: Option<String> = Some(opts.kid.unwrap_or(KID).to_owned());
     let mut alg = Algorithm::RS256;
     let mut secret: Option<Vec<u8>> = None;
     let nonce = opts.nonce.map(str::to_owned);

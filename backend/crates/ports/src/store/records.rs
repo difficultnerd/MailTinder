@@ -217,6 +217,11 @@ pub struct PreAuthFields {
     pub pkce_verifier: Ciphertext,
     pub invite_token_hash: Option<Sha256Hash>,
     pub pending_email: Option<Ciphertext>,
+    /// The mailbox a `reconnect` round trip is for; `None` for every other
+    /// intent. A UUID, not personal data, so it is stored in the clear like
+    /// `invite_token_hash` (T-601a).
+    #[serde(default)]
+    pub mailbox_id: Option<MailboxId>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
 }

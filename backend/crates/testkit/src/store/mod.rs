@@ -54,6 +54,7 @@ impl Default for InMemoryServerStore {
             mailboxes: MailboxesImpl {
                 table: Table::new(),
                 fail_next: Arc::clone(&fail_next),
+                race_put: std::sync::Mutex::new(None),
             },
             invites: InvitesImpl {
                 table: Table::new(),
@@ -153,6 +154,19 @@ impl InMemoryServerStore {
         ] {
             f.store(n, Ordering::SeqCst);
         }
+    }
+
+    /// Arrange for a competing mailbox record to be written immediately before
+    /// the next `mailboxes().put(.., Precondition::MustNotExist)`, standing in
+    /// for a concurrent writer that wins the race. The caller's put then sees
+    /// `StoreError::AlreadyExists`, which lets a test drive the race-recovery
+    /// path deterministically (INV-3).
+    pub fn race_mailbox_put(&self, record: MailboxRecord) {
+        *self
+            .mailboxes
+            .race_put
+            .lock()
+            .unwrap_or_else(|_| panic!("store poisoned")) = Some(record);
     }
 }
 
@@ -303,6 +317,9 @@ impl UserRepo for UsersImpl {
 struct MailboxesImpl {
     table: Table<MailboxId, MailboxRecord>,
     fail_next: Arc<AtomicU32>,
+    /// A record to write immediately before the next `put`, standing in for a
+    /// concurrent writer that wins the race (INV-3 tests).
+    race_put: std::sync::Mutex<Option<MailboxRecord>>,
 }
 impl MailboxesImpl {
     fn arm_check(&self) -> Result<(), StoreError> {
@@ -329,6 +346,18 @@ impl Repo<MailboxId, MailboxRecord> for MailboxesImpl {
     }
     async fn put(&self, r: &MailboxRecord, pre: Precondition) -> Result<Version, StoreError> {
         self.arm_check()?;
+        if pre == Precondition::MustNotExist {
+            let racing = self
+                .race_put
+                .lock()
+                .unwrap_or_else(|_| panic!("store poisoned"))
+                .take();
+            if let Some(racing) = racing {
+                // A concurrent writer won the race: the caller's put must now
+                // see `AlreadyExists` (the recovery path under test).
+                self.table.put(&racing, &Precondition::None)?;
+            }
+        }
         self.table.put(r, &pre)
     }
     async fn delete(&self, k: &MailboxId, pre: Precondition) -> Result<(), StoreError> {

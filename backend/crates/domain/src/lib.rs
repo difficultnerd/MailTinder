@@ -35,6 +35,7 @@ pub mod text;
 mod tunables;
 pub mod undo;
 mod unsubscribe_job;
+pub mod user_state;
 
 pub use address::{AddressError, EmailAddress, ADDRESS_MAX_CHARS};
 pub use class::{Classification, MessageClass, SwipeAction};

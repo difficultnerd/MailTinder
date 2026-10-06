@@ -32,6 +32,25 @@ pub struct MessagePage {
     pub next: Option<PageToken>,
 }
 
+/// A typed message query: the provider adapter turns it into its own syntax.
+///
+/// Every field is a std, `time` or domain-level value (INV-7).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageQuery {
+    /// Only messages carrying the inbox location.
+    pub in_inbox: bool,
+    /// A provider label ID.
+    pub label: Option<String>,
+    /// Received strictly after (second precision).
+    pub after: Option<OffsetDateTime>,
+    /// Received strictly before (second precision).
+    pub before: Option<OffsetDateTime>,
+    /// Sender address, already normalised (`SenderKey`).
+    pub from: Option<String>,
+    /// List-Id value without angle brackets.
+    pub list_id: Option<String>,
+}
+
 /// Flags the shared contract suite (T-203) reads instead of assuming Gmail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProviderCapabilities {
@@ -94,4 +113,25 @@ pub trait MailProvider: Send + Sync {
     async fn ensure_label(&self, mb: &MailboxCtx, name: &str) -> Result<String, MailError>;
     async fn send_mailto(&self, mb: &MailboxCtx, to: &MailtoTarget) -> Result<(), MailError>;
     async fn inbox_count(&self, mb: &MailboxCtx) -> Result<u64, MailError>;
+    /// Newest first. `max` is 1 to 100.
+    async fn list_messages(
+        &self,
+        mb: &MailboxCtx,
+        q: &MessageQuery,
+        page: Option<PageToken>,
+        max: u32,
+    ) -> Result<MessagePage, MailError>;
+    /// May be an estimate for queries other than "label only" or "inbox only".
+    async fn count_messages(&self, mb: &MailboxCtx, q: &MessageQuery) -> Result<u64, MailError>;
+    /// `Invalid("label_exists")` when another label already has the name.
+    async fn rename_label(
+        &self,
+        mb: &MailboxCtx,
+        label_id: &str,
+        new_name: &str,
+    ) -> Result<(), MailError>;
+    /// Removes the label definition only. Messages are never touched (INV-5).
+    async fn remove_label(&self, mb: &MailboxCtx, label_id: &str) -> Result<(), MailError>;
+    /// An https URL that opens the message in the provider's web client.
+    fn web_url(&self, mailbox_address: &str, id: &MessageId) -> String;
 }
