@@ -642,7 +642,7 @@ async fn asvs_v3_5_3_state_changing_routes_reject_get() -> Result<(), Box<dyn st
     // every state-changing production route. The two GET routes that do change
     // state are the documented bootstrap exceptions named in the register row:
     // the caller's own session record and Google's OAuth redirect.
-    let routes: [(&str, String, Method); 9] = [
+    let routes: [(&str, String, Method); 11] = [
         (
             "/api/v1/auth/{provider}/start",
             "/api/v1/auth/google/start".to_owned(),
@@ -661,6 +661,12 @@ async fn asvs_v3_5_3_state_changing_routes_reject_get() -> Result<(), Box<dyn st
         (
             "/api/v1/feed/next",
             "/api/v1/feed/next".to_owned(),
+            Method::POST,
+        ),
+        ("/api/v1/swipes", "/api/v1/swipes".to_owned(), Method::POST),
+        (
+            "/api/v1/swipes/undo",
+            "/api/v1/swipes/undo".to_owned(),
             Method::POST,
         ),
         (
