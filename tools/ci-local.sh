@@ -114,6 +114,12 @@ want gitleaks && {
 # ---- Flutter / Dart ----
 want dart && {
   if have flutter && have dart; then
+    # Resolve packages FIRST. `dart format` reads the language version and the
+    # lint configuration through the package config; without it, flutter_lints
+    # cannot be resolved out of analysis_options.yaml and the formatter falls
+    # back to its default rules, reporting spurious "changed" files on a cold
+    # checkout. CI's dart job does exactly this, in this order.
+    run "flutter pub get" bash -c "cd app && flutter pub get"
     run "dart format" bash -c "cd app && dart format --output=none --set-exit-if-changed ."
     run "flutter analyze" bash -c "cd app && flutter analyze --fatal-infos"
     run "flutter test" bash -c "cd app && flutter test"
