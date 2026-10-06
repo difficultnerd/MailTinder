@@ -79,6 +79,7 @@ pub async fn start_step_up(
         prompt: Some(Prompt::Login),
         max_age_s: Some(STEP_UP_MAX_AGE_S),
         login_hint: primary_login_hint(state, &authed.user).await,
+        mailbox_id: None,
     };
     begin_oauth(state, session, AuthIntent::StepUp, None, params).await
 }

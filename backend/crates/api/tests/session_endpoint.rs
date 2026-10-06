@@ -233,6 +233,7 @@ async fn pending(
         pkce_verifier: Sensitive::new(String::new()),
         invite_token_hash: None,
         pending_email: Some(Sensitive::new(email.to_owned())),
+        mailbox_id: None,
         started_at: state.ports.clock.now(),
     };
     let sealed = seal_pre_auth(state.ports.system_keys.as_ref(), &record_id, &plain).await?;

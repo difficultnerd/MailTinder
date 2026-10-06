@@ -453,6 +453,7 @@ async fn session_pre_auth_seal_bound_to_record_id() -> Result<(), Box<dyn std::e
         pkce_verifier: Sensitive::new("verifier-value".into()),
         invite_token_hash: None,
         pending_email: Some(Sensitive::new("person@example.test".into())),
+        mailbox_id: None,
         started_at: fakes.clock.now(),
     };
     let keys = state.ports.system_keys.as_ref();

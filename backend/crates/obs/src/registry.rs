@@ -14,6 +14,7 @@ pub const ACTIONS: &[&str] = &[
     "step_up",
     "session_end",
     "mailbox_link",
+    "mailbox_reconnect",
     "mailbox_unlink",
     "invite_create",
     "invite_revoke",

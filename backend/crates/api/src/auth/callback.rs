@@ -24,6 +24,7 @@ use crate::http::request_id::RequestId;
 use crate::limits::{policies, LimitSubject};
 use crate::session::cookie::clear_cookie;
 use crate::session::csrf::tokens_equal;
+use crate::session::extract::AuthedSession;
 use crate::session::pre_auth::{open_pre_auth, seal_pre_auth, PreAuthPlain};
 use crate::session::store::{LoadedSession, NewCookie, SessionService, PRE_AUTH_TTL};
 use crate::state::AppState;
@@ -216,8 +217,8 @@ async fn after_state(
         AuthIntent::SignIn => finish_sign_in(&context).await,
         AuthIntent::Join => finish_join(&context).await,
         AuthIntent::StepUp => crate::auth::step_up::finish_step_up(&context).await,
-        // T-601a (`link`, `reconnect`) is a later task.
-        AuthIntent::Link | AuthIntent::Reconnect => (Outcome::Failed, None),
+        AuthIntent::Link => finish_link(&context).await,
+        AuthIntent::Reconnect => finish_reconnect(&context).await,
     };
     if !outcome.keeps_tokens() {
         discard_tokens(state, &context.tokens, sub_is_linked).await;
@@ -428,6 +429,7 @@ async fn request_invite(
         pkce_verifier: adapters_gmail::pkce::new_pkce(state.ports.rng.as_ref()).verifier,
         invite_token_hash: None,
         pending_email: Some(Sensitive::new(email.as_str().to_owned())),
+        mailbox_id: None,
         started_at: now,
     };
     let sealed = seal_pre_auth(
@@ -448,6 +450,125 @@ async fn request_invite(
     match rotated {
         Ok((cookie, _record)) => (Outcome::NotInvited, Some(cookie)),
         Err(_) => (Outcome::Failed, None),
+    }
+}
+
+/// Finish a `link` round trip (T-601a): link another mailbox to the current
+/// user, or refresh it when the Google account is already linked (AU-04).
+async fn finish_link(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCookie>) {
+    let state = ctx.state;
+    if !ctx.claims.email_verified {
+        return (Outcome::EmailUnverified, None);
+    }
+    let Ok(authed) = AuthedSession::load(state, &ctx.session).await else {
+        return (Outcome::Failed, None);
+    };
+    let Some(refresh) = ctx.tokens.refresh_token.clone() else {
+        event(
+            state,
+            "mailbox_link",
+            "failed",
+            Some(&authed.user),
+            None,
+            ctx.request_id,
+        );
+        return (Outcome::Failed, None);
+    };
+    let outcome =
+        crate::services::mailbox_link::complete_link(state, &authed, &ctx.claims, refresh)
+            .await
+            .unwrap_or(crate::services::mailbox_link::LinkOutcome::Failed);
+    event(
+        state,
+        "mailbox_link",
+        outcome.as_code(),
+        Some(&authed.user),
+        None,
+        ctx.request_id,
+    );
+    match outcome.outcome() {
+        Outcome::Linked => {
+            // A `link` callback also sets `recent_auth_at` (S7 3.6) and rotates
+            // the session ID (S7 3.2).
+            let now = state.ports.clock.now();
+            let rotated = SessionService::new(state)
+                .rotate(&ctx.session, move |record| {
+                    record.recent_auth_at = Some(now);
+                    record.pre_auth = None;
+                })
+                .await;
+            match rotated {
+                Ok((cookie, _record)) => (Outcome::Linked, Some(cookie)),
+                Err(_) => (Outcome::Failed, None),
+            }
+        }
+        other => (other, None),
+    }
+}
+
+/// Finish a `reconnect` round trip (T-601a): refresh a mailbox's grant
+/// (ST-03 AC1). The mailbox named in the OAuth state is used, never one derived
+/// from the account that was signed in with.
+async fn finish_reconnect(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCookie>) {
+    let state = ctx.state;
+    if !ctx.claims.email_verified {
+        return (Outcome::EmailUnverified, None);
+    }
+    let Ok(authed) = AuthedSession::load(state, &ctx.session).await else {
+        return (Outcome::Failed, None);
+    };
+    let Some(mailbox_id) = ctx.pre.mailbox_id else {
+        event(
+            state,
+            "mailbox_reconnect",
+            "failed",
+            Some(&authed.user),
+            None,
+            ctx.request_id,
+        );
+        return (Outcome::Failed, None);
+    };
+    let Some(refresh) = ctx.tokens.refresh_token.clone() else {
+        event(
+            state,
+            "mailbox_reconnect",
+            "failed",
+            Some(&authed.user),
+            None,
+            ctx.request_id,
+        );
+        return (Outcome::Failed, None);
+    };
+    let outcome = crate::services::mailbox_link::complete_reconnect(
+        state,
+        &authed,
+        &mailbox_id,
+        &ctx.claims,
+        refresh,
+    )
+    .await
+    .unwrap_or(crate::services::mailbox_link::LinkOutcome::Failed);
+    event(
+        state,
+        "mailbox_reconnect",
+        outcome.as_code(),
+        Some(&authed.user),
+        None,
+        ctx.request_id,
+    );
+    match outcome.outcome() {
+        Outcome::Reconnected => {
+            let rotated = SessionService::new(state)
+                .rotate(&ctx.session, |record| {
+                    record.pre_auth = None;
+                })
+                .await;
+            match rotated {
+                Ok((cookie, _record)) => (Outcome::Reconnected, Some(cookie)),
+                Err(_) => (Outcome::Failed, None),
+            }
+        }
+        other => (other, None),
     }
 }
 

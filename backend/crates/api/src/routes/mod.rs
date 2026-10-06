@@ -2,6 +2,7 @@
 
 pub mod invite_requests;
 pub mod invites;
+pub mod mailboxes;
 pub mod session;
 
 use axum::routing::{delete, get, post};
@@ -14,6 +15,7 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/session", get(session::get_session))
+        .route("/api/v1/mailboxes", get(mailboxes::list_mailboxes))
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(

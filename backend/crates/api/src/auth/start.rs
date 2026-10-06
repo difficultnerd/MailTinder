@@ -4,6 +4,7 @@
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
+use domain::MailboxId;
 use obs::Sensitive;
 use ports::{AuthIntent, Prompt, SessionState, Sha256Hash};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,9 @@ pub struct OAuthParams {
     pub max_age_s: Option<u32>,
     /// The `login_hint`, when the intent sets one.
     pub login_hint: Option<Sensitive<String>>,
+    /// The mailbox a `reconnect` round trip is for; `None` for every other
+    /// intent (T-601a).
+    pub mailbox_id: Option<domain::MailboxId>,
 }
 
 /// New `state`, `nonce` and PKCE; sealed into `pre_auth` on the session; the
@@ -108,6 +112,7 @@ pub async fn begin_oauth(
         pkce_verifier: pkce.verifier.clone(),
         invite_token_hash,
         pending_email: None,
+        mailbox_id: p.mailbox_id,
         started_at: now,
     };
     let sealed = seal_pre_auth(state.ports.system_keys.as_ref(), &record_id, &plain).await?;
@@ -192,6 +197,52 @@ pub async fn start_handler(
         return Err(invalid_request("mailbox_id"));
     }
 
+    // `link` (T-601a): a fresh step-up is required before any OAuth state is
+    // written, so a refused step-up links nothing (AU-04 AC6). Scopes are
+    // exactly S8's (AU-04 AC5); `prompt=consent` makes Google return a refresh
+    // token for the new mailbox.
+    if intent == AuthIntent::Link {
+        let authed = AuthedSession::load(&state, &session.0).await?;
+        crate::auth::step_up::require_step_up(&authed, state.ports.clock.as_ref())?;
+        let params = OAuthParams {
+            scopes: adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
+            prompt: Some(Prompt::Consent),
+            max_age_s: None,
+            login_hint: None,
+            mailbox_id: None,
+        };
+        let (body, cookie) = begin_oauth(&state, &session.0, intent, None, params).await?;
+        return Ok(start_response(&body, cookie));
+    }
+
+    // `reconnect` (T-601a): refresh a mailbox in `needs_sign_in`. No step-up
+    // (S7 3.6); the mailbox must be the caller's, else `404 not_found`. The
+    // mailbox ID travels in the body and is carried in the sealed OAuth state.
+    if intent == AuthIntent::Reconnect {
+        let Some(mailbox_id) = body.mailbox_id else {
+            return Err(invalid_request("mailbox_id"));
+        };
+        let authed = AuthedSession::load(&state, &session.0).await?;
+        let mailbox_id = MailboxId(mailbox_id);
+        let mailbox = state
+            .ports
+            .store
+            .mailboxes()
+            .get(&mailbox_id)
+            .await?
+            .filter(|m| m.record.user_id == authed.user)
+            .ok_or(ApiError::NotFound)?;
+        let params = OAuthParams {
+            scopes: adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
+            prompt: None,
+            max_age_s: None,
+            login_hint: login_hint_for(&state, &authed.user, &mailbox.record).await,
+            mailbox_id: Some(mailbox_id),
+        };
+        let (body, cookie) = begin_oauth(&state, &session.0, intent, None, params).await?;
+        return Ok(start_response(&body, cookie));
+    }
+
     let (scopes, prompt) = match intent {
         AuthIntent::SignIn => (
             adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
@@ -201,7 +252,7 @@ pub async fn start_handler(
             adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
             Some(Prompt::Consent),
         ),
-        // Delegated to T-601a (`link`, `reconnect`). `step_up` is handled above.
+        // `link` and `reconnect` are handled above; `step_up` earlier still.
         AuthIntent::Link | AuthIntent::Reconnect | AuthIntent::StepUp => {
             return Err(invalid_request("intent"));
         }
@@ -211,13 +262,46 @@ pub async fn start_handler(
         prompt,
         max_age_s: None,
         login_hint: None,
+        mailbox_id: None,
     };
     let (body, cookie) = begin_oauth(&state, &session.0, intent, invite_token_hash, params).await?;
-    let mut response = json_ok(StatusCode::OK, &body);
+    Ok(start_response(&body, cookie))
+}
+
+/// A `200 { authorization_url }`, with the rotated cookie when there is one.
+fn start_response(body: &StartResponse, cookie: Option<NewCookie>) -> Response {
+    let mut response = json_ok(StatusCode::OK, body);
     if let Some(cookie) = cookie {
         response.headers_mut().insert(header::SET_COOKIE, cookie.0);
     }
-    Ok(response)
+    response
+}
+
+/// The mailbox's own address for a `reconnect` `login_hint`. A failure here
+/// never fails the request (S7 API-AUTH-1).
+async fn login_hint_for(
+    state: &AppState,
+    user: &domain::UserId,
+    mailbox: &ports::MailboxRecord,
+) -> Option<Sensitive<String>> {
+    let user_record = state.ports.store.users().get(user).await.ok()??;
+    let aad = ports::Aad {
+        user: *user,
+        scope: mailbox.mailbox_id.0.to_string(),
+        field: ports::store::aad_fields::MAILBOX_EMAIL,
+    };
+    let plain = state
+        .ports
+        .keys
+        .open(
+            user,
+            &user_record.record.wrapped_data_key,
+            &aad,
+            &mailbox.email_address.0,
+        )
+        .await
+        .ok()?;
+    String::from_utf8(plain).ok().map(Sensitive::new)
 }
 
 /// State rules per intent (S7 5.2 step 4).

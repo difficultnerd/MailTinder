@@ -247,6 +247,7 @@ async fn pending_session(
         pkce_verifier: Sensitive::new(String::new()),
         invite_token_hash: None,
         pending_email: Some(Sensitive::new(email.to_owned())),
+        mailbox_id: None,
         started_at: fakes.clock.now(),
     };
     record.state = SessionState::PendingInviteRequest;

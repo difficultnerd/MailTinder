@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use domain::MailboxId;
 use obs::Sensitive;
 use ports::store::aad_fields;
 use ports::{
@@ -32,6 +33,9 @@ pub struct PreAuthPlain {
     pub invite_token_hash: Option<Sha256Hash>,
     /// The email awaiting admin approval, when the intent is a join request.
     pub pending_email: Option<Sensitive<String>>,
+    /// The mailbox a `reconnect` round trip is for, when the intent is
+    /// `reconnect`; `None` otherwise.
+    pub mailbox_id: Option<MailboxId>,
     /// When the round trip started; the 10-minute TTL runs from here.
     pub started_at: OffsetDateTime,
 }
@@ -92,6 +96,7 @@ pub async fn seal_pre_auth(
             ),
             None => None,
         },
+        mailbox_id: p.mailbox_id,
         started_at: p.started_at,
     })
 }
@@ -134,6 +139,7 @@ pub async fn open_pre_auth(
             )?)),
             None => None,
         },
+        mailbox_id: f.mailbox_id,
         started_at: f.started_at,
     })
 }

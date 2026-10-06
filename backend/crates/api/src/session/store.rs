@@ -126,6 +126,7 @@ impl<'a> SessionService<'a> {
             pkce_verifier: Sensitive::new(String::new()),
             invite_token_hash: None,
             pending_email: None,
+            mailbox_id: None,
             started_at: now,
         };
         let sealed =
