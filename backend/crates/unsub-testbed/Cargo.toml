@@ -7,6 +7,22 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Library plus binary; dev and test use only (it is never a dependency of a
+# production crate).
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+# TLS server stack. Versions match the ones `egress`'s test TLS server already
+# uses, so no new crates enter Cargo.lock.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.14", features = ["ring"] }
+
+[dev-dependencies]
+tokio.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true

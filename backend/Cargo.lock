@@ -2784,6 +2784,17 @@ dependencies = [
 [[package]]
 name = "unsub-testbed"
 version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "url",
+]
 
 [[package]]
 name = "untrusted"
