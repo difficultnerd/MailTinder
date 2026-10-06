@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::app_folder::AppFolderStore;
+use crate::caller::CallerVerifier;
 use crate::classifier::Classifier;
 use crate::clock::Clock;
 use crate::egress::HttpEgress;
@@ -34,6 +35,8 @@ pub struct Ports {
     /// Bake-off models only; header rules is in-process (T-102).
     pub models: Vec<Arc<dyn Classifier>>,
     pub secrets: Arc<dyn Secrets>,
+    /// Verifies the OIDC caller of internal routes (T-701).
+    pub caller: Arc<dyn CallerVerifier>,
 }
 
 impl Ports {
