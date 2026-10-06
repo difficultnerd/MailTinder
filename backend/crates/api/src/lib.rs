@@ -35,6 +35,8 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/mailboxes",
     "/api/v1/mailboxes/{mailbox_id}",
     "/api/v1/feed/next",
+    "/api/v1/swipes",
+    "/api/v1/swipes/undo",
     "/api/v1/progress",
     "/api/v1/needs-attention",
     "/api/v1/needs-attention/{item_id}/resolve",
@@ -225,6 +227,10 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         "/api/v1/mailboxes"
     } else if path == "/api/v1/feed/next" {
         "/api/v1/feed/next"
+    } else if path == "/api/v1/swipes" {
+        "/api/v1/swipes"
+    } else if path == "/api/v1/swipes/undo" {
+        "/api/v1/swipes/undo"
     } else if path == "/api/v1/progress" {
         "/api/v1/progress"
     } else if path == "/api/v1/auth/sign-out" {

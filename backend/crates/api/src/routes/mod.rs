@@ -7,6 +7,7 @@ pub mod mailboxes;
 pub mod needs_attention;
 pub mod progress;
 pub mod session;
+pub mod swipes;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -24,6 +25,11 @@ pub fn router() -> Router<AppState> {
             delete(mailboxes::disconnect_mailbox),
         )
         .route("/api/v1/feed/next", post(feed::next_page_handler))
+        // The 300-jobs-per-user-per-day Firestore limit (`policies::UNSUB_JOBS`)
+        // is checked inside `services::reject::execute`, before the provider
+        // change and only for a reject that queues a job: one hit per swipe.
+        .route("/api/v1/swipes", post(swipes::create))
+        .route("/api/v1/swipes/undo", post(swipes::undo))
         .route("/api/v1/progress", get(progress::get_progress))
         .route("/api/v1/needs-attention", get(needs_attention::list))
         .route(
