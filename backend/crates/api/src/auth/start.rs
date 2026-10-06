@@ -6,7 +6,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use domain::MailboxId;
 use obs::Sensitive;
-use ports::{AuthIntent, Prompt, SessionState, Sha256Hash};
+use ports::{AuthIntent, MailboxRecord, Prompt, SessionState, Sha256Hash, Versioned};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -203,7 +203,7 @@ pub async fn start_handler(
     // token for the new mailbox.
     if intent == AuthIntent::Link {
         let authed = AuthedSession::load(&state, &session.0).await?;
-        crate::auth::step_up::require_step_up(&authed, state.ports.clock.as_ref())?;
+        require_link_step_up(&state, &authed, request_id)?;
         let params = OAuthParams {
             scopes: adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
             prompt: Some(Prompt::Consent),
@@ -224,14 +224,7 @@ pub async fn start_handler(
         };
         let authed = AuthedSession::load(&state, &session.0).await?;
         let mailbox_id = MailboxId(mailbox_id);
-        let mailbox = state
-            .ports
-            .store
-            .mailboxes()
-            .get(&mailbox_id)
-            .await?
-            .filter(|m| m.record.user_id == authed.user)
-            .ok_or(ApiError::NotFound)?;
+        let mailbox = reconnect_target(&state, &authed, mailbox_id, request_id).await?;
         let params = OAuthParams {
             scopes: adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
             prompt: None,
@@ -266,6 +259,45 @@ pub async fn start_handler(
     };
     let (body, cookie) = begin_oauth(&state, &session.0, intent, invite_token_hash, params).await?;
     Ok(start_response(&body, cookie))
+}
+
+/// The `link` step-up requirement: a fresh Google sign-in, else `403` plus an
+/// `authz_failure` security event (AU-04 AC6, V16.3.2).
+fn require_link_step_up(
+    state: &AppState,
+    authed: &AuthedSession,
+    request_id: RequestId,
+) -> Result<(), ApiError> {
+    if let Err(refused) = crate::auth::step_up::require_step_up(authed, state.ports.clock.as_ref())
+    {
+        crate::http::security::authz_failure(state, &authed.user, Some(request_id.0), Some("POST"));
+        return Err(refused);
+    }
+    Ok(())
+}
+
+/// The mailbox a `reconnect` names: `404 not_found` for a missing mailbox or
+/// another user's, and the refused cross-user access is logged (V8.2.2,
+/// V16.3.2). Reconnect needs no step-up (S7 3.6).
+async fn reconnect_target(
+    state: &AppState,
+    authed: &AuthedSession,
+    mailbox_id: MailboxId,
+    request_id: RequestId,
+) -> Result<Versioned<MailboxRecord>, ApiError> {
+    match state.ports.store.mailboxes().get(&mailbox_id).await? {
+        Some(mailbox) if mailbox.record.user_id == authed.user => Ok(mailbox),
+        Some(_) => {
+            crate::http::security::authz_failure(
+                state,
+                &authed.user,
+                Some(request_id.0),
+                Some("POST"),
+            );
+            Err(ApiError::NotFound)
+        }
+        None => Err(ApiError::NotFound),
+    }
 }
 
 /// A `200 { authorization_url }`, with the rotated cookie when there is one.

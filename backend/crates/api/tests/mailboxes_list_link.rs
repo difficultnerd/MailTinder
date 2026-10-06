@@ -1303,3 +1303,75 @@ async fn st_03_ac1_link_cannot_clear_a_consent_block() -> Result<(), Box<dyn std
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// ASVS V16.3.2: the `start` refusals (a stale step-up on `link`, another
+// user's mailbox on `reconnect`) are logged (security-review F2).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn asvs_v16_3_2_link_step_up_refusal_logged() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let user = seed_user(&fakes, false).await?;
+    // A session with no fresh sign-in.
+    let (cookie, record) = SessionService::new(&state)
+        .establish(None, &user, None)
+        .await?;
+    let cookie = cookie_value(&cookie.0)?;
+    let clock = obs::arc(obs::FixedClock(fakes.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let resp = authed_post(
+        &router,
+        "/api/v1/auth/google/start",
+        &cookie,
+        &record.record.csrf_token,
+        link_body(),
+    )
+    .await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(code_of(resp).await?, "step_up_required");
+    assert!(
+        capture.text().contains("authz_failure"),
+        "a refused `link` step-up is logged: {}",
+        capture.text()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn asvs_v16_3_2_reconnect_other_users_mailbox_logged(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let other = seed_user(&fakes, false).await?;
+    let foreign = seed_mailbox(
+        &fakes,
+        other,
+        "sub-foreign",
+        "foreign@example.com",
+        true,
+        MailboxStatus::NeedsSignIn,
+    )
+    .await?;
+    let clock = obs::arc(obs::FixedClock(fakes.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let resp = authed_post(
+        &router,
+        "/api/v1/auth/google/start",
+        &a.cookie,
+        &a.csrf,
+        &reconnect_body(&foreign),
+    )
+    .await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(code_of(resp).await?, "not_found");
+    assert!(
+        capture.text().contains("authz_failure"),
+        "a refused cross-user reconnect is logged: {}",
+        capture.text()
+    );
+    Ok(())
+}

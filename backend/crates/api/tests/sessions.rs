@@ -15,7 +15,10 @@ use api::session::extract::{AdminSession, AnySession, AuthedSession, PendingInvi
 use api::session::pre_auth::{open_pre_auth, seal_pre_auth, PreAuthPlain};
 use api::session::store::{EndReason, LoadedSession, SessionService, IDLE_TIMEOUT, TOUCH_INTERVAL};
 use api::state::AppState;
-use api::{app_state, build_router_with_routes, config::ApiConfig, http::request_id::RequestId};
+use api::{
+    app_state, build_router_with_routes, config::ApiConfig, http::request_id::RequestId,
+    ROUTE_TEMPLATES,
+};
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
@@ -631,34 +634,85 @@ async fn asvs_v3_5_1_token_from_other_session_refused() -> Result<(), Box<dyn st
 }
 
 #[tokio::test]
-async fn asvs_v3_5_3_get_never_requires_or_changes_state() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn asvs_v3_5_3_state_changing_routes_reject_get() -> Result<(), Box<dyn std::error::Error>> {
     let (state, fakes) = fixture()?;
-    let session = authed(&state, &fakes, false).await?;
-    let router = test_router(state.clone());
-    // A GET-only route cannot be reached by POST.
-    let wrong = call(
-        &router,
-        Method::POST,
-        "/api/v1/__t/me",
-        &[
-            ("cookie", &session.cookie),
-            ("origin", ORIGIN),
-            (CSRF_HEADER, &session.csrf),
-        ],
-    )
-    .await?;
-    assert_eq!(wrong.status(), StatusCode::METHOD_NOT_ALLOWED);
-    // A POST-only route cannot be reached by GET (and needs no token).
-    let wrong = call(
-        &router,
-        Method::GET,
-        "/api/v1/__t/write",
-        &[("cookie", &session.cookie)],
-    )
-    .await?;
-    assert_eq!(wrong.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let router = mailtinder_router(state.clone());
+    let id = fakes.rng.uuid_v4();
+    // (route template, concrete path, the only method the route accepts) for
+    // every state-changing production route. The two GET routes that do change
+    // state are the documented bootstrap exceptions named in the register row:
+    // the caller's own session record and Google's OAuth redirect.
+    let routes: [(&str, String, Method); 9] = [
+        (
+            "/api/v1/auth/{provider}/start",
+            "/api/v1/auth/google/start".to_owned(),
+            Method::POST,
+        ),
+        (
+            "/api/v1/auth/sign-out",
+            "/api/v1/auth/sign-out".to_owned(),
+            Method::POST,
+        ),
+        (
+            "/api/v1/mailboxes/{mailbox_id}",
+            format!("/api/v1/mailboxes/{id}"),
+            Method::DELETE,
+        ),
+        (
+            "/api/v1/feed/next",
+            "/api/v1/feed/next".to_owned(),
+            Method::POST,
+        ),
+        (
+            "/api/v1/invite-requests",
+            "/api/v1/invite-requests".to_owned(),
+            Method::POST,
+        ),
+        (
+            "/api/v1/admin/invites/{invite_id}/resend",
+            format!("/api/v1/admin/invites/{id}/resend"),
+            Method::POST,
+        ),
+        (
+            "/api/v1/admin/invites/{invite_id}",
+            format!("/api/v1/admin/invites/{id}"),
+            Method::DELETE,
+        ),
+        (
+            "/api/v1/admin/invite-requests/{request_id}/approve",
+            format!("/api/v1/admin/invite-requests/{id}/approve"),
+            Method::POST,
+        ),
+        (
+            "/api/v1/admin/invite-requests/{request_id}/decline",
+            format!("/api/v1/admin/invite-requests/{id}/decline"),
+            Method::POST,
+        ),
+    ];
+    for (template, path, allowed) in routes {
+        assert!(
+            ROUTE_TEMPLATES.contains(&template),
+            "{template} is not a production route"
+        );
+        for method in [Method::GET, Method::HEAD] {
+            let resp = call(&router, method.clone(), &path, &[]).await?;
+            assert_eq!(
+                resp.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path} (the route takes {allowed:?})"
+            );
+        }
+    }
+    // The 405s above are method refusals, not absent routes: a read route
+    // answers `GET` (an unauthenticated `401`/`403`, never `405`).
+    let read = call(&router, Method::GET, "/api/v1/admin/invites", &[]).await?;
+    assert_ne!(read.status(), StatusCode::METHOD_NOT_ALLOWED);
     Ok(())
+}
+
+/// The router without the test-only routes: the production route table.
+fn mailtinder_router(state: AppState) -> Router {
+    build_router_with_routes(state, |router| router)
 }
 
 // ---------- Server-side session storage ----------

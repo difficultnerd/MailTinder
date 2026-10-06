@@ -37,6 +37,9 @@ pub async fn disconnect(
         return Err(ApiError::NotFound);
     };
     if target.record.user_id != session.user {
+        // Another user's mailbox: flat 404 (V8.2.2) and a logged refusal, with
+        // no mailbox ID (V16.3.2).
+        crate::http::security::authz_failure(app, &session.user, None, Some("DELETE"));
         return Err(ApiError::NotFound);
     }
 

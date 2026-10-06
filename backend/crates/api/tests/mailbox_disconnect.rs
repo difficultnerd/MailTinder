@@ -1117,3 +1117,66 @@ async fn au_05_ac2_concurrent_disconnect_cannot_leave_zero_mailboxes(
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// ASVS V16.3.2: authorisation refusals beyond the admin extractor are logged
+// (security-review F2).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn asvs_v16_3_2_step_up_refusal_logged() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    // A sign-in 20 minutes ago: outside the 300 s step-up window.
+    let a = authed(&state, &fakes, Some(Duration::minutes(20))).await?;
+    let (mine, _other) = seed_pair(&state, &fakes, a.user).await?;
+    let clock = obs::arc(obs::FixedClock(fakes.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let resp = disconnect(&router, &a, &mine).await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(code_of(resp).await?, "step_up_required");
+    assert!(
+        capture.text().contains("authz_failure"),
+        "a refused step-up is logged: {}",
+        capture.text()
+    );
+    assert!(
+        fakes.store.mailboxes().get(&mine).await?.is_some(),
+        "a refused step-up changes nothing"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn asvs_v16_3_2_cross_user_disconnect_logged() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes, None).await?;
+    let (_mine, _other) = seed_pair(&state, &fakes, a.user).await?;
+    let stranger = seed_user(&fakes).await?;
+    let foreign = seed_mailbox(
+        &fakes,
+        stranger,
+        "sub-foreign",
+        "foreign@example.com",
+        true,
+        MailboxStatus::Connected,
+    )
+    .await?;
+    grant(&state, &fakes, &stranger, &foreign, "refresh-foreign").await?;
+    let clock = obs::arc(obs::FixedClock(fakes.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let resp = disconnect(&router, &a, &foreign).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        capture.text().contains("authz_failure"),
+        "the refused cross-user access is logged: {}",
+        capture.text()
+    );
+    assert!(
+        fakes.store.mailboxes().get(&foreign).await?.is_some(),
+        "the stranger's mailbox is untouched"
+    );
+    Ok(())
+}

@@ -231,8 +231,13 @@ pub async fn complete_reconnect(
     let Some(versioned) = app.ports.store.mailboxes().get(mailbox).await? else {
         return Ok(LinkOutcome::Failed);
     };
-    if versioned.record.user_id != session.user
-        || versioned.record.provider_subject_id.as_str() != claims.sub
+    if versioned.record.user_id != session.user {
+        // Another user's mailbox: the new tokens are dropped and the refused
+        // access is logged (V8.2.2, V16.3.2).
+        crate::http::security::authz_failure(app, &session.user, None, None);
+        return Ok(LinkOutcome::Failed);
+    }
+    if versioned.record.provider_subject_id.as_str() != claims.sub
         || versioned.record.status != MailboxStatus::NeedsSignIn
     {
         return Ok(LinkOutcome::Failed);

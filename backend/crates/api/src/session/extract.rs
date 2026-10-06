@@ -9,7 +9,6 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::Method;
 use domain::UserId;
-use obs::{Pseudonymiser, SecurityEvent};
 use ports::{SessionHash, SessionRecordId, SessionState};
 
 use crate::error::ApiError;
@@ -149,7 +148,14 @@ impl FromRequestParts<AppState> for SteppedUpUser {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let inner = AuthedSession::from_request_parts(parts, state).await?;
-        crate::auth::step_up::require_step_up(&inner, state.ports.clock.as_ref())?;
+        if let Err(refused) =
+            crate::auth::step_up::require_step_up(&inner, state.ports.clock.as_ref())
+        {
+            // A refused step-up is an authorisation failure (V16.3.2): log it,
+            // pseudonymously, before the 403 goes out.
+            authz_failure(parts, state, &inner.user);
+            return Err(refused);
+        }
         Ok(Self(inner))
     }
 }
@@ -165,7 +171,12 @@ impl FromRequestParts<AppState> for SteppedUpAdmin {
         // The admin check runs first: a non-admin gets `403 forbidden`, never
         // `step_up_required` (T-504).
         let admin = AdminSession::from_request_parts(parts, state).await?;
-        crate::auth::step_up::require_step_up(&admin.0, state.ports.clock.as_ref())?;
+        if let Err(refused) =
+            crate::auth::step_up::require_step_up(&admin.0, state.ports.clock.as_ref())
+        {
+            authz_failure(parts, state, &admin.0.user);
+            return Err(refused);
+        }
         Ok(Self(admin.0))
     }
 }
@@ -178,21 +189,22 @@ impl FromRequestParts<AppState> for AdminSession {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let request_id = parts.extensions.get::<RequestId>().copied();
-        let method = method_name(&parts.method);
         let inner = AuthedSession::from_request_parts(parts, state).await?;
         if inner.is_admin {
             return Ok(Self(inner));
         }
-        obs::security_event(&SecurityEvent {
-            action: "authz_failure",
-            outcome: "refused",
-            user: Some(Pseudonymiser::new(state.config.rate_key.clone()).pseudo_id(&inner.user.0)),
-            request_id: request_id.map(|r| r.0),
-            amr: None,
-            provider: None,
-            method,
-        });
+        authz_failure(parts, state, &inner.user);
         Err(ApiError::Forbidden)
     }
+}
+
+/// One `authz_failure` event for a request an extractor refused (V16.3.2):
+/// the pseudonymous user, the request ID and the route verb only.
+fn authz_failure(parts: &Parts, state: &AppState, user: &UserId) {
+    crate::http::security::authz_failure(
+        state,
+        user,
+        parts.extensions.get::<RequestId>().copied().map(|r| r.0),
+        method_name(&parts.method),
+    );
 }
