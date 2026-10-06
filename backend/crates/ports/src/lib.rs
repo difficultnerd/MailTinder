@@ -6,6 +6,7 @@
 #![allow(clippy::must_use_candidate, clippy::doc_markdown)]
 
 pub mod app_folder;
+pub mod caller;
 pub mod classifier;
 pub mod clock;
 pub mod egress;
@@ -33,6 +34,7 @@ pub use store::{
 };
 
 pub use app_folder::{AppFolderError, AppFolderStore, ETag};
+pub use caller::{CallerAuthError, CallerVerifier, VerifiedCaller};
 pub use classifier::{Classifier, ClassifierError, ClassifierId, ClassifierInput};
 pub use clock::Clock;
 pub use egress::{

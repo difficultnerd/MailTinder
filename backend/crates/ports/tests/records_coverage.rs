@@ -112,6 +112,7 @@ fn job_record_keyed() {
         list_key_hash: lkh(),
         method: JobMethod::OneClick,
         target: None,
+        sender_display: None,
         due_at: t(),
         status: JobStatus::Queued,
         attempts: 0,
