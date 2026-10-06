@@ -101,6 +101,8 @@ Each user has one key, `data_key`, usable by the server without the user, so que
 
 Events logged (pseudonymous, C1 fields only): sign-in success and failure (with `amr` where present), step-up success and failure, session termination (sign-out, replaced by a new sign-in, or ended by an admin), mailbox link and unlink, invite created, revoked, used, request approved or declined, consent changes (experiments opt-in and opt-out), kill switch changes, bake-off snapshot save and delete, admin actions, authorisation failures, CSRF failures, rate-limit hits, job outcomes, account deletion. Log bucket locked, 90-day retention, no delete permission for application identities.
 
+A log line carries at most one pseudonymous user ID (S5 logs). An action with two principals is therefore logged as two correlated lines, never one: an admin ending a user's session emits a session-termination line (`session_end`/`admin_ended`) named for the target user and an admin-action line (`admin_action`) named for the acting admin. The two lines share the request ID, which is the documented join key that attributes the termination to the admin. Neither line carries an address.
+
 ## 8. Security verification in CI
 
 | Check | Tooling | Status |

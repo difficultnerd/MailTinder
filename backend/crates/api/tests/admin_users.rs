@@ -21,7 +21,7 @@ use axum::Router;
 use domain::{
     EmailAddress, JobId, JobMethod, JobStatus, MailboxStatus, Provider, ProviderSubjectId, UserId,
 };
-use obs::Sensitive;
+use obs::{Pseudonymiser, Sensitive};
 use ports::store::aad_fields;
 use ports::{
     Aad, Ciphertext, Clock, JobRecord, KeyService, ListKeyHash, MailboxRecord, Precondition, Rng,
@@ -34,6 +34,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const ORIGIN: &str = "https://mailtinder.test";
 const EMAIL_KEY: &[u8] = b"fake-email-key";
+const LOG_KEY: &[u8] = b"fake-log-key";
 
 /// The scoped log capture is per-thread; serialise the tests that assert on a
 /// captured security event so a neighbour cannot blank it out.
@@ -52,7 +53,7 @@ async fn fixture() -> Result<
     let config = ApiConfig::new(
         ORIGIN.to_owned(),
         "fake-client".into(),
-        Sensitive::new(b"fake-log-key".to_vec()),
+        Sensitive::new(LOG_KEY.to_vec()),
         Sensitive::new(EMAIL_KEY.to_vec()),
     )?;
     Ok((app_state(Arc::new(ports), Arc::new(config)), fakes, serial))
@@ -89,6 +90,35 @@ async fn code_of(resp: Response) -> Result<String, Box<dyn std::error::Error>> {
         .as_str()
         .unwrap_or_default()
         .to_owned())
+}
+
+/// The pseudonymous ID a log line carries for `user`, computed with the same
+/// log key the fixture hands the app (S5 logs).
+fn pseudo_of(user: &UserId) -> String {
+    Pseudonymiser::new(Sensitive::new(LOG_KEY.to_vec()))
+        .pseudo_id(&user.0)
+        .as_str()
+        .to_owned()
+}
+
+/// A string field of a parsed log line, if present.
+fn field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(|v| v.as_str())
+}
+
+/// The parsed `security` lines of a capture, so a test asserts on fields rather
+/// than substrings (a removed pseudonymous ID would otherwise pass).
+fn security_events(text: &str) -> Vec<serde_json::Value> {
+    let mut events = Vec::new();
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if field(&value, "event") == Some("security") {
+            events.push(value);
+        }
+    }
+    events
 }
 
 async fn seed_user(
@@ -326,8 +356,10 @@ async fn au_07_ac5_jobs_keep_running_after_session_end() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// AU-07 AC6: an admin ending a session is a security event, carrying both
-// pseudonymous IDs and no address.
+// AU-07 AC6: an admin ending a session is a security event. Two correlated
+// lines are written, one naming the target and one naming the actor; they share
+// the request ID, the documented join key (S6 section 7). Neither carries an
+// address.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn au_07_ac6_admin_session_end_logged() -> TestResult {
@@ -348,20 +380,63 @@ async fn au_07_ac6_admin_session_end_logged() -> TestResult {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let text = capture.text();
-    assert!(
-        text.contains("\"action\":\"session_end\""),
-        "the target's session end is logged: {text}"
+    let events = security_events(&text);
+    let victim_pseudo = pseudo_of(&victim.user);
+    let admin_pseudo = pseudo_of(&admin.user);
+
+    // The target's session end is logged, named for the target.
+    let target_events: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| field(e, "action") == Some("session_end"))
+        .collect();
+    assert_eq!(
+        target_events.len(),
+        1,
+        "one session_end per deleted session: {text}"
     );
-    assert!(
-        text.contains("\"outcome\":\"admin_ended\""),
+    assert_eq!(
+        field(target_events[0], "outcome"),
+        Some("admin_ended"),
         "with the admin-ended outcome: {text}"
     );
-    assert!(
-        text.contains("\"action\":\"admin_action\""),
-        "the actor's admin action is logged: {text}"
+    assert_eq!(
+        field(target_events[0], "user_pseudo"),
+        Some(victim_pseudo.as_str()),
+        "the target's pseudonymous ID, not the address: {text}"
     );
+
+    // The actor's admin action is logged, named for the admin.
+    let actor_events: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| field(e, "action") == Some("admin_action"))
+        .collect();
+    assert_eq!(actor_events.len(), 1, "one admin_action: {text}");
+    assert_eq!(
+        field(actor_events[0], "user_pseudo"),
+        Some(admin_pseudo.as_str()),
+        "the admin's pseudonymous ID: {text}"
+    );
+
+    // The documented join key: the two lines share the request ID, so an
+    // investigator can attribute the termination to the admin (S6 section 7).
+    let target_request_id = field(target_events[0], "request_id");
     assert!(
-        !text.contains("target@example.com"),
+        target_request_id.is_some_and(|id| !id.is_empty()),
+        "the target line carries a request ID: {text}"
+    );
+    assert_eq!(
+        field(actor_events[0], "request_id"),
+        target_request_id,
+        "the actor and target lines share the request ID: {text}"
+    );
+    assert_ne!(
+        field(target_events[0], "user_pseudo"),
+        field(actor_events[0], "user_pseudo"),
+        "the two lines name different principals: {text}"
+    );
+
+    assert!(
+        !text.contains("target@example.com") && !text.contains("admin@example.com"),
         "no address in the security log: {text}"
     );
     Ok(())

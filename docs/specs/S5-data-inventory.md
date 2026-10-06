@@ -89,6 +89,8 @@ Labels and categories the app creates stay with the user's mail. Trash moves are
 
 Everything else is banned from logs, including tokens, cookies, message IDs, addresses, names, subjects, snippets, bodies, URLs and page content. Retention 90 days in a locked log bucket. Security events (S6 section 7) live here, not in Firestore. Enforced by a redacting wrapper type in Rust, the template's `optional/privacy` Semgrep rules (extended with these field names) and a log-scanning test over integration test output.
 
+A line carries at most one pseudonymous user ID. An action with two principals, such as an admin ending another user's session, is therefore two correlated lines that share the request ID: the request ID is the documented join key (S6 section 7).
+
 ## Third parties that receive data
 
 | Party | What | Why |

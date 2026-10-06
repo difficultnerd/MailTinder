@@ -154,14 +154,15 @@ pub async fn end_user_session(
     if app.ports.store.users().get(&target).await?.is_none() {
         return Err(ApiError::NotFound);
     }
-    // One `session_end`/`admin_ended` event per deleted session, carrying the
-    // target's pseudonymous ID (S2 AU-07 AC6).
+    // Two correlated events, as S6 7 documents: a `session_end`/`admin_ended`
+    // event per deleted session naming the target, and an `admin_action` event
+    // naming the actor. Both carry the same request ID, the documented join key
+    // that attributes the termination to the admin; a log line holds one
+    // pseudonymous user ID, so neither event can name both (S5 logs). Neither
+    // carries an address.
     SessionService::new(app)
         .end_all_for_user(&target, EndReason::AdminEnded, request_id)
         .await?;
-    // And an `admin_action` event for the actor, so the log links both
-    // pseudonymous IDs (the target's above, the admin's here). Neither event
-    // carries an address.
     security_event(app, "admin_action", "success", Some(admin), request_id);
     Ok(())
 }
