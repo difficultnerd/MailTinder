@@ -188,8 +188,13 @@ pub async fn execute(
         suspect,
         stored_json: stored_json(&result, &undo)?,
     };
-    persist(&store, &user, writes).await?;
-    Ok(result)
+    if persist(&store, &user, writes).await? {
+        return Ok(result);
+    }
+    // The losing side of a concurrent request with the same `Idempotency-Key`:
+    // answer from the response the winner recorded, exactly as the sequential
+    // retry path does, and never apply the effects twice (ASVS V2.3.4).
+    crate::services::swipe::answer_recorded(&store, &user, swipe_id, &seal, result).await
 }
 
 /// Step 2: trash, or report spam and then trash. Returns the labels before the
@@ -494,10 +499,12 @@ struct Writes {
 }
 
 /// Step 8: one `UserStateStore::update`. The closure is pure over `w`, so a
-/// retry after an `ETag` conflict is safe.
-async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<(), ApiError> {
+/// retry after an `ETag` conflict is safe. `false` means a concurrent request
+/// with the same `Idempotency-Key` already applied this reject.
+async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<bool, ApiError> {
+    let sid = w.sid;
     store
-        .update(user, move |s: &mut UserState| apply(s, &w))
+        .update_once(user, sid, move |s: &mut UserState| apply(s, &w))
         .await
 }
 
