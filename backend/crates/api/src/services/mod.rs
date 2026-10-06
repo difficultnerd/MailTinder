@@ -6,4 +6,5 @@ pub mod feed;
 pub mod jobs;
 pub mod mailbox_disconnect;
 pub mod mailbox_link;
+pub mod progress;
 pub mod user_state_store;

@@ -413,7 +413,7 @@ fn start_session(
     }
 }
 
-fn error_code(e: &ApiError) -> Option<&'static str> {
+pub(crate) fn error_code(e: &ApiError) -> Option<&'static str> {
     match e {
         ApiError::MailboxNeedsSignIn { .. } => Some("mailbox_needs_sign_in"),
         ApiError::ProviderUnavailable { .. } => Some("provider_unavailable"),
@@ -508,8 +508,9 @@ fn query_for(phase: Phase, position: &MailboxPosition) -> MessageQuery {
     }
 }
 
-/// How a failed list call shows in `mailbox_errors`.
-fn mail_error_code(e: &MailError) -> &'static str {
+/// How a failed provider call shows in `mailbox_errors` (shared with the
+/// progress endpoint, T-603).
+pub(crate) fn mailbox_error_code(e: &MailError) -> &'static str {
     match e {
         MailError::Unauthorized => "mailbox_needs_sign_in",
         MailError::RateLimited { .. } | MailError::Transient => "provider_unavailable",
@@ -561,7 +562,7 @@ async fn list_one<'a>(
 
 /// Runs the futures with at most [`PROVIDER_CONCURRENCY`] in flight, keeping
 /// their order. The futures are built first so each borrows its own data.
-async fn bounded<I>(futures: I) -> Vec<<I::Item as std::future::Future>::Output>
+pub(crate) async fn bounded<I>(futures: I) -> Vec<<I::Item as std::future::Future>::Output>
 where
     I: IntoIterator,
     I::Item: std::future::Future,
@@ -637,7 +638,7 @@ async fn fetch_round(
             }
             Err(e) => {
                 out.failed = true;
-                errors.insert(l.id.0, mail_error_code(&e));
+                errors.insert(l.id.0, mailbox_error_code(&e));
                 if e == MailError::Unauthorized {
                     mark_needs_sign_in(app, &l.id).await;
                 }

@@ -35,6 +35,7 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/mailboxes",
     "/api/v1/mailboxes/{mailbox_id}",
     "/api/v1/feed/next",
+    "/api/v1/progress",
     "/api/v1/invite-requests",
     "/api/v1/admin/invites",
     "/api/v1/admin/invites/{invite_id}/resend",
@@ -221,6 +222,8 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         "/api/v1/mailboxes"
     } else if path == "/api/v1/feed/next" {
         "/api/v1/feed/next"
+    } else if path == "/api/v1/progress" {
+        "/api/v1/progress"
     } else if path == "/api/v1/auth/sign-out" {
         "/api/v1/auth/sign-out"
     } else if path.starts_with("/api/v1/auth/") {
