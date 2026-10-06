@@ -10,6 +10,13 @@ publish.workspace = true
 domain.workspace = true
 ports.workspace = true
 obs.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+testkit.workspace = true
+tokio.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

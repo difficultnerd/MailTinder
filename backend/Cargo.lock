@@ -3056,6 +3056,11 @@ dependencies = [
  "domain",
  "obs",
  "ports",
+ "serde_json",
+ "testkit",
+ "time",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

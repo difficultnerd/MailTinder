@@ -68,6 +68,9 @@ pub const OUTCOMES: &[&str] = &[
     "revoke_failed",
     "token_invalid",
     "rate_limited",
+    // Account deletion (T-803).
+    "started",
+    "deleted",
     // Sign-in and invite outcomes (T-502b, S7 3.4).
     "signed_in",
     "joined",
