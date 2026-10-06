@@ -21,3 +21,5 @@ pub const PRE_AUTH_PKCE_VERIFIER: &str = "session.pre_auth.pkce_verifier";
 pub const PRE_AUTH_PENDING_EMAIL: &str = "session.pre_auth.pending_email";
 /// scope = `user_id` (T-405)
 pub const APP_FOLDER_FILE: &str = "app_folder.file";
+/// scope = the literal `"app_folder"`: the file moves between Drives as bytes (T-602b)
+pub const APP_FOLDER_USER_STATE: &str = "user_state";

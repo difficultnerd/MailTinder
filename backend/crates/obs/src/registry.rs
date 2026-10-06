@@ -16,6 +16,7 @@ pub const ACTIONS: &[&str] = &[
     "mailbox_link",
     "mailbox_reconnect",
     "mailbox_unlink",
+    "app_folder",
     "invite_create",
     "invite_revoke",
     "invite_use",
@@ -47,6 +48,7 @@ pub const ACTIONS: &[&str] = &[
 
 pub const OUTCOMES: &[&str] = &[
     "success",
+    "unreadable",
     "failure",
     "refused",
     "expired",
