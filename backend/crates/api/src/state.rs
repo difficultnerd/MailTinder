@@ -6,6 +6,7 @@ use ports::Ports;
 
 use crate::config::ApiConfig;
 use crate::limits::RateLimiter;
+use crate::tokens::TokenService;
 
 /// Everything a route handler needs.
 #[derive(Clone)]
@@ -13,4 +14,6 @@ pub struct AppState {
     pub ports: Arc<Ports>,
     pub config: Arc<ApiConfig>,
     pub limits: Arc<RateLimiter>,
+    /// Refresh-token storage and the in-memory access-token cache (T-503).
+    pub tokens: Arc<TokenService>,
 }

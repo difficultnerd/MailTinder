@@ -63,6 +63,7 @@ pub const OUTCOMES: &[&str] = &[
     "timed_out",
     "rejected",
     "revoke_failed",
+    "token_invalid",
     "rate_limited",
     // S7 section 4 error codes.
     "invalid_request",

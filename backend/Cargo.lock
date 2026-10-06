@@ -136,6 +136,7 @@ dependencies = [
  "serde_path_to_error",
  "sha2",
  "subtle",
+ "svc-common",
  "testkit",
  "thiserror",
  "time",
@@ -2179,6 +2180,19 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "svc-common"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "obs",
+ "ports",
+ "serde_json",
+ "testkit",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "syn"

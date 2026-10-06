@@ -7,6 +7,7 @@ pub mod limits;
 pub mod sealed;
 pub mod session;
 pub mod state;
+pub mod tokens;
 
 use std::sync::Arc;
 
@@ -192,5 +193,6 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         ports,
         config,
         limits,
+        tokens: Arc::new(crate::tokens::TokenService::new()),
     }
 }
