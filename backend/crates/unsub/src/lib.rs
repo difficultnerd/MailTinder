@@ -13,6 +13,7 @@
 )]
 
 pub mod config;
+pub mod one_click;
 pub mod runner;
 pub mod sender;
 
