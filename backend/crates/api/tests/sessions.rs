@@ -1012,3 +1012,68 @@ async fn session_load_store_failure_is_internal() -> Result<(), Box<dyn std::err
         .is_err());
     Ok(())
 }
+
+// ---------- Security review F1/F2: invalidation must not fail silently ----------
+
+#[tokio::test]
+async fn asvs_v7_2_4_rotate_fails_when_old_id_delete_fails(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // F1: a store error deleting the old record must abort the rotation, not
+    // leave the old ID alive behind a rotated cookie.
+    let (state, fakes) = fixture()?;
+    let session = authed(&state, &fakes, false).await?;
+    let current = load(&state, &session.cookie).await?.expect("session");
+    fakes.store.fail_next(1);
+    assert!(SessionService::new(&state)
+        .rotate(&current, |_| {})
+        .await
+        .is_err());
+    // The old ID is still live: nothing was half-rotated.
+    assert!(load(&state, &session.cookie).await?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn asvs_v7_2_4_rotate_is_single_use() -> Result<(), Box<dyn std::error::Error>> {
+    // F2: two rotations from the same loaded record cannot both produce a live
+    // ID; the loser fails (the version-matched delete finds the record gone).
+    let (state, fakes) = fixture()?;
+    let session = authed(&state, &fakes, false).await?;
+    let current = load(&state, &session.cookie).await?.expect("session");
+    let (first_cookie, _) = SessionService::new(&state).rotate(&current, |_| {}).await?;
+    let first = cookie_value(&first_cookie.0)?;
+    assert!(SessionService::new(&state)
+        .rotate(&current, |_| {})
+        .await
+        .is_err());
+    let router = test_router(state.clone());
+    assert_eq!(
+        call(
+            &router,
+            Method::GET,
+            "/api/v1/__t/me",
+            &[("cookie", &first)]
+        )
+        .await?
+        .status(),
+        StatusCode::OK
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn au_07_ac1_establish_fails_when_old_session_delete_fails(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // F1: a store error deleting the previous session must abort the sign-in
+    // rather than silently break the one-session-per-user rule.
+    let (state, fakes) = fixture()?;
+    let user = seed_user(&fakes, false).await?;
+    let (old, _) = establish(&state, &user, None).await?;
+    let current = load(&state, &old).await?.expect("first session");
+    fakes.store.fail_next(1);
+    assert!(SessionService::new(&state)
+        .establish(Some(&current), &user, None)
+        .await
+        .is_err());
+    Ok(())
+}

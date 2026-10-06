@@ -249,14 +249,26 @@ impl<'a> SessionService<'a> {
         record.last_seen_at = now;
         record.expires_at = Self::expires_at(&record, now);
         edit(&mut record);
+        // Kill the old record first. An authenticated session's record is always
+        // present here, so `MustExist` makes rotation single-use: of two
+        // concurrent replays of the same cookie exactly one wins the delete and
+        // the loser fails instead of minting a second live ID (V7.2.4). A
+        // pre-auth record may already be gone because spending `pre_auth`
+        // deleted it, so that case deletes only if present. Either way a store
+        // failure aborts the rotation: the old ID is never silently left alive
+        // behind a rotated cookie.
+        let precondition = if current.record.record.state == SessionState::Authenticated {
+            Precondition::MustExist
+        } else {
+            Precondition::None
+        };
+        self.sessions()
+            .delete(&current.record.record.session_hash, precondition)
+            .await?;
         let version = self
             .sessions()
             .put(&record, Precondition::MustNotExist)
             .await?;
-        let _ = self
-            .sessions()
-            .delete(&current.record.record.session_hash, Precondition::None)
-            .await;
         Ok((NewCookie(set_cookie(&raw)), Versioned { record, version }))
     }
 
@@ -275,6 +287,24 @@ impl<'a> SessionService<'a> {
     ) -> Result<(NewCookie, Versioned<SessionRecord>), ApiError> {
         let now = self.state.ports.clock.now();
         let raw = self.raw_id();
+        // Every old session of the user is deleted before the new one lives: a
+        // store failure aborts the sign-in rather than silently leaving two live
+        // sessions (AU-07 AC1, AC6; V7.4.3). Deleting first also means the
+        // one-record-per-user invariant cannot be defeated by a failed delete.
+        if let Some(cur) = current {
+            self.sessions()
+                .delete(&cur.record.record.session_hash, Precondition::None)
+                .await?;
+            if cur.record.record.user_id == Some(*user) {
+                self.session_end(Some(user), EndReason::Replaced, None);
+            }
+        }
+        for other in self.sessions().by_user(user).await? {
+            self.sessions()
+                .delete(&other.record.session_hash, Precondition::None)
+                .await?;
+            self.session_end(Some(user), EndReason::Replaced, None);
+        }
         let record = SessionRecord {
             session_hash: raw.hash(),
             session_record_id: SessionRecordId(self.state.ports.rng.as_ref().uuid_v4()),
@@ -291,24 +321,6 @@ impl<'a> SessionService<'a> {
             .sessions()
             .put(&record, Precondition::MustNotExist)
             .await?;
-        if let Some(cur) = current {
-            let _ = self
-                .sessions()
-                .delete(&cur.record.record.session_hash, Precondition::None)
-                .await;
-            if cur.record.record.user_id == Some(*user) {
-                self.session_end(Some(user), EndReason::Replaced, None);
-            }
-        }
-        for other in self.sessions().by_user(user).await? {
-            if other.record.session_hash != record.session_hash {
-                let _ = self
-                    .sessions()
-                    .delete(&other.record.session_hash, Precondition::None)
-                    .await;
-                self.session_end(Some(user), EndReason::Replaced, None);
-            }
-        }
         Ok((NewCookie(set_cookie(&raw)), Versioned { record, version }))
     }
 
