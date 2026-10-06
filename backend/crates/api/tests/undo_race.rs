@@ -53,6 +53,7 @@ fn queued_job(n: u128) -> JobRecord {
         list_key_hash: ListKeyHash([7; 32]),
         method: JobMethod::OneClick,
         target: Some(Ciphertext(vec![1, 2, 3])),
+        sender_display: None,
         due_at: due,
         status: JobStatus::Queued,
         attempts: 0,
