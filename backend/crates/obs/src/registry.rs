@@ -154,6 +154,8 @@ pub const OPS: &[&str] = &[
     "token_revoke",
     "sign_in_store_grant",
     "join_missing_grant",
+    // Unsubscribe token minting (T-703).
+    "unsub.mint",
 ];
 
 pub const AMR_VALUES: &[&str] = &[
