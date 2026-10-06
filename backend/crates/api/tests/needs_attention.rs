@@ -611,38 +611,85 @@ async fn asvs_v1_2_2_non_https_link_never_returned() -> TestResult {
     let router = build_router(state.clone());
     let a = authed(&state, &fakes).await?;
     let now = fakes.clock.now();
-    // Written straight into the store, bypassing the raising path.
-    let http_item = seed_item(
-        &fakes,
-        a.user,
-        "Plain http",
-        Some("http://example.com/unsub"),
-        NeedsAttentionReason::HttpsOnlyUnsubscribe,
-        now,
-        now + RETAIN,
-    )
-    .await?;
+    // Every class `safe_link` rejects, so that removing any one branch of the
+    // check turns this test red (S10 10.4). Written straight into the store,
+    // bypassing the raising path.
+    let over_long = format!("https://example.com/{}", "a".repeat(2100));
+    let rejected: Vec<(&str, String)> = vec![
+        ("plain http", "http://example.com/unsub".to_owned()),
+        ("javascript scheme", "javascript:alert(1)".to_owned()),
+        (
+            "data scheme",
+            "data:text/html,<script>alert(1)</script>".to_owned(),
+        ),
+        (
+            "userinfo",
+            "https://user:secret@example.com/unsub".to_owned(),
+        ),
+        ("username only", "https://user@example.com/unsub".to_owned()),
+        ("whitespace", "https://example.com/un sub".to_owned()),
+        (
+            "control character",
+            "https://example.com/un\u{7}sub".to_owned(),
+        ),
+        ("over length", over_long),
+    ];
+
+    let mut rejected_ids = Vec::new();
+    let mut offset = 0i64;
+    for (label, link) in &rejected {
+        let id = seed_item(
+            &fakes,
+            a.user,
+            label,
+            Some(link.as_str()),
+            NeedsAttentionReason::HttpsOnlyUnsubscribe,
+            now + Duration::seconds(offset),
+            now + RETAIN,
+        )
+        .await?;
+        rejected_ids.push(id.0.to_string());
+        offset += 1;
+    }
     let https_item = seed_item(
         &fakes,
         a.user,
         "Secure",
         Some("https://example.com/unsub"),
         NeedsAttentionReason::HttpsOnlyUnsubscribe,
-        now + Duration::seconds(1),
+        now + Duration::seconds(offset),
         now + RETAIN,
     )
     .await?;
 
     let json = list_json(&router, &a.cookie, "").await?;
-    for item in json["items"].as_array().expect("items") {
-        let id = item["item_id"].as_str().unwrap_or_default();
-        if id == http_item.0.to_string() {
-            assert!(item["link"].is_null(), "an http link is never returned");
-        }
-        if id == https_item.0.to_string() {
-            assert_eq!(item["link"], "https://example.com/unsub");
-        }
+    let items = json["items"].as_array().ok_or("items array")?;
+    let listed: BTreeSet<&str> = items
+        .iter()
+        .filter_map(|item| item["item_id"].as_str())
+        .collect();
+    assert!(
+        listed.contains(https_item.0.to_string().as_str()),
+        "the https item is listed"
+    );
+    // The proof is only meaningful if every seeded record came back and each
+    // rejected link was dropped (S10 10.4).
+    for (id, (label, link)) in rejected_ids.iter().zip(rejected.iter()) {
+        let item = items
+            .iter()
+            .find(|item| item["item_id"].as_str() == Some(id.as_str()))
+            .ok_or("a rejected item is missing from the page")?;
+        assert!(
+            item["link"].is_null(),
+            "the {label} link {link:?} must not be returned, got {:?}",
+            item["link"]
+        );
     }
+    let https = items
+        .iter()
+        .find(|item| item["item_id"].as_str() == Some(https_item.0.to_string().as_str()))
+        .ok_or("the https item is missing from the page")?;
+    assert_eq!(https["link"], "https://example.com/unsub");
     Ok(())
 }
 
