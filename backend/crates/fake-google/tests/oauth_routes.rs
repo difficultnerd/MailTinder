@@ -640,6 +640,12 @@ async fn fake_oidc_times_follow_injected_clock() {
     let claims = decode_id_token(&id_token);
     let iat = claims["iat"].as_i64().unwrap();
     let exp = claims["exp"].as_i64().unwrap();
-    assert_eq!(iat, t0().unix_timestamp());
     assert_eq!(exp - iat, 3600);
+    // `t0()` is wall-clock `now_utc()`, frozen into the virtual clock when the
+    // fake starts; a second may tick between that and this read, so allow one.
+    let frozen = t0().unix_timestamp();
+    assert!(
+        (iat - frozen).abs() <= 1,
+        "iat {iat} vs virtual clock {frozen}"
+    );
 }

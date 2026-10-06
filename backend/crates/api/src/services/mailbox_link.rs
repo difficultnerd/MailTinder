@@ -51,11 +51,24 @@ impl LinkOutcome {
     }
 }
 
+/// True when a fresh grant may be written onto a mailbox in `status`.
+///
+/// `next_status(OAuthSucceeded)` maps every status to `connected`, so writing a
+/// grant to a `consent_blocked` mailbox would silently clear the block. Only a
+/// real consent fix may do that, and neither `reconnect` (S7 3.4) nor the
+/// `link` "already yours" branch is one (T-601a security review F2).
+fn may_apply_grant(status: MailboxStatus) -> bool {
+    status != MailboxStatus::ConsentBlocked
+}
+
 /// Finish a `link` round trip (AU-04 AC1, AC2, AC3, AC6; AU-03 AC7).
 ///
 /// The mailbox is keyed by Google `sub`, never by email. A mailbox that belongs
 /// to another user is refused with nothing stored and nothing revoked (Google
-/// revokes the whole grant, which would break the other user's mailbox).
+/// revokes the whole grant, which would break the other user's mailbox). A
+/// mailbox of the caller's own that is `consent_blocked` is refused too: linking
+/// the same Google account again must not clear a consent block, the same rule
+/// `reconnect` applies (T-601a security review F2).
 ///
 /// # Errors
 ///
@@ -79,6 +92,7 @@ pub async fn complete_link(
         Some(existing) if existing.record.user_id != session.user => {
             Ok(LinkOutcome::MailboxLinkedElsewhere)
         }
+        Some(existing) if !may_apply_grant(existing.record.status) => Ok(LinkOutcome::Failed),
         Some(existing) => {
             // Already one of the caller's mailboxes: refresh its grant.
             app.tokens
@@ -166,6 +180,9 @@ async fn create_linked_mailbox(
             {
                 Some(existing) if existing.record.user_id != session.user => {
                     Ok(LinkOutcome::MailboxLinkedElsewhere)
+                }
+                Some(existing) if !may_apply_grant(existing.record.status) => {
+                    Ok(LinkOutcome::Failed)
                 }
                 Some(existing) => {
                     app.tokens

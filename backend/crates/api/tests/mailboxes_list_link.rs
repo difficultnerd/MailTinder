@@ -343,6 +343,17 @@ fn tokens() -> TokenSet {
     }
 }
 
+/// A `TokenSet` that granted exactly `scopes`, as Google reports them back.
+fn tokens_with(scopes: &[&str]) -> TokenSet {
+    TokenSet {
+        access_token: Sensitive::new("access-token-A".to_owned()),
+        refresh_token: Some(Sensitive::new("refresh-token-R".to_owned())),
+        id_token: Sensitive::new("id-token-I".to_owned()),
+        expires_in_s: 3600,
+        granted_scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+    }
+}
+
 fn claims(sub: &str, email: &str) -> IdClaims {
     let issued_at = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("valid timestamp");
     IdClaims {
@@ -393,7 +404,19 @@ async fn callback(
     oauth_state: &str,
     claims: IdClaims,
 ) -> Result<Response, Box<dyn std::error::Error>> {
-    fakes.identity.script_exchange(Ok(tokens()));
+    callback_with_tokens(router, fakes, cookie, oauth_state, tokens(), claims).await
+}
+
+/// Drive the callback with the grant Google actually returned.
+async fn callback_with_tokens(
+    router: &Router,
+    fakes: &testkit::Fakes,
+    cookie: &str,
+    oauth_state: &str,
+    granted: TokenSet,
+    claims: IdClaims,
+) -> Result<Response, Box<dyn std::error::Error>> {
+    fakes.identity.script_exchange(Ok(granted));
     fakes.identity.script_claims(Ok(claims));
     call(
         router,
@@ -1126,6 +1149,154 @@ async fn st_03_ac1_reconnect_refused_for_a_connected_mailbox(
         .await?
         .ok_or("mailbox")?;
     assert_eq!(stored.record.status, MailboxStatus::Connected);
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the new grant is dropped"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AU-04 AC5 (S6 4): a `link` whose callback comes back with a partial grant —
+// the account unticked the Gmail/Drive scopes — stores nothing, so the mailbox
+// can never be `connected` on a grant that only 403s (T-601a security review
+// F1).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn au_04_ac5_link_without_the_full_grant_stores_nothing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let mailbox = seed_mailbox(
+        &fakes,
+        a.user,
+        "sub-partial",
+        "partial@example.com",
+        true,
+        MailboxStatus::NeedsSignIn,
+    )
+    .await?;
+    let (rotated, oauth_state) = begin(&router, &a.cookie, &a.csrf, link_body()).await?;
+    // Granular consent: only the two OIDC scopes were granted.
+    let partial = tokens_with(&adapters_gmail::scopes::GMAIL_SCOPES[..2]);
+    let resp = callback_with_tokens(
+        &router,
+        &fakes,
+        &rotated,
+        &oauth_state,
+        partial,
+        claims("sub-partial", "partial@example.com"),
+    )
+    .await?;
+    assert_eq!(outcome(&resp), "failed", "a partial grant is not a link");
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox)
+        .await?
+        .ok_or("mailbox")?;
+    assert_eq!(
+        stored.record.status,
+        MailboxStatus::NeedsSignIn,
+        "the mailbox is never `connected` on a partial grant"
+    );
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the partial grant is dropped"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ST-03 AC1 (S6 4): the same for `reconnect` — a partial grant must not move a
+// `needs_sign_in` mailbox to `connected` (T-601a security review F1).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn st_03_ac1_reconnect_without_the_full_grant_stays_needs_sign_in(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let mailbox = seed_mailbox(
+        &fakes,
+        a.user,
+        "sub-partial",
+        "partial@example.com",
+        true,
+        MailboxStatus::NeedsSignIn,
+    )
+    .await?;
+    let (rotated, oauth_state) =
+        begin(&router, &a.cookie, &a.csrf, &reconnect_body(&mailbox)).await?;
+    let partial = tokens_with(&adapters_gmail::scopes::GMAIL_SCOPES[..2]);
+    let resp = callback_with_tokens(
+        &router,
+        &fakes,
+        &rotated,
+        &oauth_state,
+        partial,
+        claims("sub-partial", "partial@example.com"),
+    )
+    .await?;
+    assert_eq!(
+        outcome(&resp),
+        "failed",
+        "a partial grant is not a reconnect"
+    );
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox)
+        .await?
+        .ok_or("mailbox")?;
+    assert_eq!(
+        stored.record.status,
+        MailboxStatus::NeedsSignIn,
+        "the mailbox stays needing sign-in"
+    );
+    assert!(
+        stored.record.refresh_token.is_none(),
+        "the partial grant is dropped"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ST-03 AC1: `link` cannot be used to clear a consent block, the way the
+// `reconnect` guard forbids. Linking the caller's own `consent_blocked`
+// mailbox again is refused and the block stands (T-601a security review F2).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn st_03_ac1_link_cannot_clear_a_consent_block() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let mailbox = seed_mailbox(
+        &fakes,
+        a.user,
+        "sub-blocked",
+        "blocked@example.com",
+        true,
+        MailboxStatus::ConsentBlocked,
+    )
+    .await?;
+    let (_, outcome) = link(&router, &fakes, &a, "sub-blocked", "blocked@example.com").await?;
+    assert_eq!(
+        outcome, "failed",
+        "a link cannot clear the caller's own consent block"
+    );
+    let stored = fakes
+        .store
+        .mailboxes()
+        .get(&mailbox)
+        .await?
+        .ok_or("mailbox")?;
+    assert_eq!(
+        stored.record.status,
+        MailboxStatus::ConsentBlocked,
+        "the block stands"
+    );
     assert!(
         stored.record.refresh_token.is_none(),
         "the new grant is dropped"

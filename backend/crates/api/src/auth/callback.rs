@@ -487,6 +487,26 @@ async fn finish_link(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCookie>) 
         );
         return (Outcome::Failed, None);
     };
+    // The grant Google actually returned must carry the scopes a Gmail mailbox
+    // needs (S6 4; AU-04 AC5). `include_granted_scopes` and granular consent let
+    // the account untick them, and `store_refresh_token` would otherwise move
+    // the mailbox to `connected` with a grant that can only 403 (T-601a
+    // security review F1).
+    if !has_grant(
+        &ctx.tokens.granted_scopes,
+        adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
+    ) {
+        op_failed("link_missing_grant");
+        event(
+            state,
+            "mailbox_link",
+            "failed",
+            Some(&authed.user),
+            None,
+            ctx.request_id,
+        );
+        return (Outcome::Failed, None);
+    }
     let outcome =
         crate::services::mailbox_link::complete_link(state, &authed, &ctx.claims, refresh)
             .await
@@ -555,6 +575,24 @@ async fn finish_reconnect(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCook
         );
         return (Outcome::Failed, None);
     };
+    // As for `link`: the returned grant must carry the Gmail scopes, or the
+    // reconnect would move the mailbox to `connected` on a partial grant
+    // (T-601a security review F1).
+    if !has_grant(
+        &ctx.tokens.granted_scopes,
+        adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
+    ) {
+        op_failed("reconnect_missing_grant");
+        event(
+            state,
+            "mailbox_reconnect",
+            "failed",
+            Some(&authed.user),
+            None,
+            ctx.request_id,
+        );
+        return (Outcome::Failed, None);
+    }
     let outcome = crate::services::mailbox_link::complete_reconnect(
         state,
         &authed,
