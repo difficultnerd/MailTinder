@@ -5,6 +5,7 @@ pub mod config;
 pub mod error;
 pub mod http;
 pub mod limits;
+pub mod routes;
 pub mod sealed;
 pub mod session;
 pub mod state;
@@ -27,6 +28,13 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/healthz",
     "/api/v1/auth/{provider}/start",
     "/api/v1/auth/{provider}/callback",
+    "/api/v1/invite-requests",
+    "/api/v1/admin/invites",
+    "/api/v1/admin/invites/{invite_id}/resend",
+    "/api/v1/admin/invites/{invite_id}",
+    "/api/v1/admin/invite-requests",
+    "/api/v1/admin/invite-requests/{request_id}/approve",
+    "/api/v1/admin/invite-requests/{request_id}/decline",
 ];
 
 use crate::config::ApiConfig;
@@ -60,6 +68,7 @@ pub fn build_router_with_routes(
             "/api/v1/auth/:provider/callback",
             get(crate::auth::callback::callback_handler),
         )
+        .merge(crate::routes::router())
         .fallback(fallback)
         .layer(CatchPanicLayer::custom(|_| {
             ApiError::Internal.into_response()
@@ -209,10 +218,12 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         ports.clock.clone(),
         config.rate_key.clone(),
     ));
+    let invite_mailer = Arc::clone(&ports.invite_mailer);
     AppState {
         ports,
         config,
         limits,
         tokens: Arc::new(crate::tokens::TokenService::new()),
+        invite_mailer,
     }
 }

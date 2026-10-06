@@ -10,6 +10,7 @@ use crate::app_folder::InMemoryAppFolder;
 use crate::classifier::FakeClassifier;
 use crate::clock::{VirtualClock, T0};
 use crate::egress::FakeHttpEgress;
+use crate::fakes::invite_mailer::FakeInviteMailer;
 use crate::identity::FakeIdentityProvider;
 use crate::keys::{FakeKeyService, FakeSystemKeyService};
 use crate::mailbox::FakeMailbox;
@@ -28,6 +29,7 @@ pub struct Fakes {
     pub scheduler: Arc<FakeJobScheduler>,
     pub egress: Arc<FakeHttpEgress>,
     pub identity: Arc<FakeIdentityProvider>,
+    pub invite_mailer: Arc<FakeInviteMailer>,
     pub app_folder: Arc<InMemoryAppFolder>,
     pub secrets: Arc<FakeSecrets>,
     pub gemini: Arc<FakeClassifier>,
@@ -48,6 +50,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
     let scheduler = Arc::new(FakeJobScheduler::new());
     let egress = Arc::new(FakeHttpEgress::new());
     let identity = Arc::new(FakeIdentityProvider::new());
+    let invite_mailer = Arc::new(FakeInviteMailer::new());
     let app_folder = Arc::new(InMemoryAppFolder::new());
     let secrets = Arc::new(FakeSecrets::with_defaults());
     let gemini = Arc::new(FakeClassifier::new(
@@ -71,6 +74,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
         scheduler: Arc::clone(&scheduler) as Arc<dyn ports::JobScheduler>,
         egress: Arc::clone(&egress) as Arc<dyn ports::HttpEgress>,
         identity: Arc::clone(&identity) as Arc<dyn ports::IdentityProvider>,
+        invite_mailer: Arc::clone(&invite_mailer) as Arc<dyn ports::InviteMailer>,
         models: vec![
             Arc::clone(&gemini) as Arc<dyn ports::Classifier>,
             Arc::clone(&jev) as Arc<dyn ports::Classifier>,
@@ -87,6 +91,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
         scheduler,
         egress,
         identity,
+        invite_mailer,
         app_folder,
         secrets,
         gemini,
