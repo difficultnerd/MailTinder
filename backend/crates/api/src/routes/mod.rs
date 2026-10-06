@@ -16,6 +16,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/session", get(session::get_session))
         .route("/api/v1/mailboxes", get(mailboxes::list_mailboxes))
+        .route(
+            "/api/v1/mailboxes/:mailbox_id",
+            delete(mailboxes::disconnect_mailbox),
+        )
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(

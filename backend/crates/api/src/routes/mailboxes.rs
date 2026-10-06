@@ -4,9 +4,10 @@
 //! address is decrypted for the response only; the refresh token and the
 //! provider subject ID are never returned.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::Json;
-use domain::{MailboxStatus, Provider};
+use domain::{MailboxId, MailboxStatus, Provider};
 use ports::store::aad_fields;
 use ports::Aad;
 use serde::Serialize;
@@ -14,7 +15,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::session::extract::AuthedSession;
+use crate::session::extract::{AuthedSession, SteppedUpUser};
 use crate::state::AppState;
 
 /// One linked mailbox (schema `Mailbox`).
@@ -91,4 +92,27 @@ pub async fn list_mailboxes(
         });
     }
     Ok(Json(MailboxList { mailboxes: out }))
+}
+
+/// `DELETE /api/v1/mailboxes/{mailbox_id}` (API-MBX-2, T-601b; AU-05).
+///
+/// The service does the work in the S7 5.3 order; this handler only parses the
+/// path parameter and turns success into `204`.
+///
+/// # Errors
+///
+/// `ApiError::StepUpRequired` without a fresh sign-in; `NotFound` for a
+/// missing or another user's mailbox; `LastMailbox` for the only one;
+/// `AppFolderMoveFailed` when the primary's app folder cannot move.
+pub async fn disconnect_mailbox(
+    State(app): State<AppState>,
+    SteppedUpUser(session): SteppedUpUser,
+    Path(mailbox_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    // A malformed ID is a missing mailbox: no parse detail leaks (S7 4).
+    let Ok(id) = Uuid::parse_str(&mailbox_id) else {
+        return Err(ApiError::NotFound);
+    };
+    crate::services::mailbox_disconnect::disconnect(&app, &session, &MailboxId::new(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
