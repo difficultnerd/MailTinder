@@ -24,7 +24,8 @@ use crate::state::AppState;
 ///
 /// # Errors
 ///
-/// `UndoExpired` for a token that does not open, `NotFound` when the mailbox is
+/// `UndoExpired` for a token that does not open or that names a swipe which has
+/// already been undone, `NotFound` when the mailbox is
 /// gone, `MailboxNeedsSignIn` or `ProviderError` when the provider refuses the
 /// restore (the token stays valid), `Internal` for a `reject` (T-606) or a
 /// store failure.
@@ -54,25 +55,46 @@ pub async fn undo(
     }
     let plan = plan_undo(&payload.record);
 
-    // Step 3: restore the provider labels first; a failure changes nothing, so
+    // Step 3: the token is single-use. Its swipe record must still be in
+    // `recent_swipes`; a record that is gone means this undo already ran (or
+    // the record aged out), so the answer is `410` and nothing is touched.
+    // Without this a replayed token would reverse later swipes on the same
+    // sender and re-apply a label set the user has since changed.
+    let store = UserStateStore::new(Arc::new(app.clone()));
+    if !store
+        .load(&user)
+        .await?
+        .state
+        .recent_swipes
+        .iter()
+        .any(|r| r.swipe_id == payload.swipe_id)
+    {
+        return Err(ApiError::UndoExpired);
+    }
+
+    // Step 4: restore the provider labels first; a failure changes nothing, so
     // the token stays valid.
     if let Some(exact) = plan.restore_labels.as_ref() {
         restore(app, &user, &payload.record, exact).await?;
     }
 
-    // Step 4: one state write reverses everything this swipe recorded.
-    let store = UserStateStore::new(Arc::new(app.clone()));
+    // Step 5: one state write reverses everything this swipe recorded. The
+    // record is claimed inside that write, so a concurrent second undo makes no
+    // change and also answers `410`.
     let record = payload.record.clone();
     let history_entry = payload.history_entry;
     let skip_key = payload.skip_key.clone();
     let swipe = payload.swipe_id;
-    store
+    let reversed = store
         .update(&user, move |s: &mut UserState| {
-            reverse(&record, history_entry, skip_key.as_deref(), swipe, s);
+            reverse(&record, history_entry, skip_key.as_deref(), swipe, s)
         })
         .await?;
+    if !reversed {
+        return Err(ApiError::UndoExpired);
+    }
 
-    // Step 5: nothing here is a `reject`, so no unsubscribe has ever been sent.
+    // Step 6: nothing here is a `reject`, so no unsubscribe has ever been sent.
     Ok(UndoResponse {
         restored: true,
         unsubscribe_already_sent: false,
@@ -80,13 +102,20 @@ pub async fn undo(
 }
 
 /// Reverse stats, skip bookkeeping, History, totals and the idempotency record.
+///
+/// Returns `false`, and changes nothing, when the swipe record is already gone:
+/// this undo has been performed by an earlier or concurrent call and the token
+/// must not be applied twice.
 fn reverse(
     record: &SwipeRecord,
     history_entry: Option<uuid::Uuid>,
     skip_key: Option<&str>,
     swipe: uuid::Uuid,
     s: &mut UserState,
-) {
+) -> bool {
+    if !s.recent_swipes.iter().any(|r| r.swipe_id == swipe) {
+        return false;
+    }
     if let Some(stats) = s.sender_stats.get_mut(record.sender.as_str()) {
         reverse_stats(record, stats);
     }
@@ -115,6 +144,7 @@ fn reverse(
         SwipeAction::Skip | SwipeAction::Reject => {}
     }
     s.recent_swipes.retain(|r| r.swipe_id != swipe);
+    true
 }
 
 /// The user's wrapped `data_key`, needed to open the undo token.

@@ -623,6 +623,37 @@ async fn sw_05_ac4_undo_walks_back_three_swipes() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn sw_05_ac1_undo_same_token_twice_is_expired() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let id = w.seed(&w.primary, "alice", 10);
+    let before = w.labels_of(&id).ok_or("seeded")?;
+    let result = w
+        .swipe(
+            &session,
+            1,
+            w.request(&session, &id, ActionDto::File, Some("Tax"))
+                .await?,
+        )
+        .await?;
+    assert!(w.undo(&session, &result.undo_token).await?.restored);
+    assert_eq!(w.labels_of(&id).ok_or("still present")?, before);
+    let calls = w.fakes.mailbox.calls(MailOp::RestoreLabels);
+    assert_eq!(calls, 1);
+    // The token is single-use: the replay is refused and touches nothing.
+    let err = w.undo(&session, &result.undo_token).await.unwrap_err();
+    assert_eq!(err, ApiError::UndoExpired);
+    assert_eq!(w.fakes.mailbox.calls(MailOp::RestoreLabels), calls);
+    assert_eq!(w.labels_of(&id).ok_or("still present")?, before);
+    let state = w.state().await?;
+    assert_eq!(state.totals.triaged, 0);
+    assert_eq!(state.totals.cleared, 0);
+    assert!(state.history.is_empty());
+    assert!(state.recent_swipes.is_empty());
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // CL-03 AC4 / V9.2.2 classification token
 // ---------------------------------------------------------------------------
