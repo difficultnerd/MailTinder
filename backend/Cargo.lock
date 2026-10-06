@@ -13,6 +13,7 @@ dependencies = [
  "crc32c",
  "domain",
  "getrandom 0.2.17",
+ "jsonwebtoken",
  "obs",
  "ports",
  "proptest",
@@ -2758,9 +2759,26 @@ dependencies = [
 name = "unsub"
 version = "0.1.0"
 dependencies = [
+ "adapters-gcp",
+ "adapters-gmail",
+ "async-trait",
+ "axum 0.7.9",
  "domain",
+ "egress",
  "obs",
  "ports",
+ "proptest",
+ "serde",
+ "serde_json",
+ "svc-common",
+ "testkit",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

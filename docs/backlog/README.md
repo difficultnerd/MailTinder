@@ -35,6 +35,7 @@ XC-05 (every ASVS Level 2 requirement mapped in S6 has a passing verification be
 | M9 | Classifier bake-off | M6 |
 | M10 | Flutter app screens | T-007, matching API task |
 | M11 | End to end, infrastructure and operations | varies |
+| M12 | Release readiness: whole-codebase review | None (owner-initiated) |
 
 ## Task index
 
@@ -150,5 +151,6 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1105](T-1105-staging-smoke-tests-and-zap.md) | Staging smoke tests and the ZAP baseline | M11 | sonnet | T-301, T-302, T-304, T-1104 |
 | [T-1106](T-1106-nightly-live-gmail-contract-run.md) | Nightly live Gmail contract run | M11 | sonnet | T-203, T-401, T-403, T-1103 |
 | [T-1107](T-1107-budget-monitoring-and-alerts.md) | Budget, monitoring and alerts | M11 | sonnet | T-307, T-1102b, needs S11 |
+| [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.
