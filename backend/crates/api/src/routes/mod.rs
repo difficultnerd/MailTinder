@@ -4,6 +4,7 @@ pub mod feed;
 pub mod invite_requests;
 pub mod invites;
 pub mod mailboxes;
+pub mod needs_attention;
 pub mod progress;
 pub mod session;
 
@@ -24,6 +25,15 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/v1/feed/next", post(feed::next_page_handler))
         .route("/api/v1/progress", get(progress::get_progress))
+        .route("/api/v1/needs-attention", get(needs_attention::list))
+        .route(
+            "/api/v1/needs-attention/:item_id/resolve",
+            post(needs_attention::resolve),
+        )
+        .route(
+            "/api/v1/needs-attention/:item_id/dismiss",
+            post(needs_attention::dismiss),
+        )
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(
