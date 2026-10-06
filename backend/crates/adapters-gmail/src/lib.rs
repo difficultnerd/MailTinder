@@ -33,9 +33,12 @@ mod client;
 mod drive;
 mod errors;
 mod headers;
+pub mod identity;
 mod list_unsubscribe;
 mod modify;
+pub mod pkce;
 mod read;
+pub mod scopes;
 mod send;
 
 pub use client::GmailHttp;
@@ -52,6 +55,10 @@ mod tests {
 
     /// XC-02: callers see only `GmailProvider` and `GmailHttp`; no Gmail wire
     /// type (or the T-405 store, added later) is re-exported from the crate root.
+    ///
+    /// T-502a makes the Google identity modules public (T-502b, T-503, T-504 and
+    /// `svc-common` reach `GoogleIdentity` through them). Those modules hold no
+    /// Gmail wire type, so the rule this test enforces is unchanged.
     #[test]
     fn xc_02_gmail_types_not_public() {
         let lib = include_str!("lib.rs");
@@ -62,6 +69,7 @@ mod tests {
             "INVITE_SUBJECT",
             "INVITE_BODY_TEMPLATE",
         ];
+        let allowed_modules = ["pub mod identity;", "pub mod pkce;", "pub mod scopes;"];
         for line in lib.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("pub use ") {
@@ -77,7 +85,7 @@ mod tests {
                 );
             }
             assert!(
-                !line.starts_with("pub mod "),
+                !line.starts_with("pub mod ") || allowed_modules.contains(&line),
                 "no module may be public: {line}"
             );
         }

@@ -109,6 +109,7 @@ pub const OPS: &[&str] = &[
     "firestore.get",
     "firestore.commit",
     "firestore.run_query",
+    "identity_config_error",
 ];
 
 pub const AMR_VALUES: &[&str] = &[
