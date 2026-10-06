@@ -10,6 +10,7 @@ use crate::app_folder::InMemoryAppFolder;
 use crate::classifier::FakeClassifier;
 use crate::clock::{VirtualClock, T0};
 use crate::egress::FakeHttpEgress;
+use crate::fake_caller::FakeCallerVerifier;
 use crate::fakes::invite_mailer::FakeInviteMailer;
 use crate::identity::FakeIdentityProvider;
 use crate::keys::{FakeKeyService, FakeSystemKeyService};
@@ -35,6 +36,7 @@ pub struct Fakes {
     pub gemini: Arc<FakeClassifier>,
     pub jev: Arc<FakeClassifier>,
     pub mailbox: Arc<FakeMailbox>,
+    pub caller: Arc<FakeCallerVerifier>,
 }
 
 /// Build a `Ports` struct and its `Fakes`. Seed 42, clock at `T0`, gmail is
@@ -62,6 +64,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
         Err(ClassifierError::Disabled),
     ));
     let mailbox = Arc::new(FakeMailbox::new());
+    let caller = Arc::new(FakeCallerVerifier::new());
 
     let ports = Ports {
         clock: Arc::clone(&clock) as Arc<dyn ports::Clock>,
@@ -80,6 +83,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
             Arc::clone(&jev) as Arc<dyn ports::Classifier>,
         ],
         secrets: Arc::clone(&secrets) as Arc<dyn ports::Secrets>,
+        caller: Arc::clone(&caller) as Arc<dyn ports::CallerVerifier>,
     };
 
     let fakes = Fakes {
@@ -97,6 +101,7 @@ pub fn fake_ports() -> (Ports, Fakes) {
         gemini,
         jev,
         mailbox,
+        caller,
     };
 
     (ports, fakes)

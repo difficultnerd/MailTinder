@@ -110,6 +110,7 @@ pub mod samples {
             list_key_hash: list_hash(n),
             method: JobMethod::OneClick,
             target: Some(ct()),
+            sender_display: Some(ct()),
             due_at: now(),
             status: JobStatus::Queued,
             attempts: 0,

@@ -16,5 +16,11 @@
     clippy::module_name_repetitions
 )]
 
+pub mod error;
+pub mod internal_auth;
 pub mod invites;
+pub mod job_record;
 pub mod mint;
+pub mod needs_attention;
+
+pub use error::SvcError;

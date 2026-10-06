@@ -110,6 +110,7 @@ fn job_record() -> JobRecord {
         list_key_hash: list_hash(),
         method: JobMethod::OneClick,
         target: Some(ciphertext()),
+        sender_display: Some(ciphertext()),
         due_at: now(),
         status: JobStatus::Queued,
         attempts: 0,
@@ -328,6 +329,34 @@ fn job_1_job_record_has_no_access_token_field() {
             "job record has a token field `{key}`"
         );
     }
+}
+
+/// S5 `jobs/{id}` field allowlist (T-701 adds `sender_display`).
+#[test]
+fn s5_job_record_fields_match_allowed_schema() {
+    let v = json(&job_record());
+    let mut keys: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("object"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    let expected = [
+        "attempts",
+        "due_at",
+        "expires_at",
+        "job_id",
+        "list_key_hash",
+        "mailbox_id",
+        "method",
+        "outcome",
+        "sender_display",
+        "status",
+        "target",
+        "user_id",
+    ];
+    assert_eq!(keys, expected, "the jobs allowlist changed");
 }
 
 #[test]
