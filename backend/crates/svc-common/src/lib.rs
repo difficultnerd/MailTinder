@@ -16,4 +16,5 @@
     clippy::module_name_repetitions
 )]
 
+pub mod invites;
 pub mod mint;

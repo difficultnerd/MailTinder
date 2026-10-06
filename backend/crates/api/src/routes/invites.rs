@@ -9,23 +9,20 @@
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use domain::{EmailAddress, InviteEvent, InviteState, InviteStatus, Tunables};
 use obs::{Pseudonymiser, SecurityEvent, Sensitive};
 use ports::store::aad_fields;
 use ports::{
-    Ciphertext, InviteId, InviteLink, InviteRecord, PageRequest, Precondition, Sha256Hash,
-    StoreCursor, StoreError, SystemAad,
+    Ciphertext, InviteId, InviteLink, InviteRecord, PageRequest, Precondition, StoreCursor,
+    StoreError, SystemAad,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use svc_common::invites::{upsert_pending_invite, UpsertError, Upserted};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
 
-use crate::auth::email_key::email_lookup_hash;
 use crate::error::ApiError;
 use crate::http::json::{json_ok, ApiJson};
 use crate::http::request_id::RequestId;
@@ -34,10 +31,7 @@ use crate::sealed::{SealedTokens, TokenType};
 use crate::session::extract::{AdminSession, AuthedSession, SteppedUpAdmin};
 use crate::state::AppState;
 
-/// How long an invite link works `[TUNABLE]` (S2 glossary).
-pub const INVITE_TTL: Duration = Duration::days(7);
-/// How long a finished invite record is kept before the sweeper purges it (S5).
-pub const INVITE_PURGE_AFTER: Duration = Duration::days(30);
+pub use svc_common::invites::{INVITE_PURGE_AFTER, INVITE_TTL};
 
 /// Default and largest page size for the admin lists.
 const DEFAULT_LIMIT: u32 = 20;
@@ -92,81 +86,43 @@ pub async fn issue_invite(
     request_id: RequestId,
 ) -> Result<IssueResult, ApiError> {
     let ports = &state.ports;
-    let now = ports.clock.now();
-    let hash = email_lookup_hash(&state.config.email_lookup_key, email);
-    let existing = ports
-        .store
-        .invites()
-        .by_email_lookup(&hash)
-        .await?
-        .into_iter()
-        .find(|v| v.record.status == InviteStatus::Pending);
+    let (record, raw, upserted) = upsert_pending_invite(
+        ports.store.as_ref(),
+        ports.system_keys.as_ref(),
+        &state.config.email_lookup_key,
+        ports.clock.as_ref(),
+        ports.rng.as_ref(),
+        email,
+    )
+    .await
+    .map_err(from_upsert_error)?;
 
-    let raw = URL_SAFE_NO_PAD.encode(ports.rng.bytes32());
-    let token_hash = hash_token(&raw);
-    let expires_at = now + INVITE_TTL;
-    let purge_at = expires_at + INVITE_PURGE_AFTER;
-
-    let (record, resent) = if let Some(found) = existing {
-        let mut record = found.record;
-        record.token_hash = token_hash;
-        record.last_sent_at = now;
-        record.expires_at = expires_at;
-        record.purge_at = purge_at;
-        ports
-            .store
-            .invites()
-            .put(&record, Precondition::Matches(found.version))
-            .await?;
-        (record, true)
-    } else {
-        let invite_id = InviteId(ports.rng.uuid_v4());
-        let sealed = ports
-            .system_keys
-            .seal(
-                &SystemAad {
-                    scope: invite_id.0.to_string(),
-                    field: aad_fields::INVITE_EMAIL,
-                },
-                email.as_str().as_bytes(),
-            )
-            .await
-            .map_err(|_| ApiError::Internal)?;
-        let record = InviteRecord {
-            invite_id,
-            email_address: Ciphertext(sealed),
-            email_lookup: hash,
-            token_hash,
-            status: InviteStatus::Pending,
-            created_at: now,
-            last_sent_at: now,
-            expires_at,
-            purge_at,
-        };
-        ports
-            .store
-            .invites()
-            .put(&record, Precondition::MustNotExist)
-            .await?;
-        (record, false)
-    };
-
-    send(state, admin, email, &raw).await?;
-    drop(raw);
+    send(state, admin, email, raw.expose()).await?;
+    // The raw token is dropped with `raw` here; only the emailed link carries it.
 
     security_event(
         state,
         "invite_create",
-        if resent { "resent" } else { "created" },
+        match upserted {
+            Upserted::Created => "created",
+            Upserted::Resent => "resent",
+        },
         Some(admin),
         request_id,
     );
-    let dto = to_dto(&record, email.as_str(), now)?;
-    Ok(if resent {
-        IssueResult::Resent(dto)
-    } else {
-        IssueResult::Created(dto)
+    let dto = to_dto(&record, email.as_str(), ports.clock.now())?;
+    Ok(match upserted {
+        Upserted::Created => IssueResult::Created(dto),
+        Upserted::Resent => IssueResult::Resent(dto),
     })
+}
+
+/// Map the shared invite creation error onto the route's `ApiError` (S7 4).
+fn from_upsert_error(error: UpsertError) -> ApiError {
+    match error {
+        UpsertError::Store(e) => e.into(),
+        UpsertError::Key(_) => ApiError::Internal,
+    }
 }
 
 /// `GET /admin/invites?status&cursor&limit` (API-ADM-1).
@@ -501,15 +457,6 @@ pub(crate) fn security_event(
         provider: None,
         method: None,
     });
-}
-
-/// SHA-256 of the 43-character token string, exactly as the redemption path
-/// hashes the presented token.
-fn hash_token(raw: &str) -> Sha256Hash {
-    let digest = Sha256::digest(raw.as_bytes());
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    Sha256Hash(out)
 }
 
 /// A stored `pending` invite past its expiry is shown as `expired`.
