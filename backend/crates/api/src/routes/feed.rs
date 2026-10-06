@@ -104,8 +104,11 @@ pub struct SuggestionDto {
     pub confidence: &'static str,
 }
 
-/// Keep prompt; T-607b fills it, so this task never builds one.
-#[derive(Serialize)]
+/// Keep prompt; T-607b fills it, so this task never builds one. The category
+/// reference shared by the Feed and Swipe responses (schema `CategoryRef`);
+/// `Deserialize` so the swipe response can be stored and rebuilt verbatim for
+/// an idempotent retry (T-604).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CategoryRefDto {
     pub category_id: Uuid,
     pub name: String,
