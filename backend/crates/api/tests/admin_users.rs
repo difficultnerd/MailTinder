@@ -262,6 +262,8 @@ async fn seed_queued_job(
                 list_key_hash: ListKeyHash([0u8; 32]),
                 method: JobMethod::Mailto,
                 target: None,
+                // Added by T-605/T-701 on main; absent for this plain job.
+                sender_display: None,
                 due_at: now,
                 status: JobStatus::Queued,
                 attempts: 0,
