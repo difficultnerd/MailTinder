@@ -14,6 +14,7 @@
 )]
 
 pub mod address;
+pub mod bakeoff;
 mod class;
 mod error;
 pub mod feed;
