@@ -73,8 +73,8 @@ pub fn swipe_id(user: &UserId, idempotency_key: Uuid) -> Uuid {
 /// `InvalidRequest` for a malformed body or classification token, `NotFound`
 /// for a mailbox that is not the user's, `MessageChanged` when the message has
 /// moved, `MailboxNeedsSignIn` when a mailbox grant is gone, `ProviderError` or
-/// `ProviderUnavailable` from a provider, `Internal` for a rejected swipe
-/// (T-605) or a store failure.
+/// `ProviderUnavailable` from a provider, `RateLimited` for a reject over the
+/// daily job limit, `Internal` for a store failure.
 pub async fn swipe(
     app: &AppState,
     session: &AuthedSession,
@@ -153,9 +153,10 @@ pub async fn swipe(
         tunables: &tunables,
     });
 
-    // Step 7: `reject` belongs to T-605.
+    // Step 7: `reject` is carried out by T-605 and returns before the
+    // keep, skip and file path below.
     if action == SwipeAction::Reject {
-        return Err(ApiError::Internal);
+        return crate::services::reject::execute(app, session, &ctx, &meta, &plan, sid).await;
     }
 
     // Steps 8 and 9: `keep` and `skip` make no provider call; `file` labels.
@@ -226,7 +227,7 @@ fn swipe_action(action: ActionDto, category: Option<&Category>) -> SwipeAction {
 }
 
 /// The user's wrapped `data_key`, needed to seal the undo token.
-async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
+pub(crate) async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
     app.ports
         .store
         .users()
@@ -321,7 +322,10 @@ async fn fresh_message(
 }
 
 /// The provider behind a mailbox record.
-async fn provider_of(app: &AppState, mailbox: &MailboxId) -> Result<domain::Provider, ApiError> {
+pub(crate) async fn provider_of(
+    app: &AppState,
+    mailbox: &MailboxId,
+) -> Result<domain::Provider, ApiError> {
     let record = app
         .ports
         .store
@@ -399,17 +403,17 @@ fn undo_payload(
 }
 
 /// The sealing inputs shared by the response and the retry path.
-struct SealCtx<'a> {
-    sealer: &'a SealedTokens,
-    session: &'a AuthedSession,
-    user: &'a UserId,
-    wrapped: &'a WrappedKey,
-    expires_at: OffsetDateTime,
+pub(crate) struct SealCtx<'a> {
+    pub(crate) sealer: &'a SealedTokens,
+    pub(crate) session: &'a AuthedSession,
+    pub(crate) user: &'a UserId,
+    pub(crate) wrapped: &'a WrappedKey,
+    pub(crate) expires_at: OffsetDateTime,
 }
 
 impl SealCtx<'_> {
     /// Seal an undo payload for the current session and expiry.
-    async fn seal_undo(&self, undo: &UndoPayload) -> Result<String, ApiError> {
+    pub(crate) async fn seal_undo(&self, undo: &UndoPayload) -> Result<String, ApiError> {
         self.sealer
             .seal(
                 TokenType::Undo,
@@ -447,7 +451,7 @@ async fn build_result(
 }
 
 /// The serialised idempotency record for one swipe.
-fn stored_json(result: &SwipeResultDto, undo: &UndoPayload) -> Result<String, ApiError> {
+pub(crate) fn stored_json(result: &SwipeResultDto, undo: &UndoPayload) -> Result<String, ApiError> {
     serde_json::to_string(&StoredSwipe {
         result: result.clone(),
         undo: undo.clone(),
@@ -536,7 +540,7 @@ async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<()
 }
 
 /// Map a seal failure: a down key service is `503`, anything else `Internal`.
-fn seal_error(e: TokenError) -> ApiError {
+pub(crate) fn seal_error(e: TokenError) -> ApiError {
     if e == TokenError::Unavailable {
         ApiError::ProviderUnavailable {
             mailbox_id: None,
