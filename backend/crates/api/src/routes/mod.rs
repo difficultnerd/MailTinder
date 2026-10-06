@@ -1,5 +1,6 @@
 //! Route handlers, one module per feature area.
 
+pub mod admin_users;
 pub mod feed;
 pub mod invite_requests;
 pub mod invites;
@@ -43,5 +44,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/admin/invite-requests/:request_id/decline",
             post(invite_requests::decline),
+        )
+        .route("/api/v1/admin/users", get(admin_users::list))
+        .route(
+            "/api/v1/admin/users/:user_id/sessions",
+            delete(admin_users::end),
         )
 }
