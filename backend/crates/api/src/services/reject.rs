@@ -310,6 +310,16 @@ async fn queue_job(
     )
     .await
     .map_err(|_| unavailable())?;
+    let sender_display = seal_field(
+        app,
+        user,
+        wrapped,
+        scope,
+        aad_fields::JOB_SENDER_DISPLAY,
+        &meta.from_display,
+    )
+    .await
+    .map_err(|_| unavailable())?;
     let state = JobState::new_queued(unsub.due_at, tunables);
     let key = HmacKey(app.config.email_lookup_key.clone());
     let record = JobRecord {
@@ -319,6 +329,7 @@ async fn queue_job(
         list_key_hash: list_key_hash(&key, &meta.sender, meta.facts.list_id.as_deref()),
         method: unsub.method,
         target: Some(target),
+        sender_display: Some(sender_display),
         due_at: unsub.due_at,
         status: JobStatus::Queued,
         attempts: 0,

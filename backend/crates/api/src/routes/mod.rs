@@ -1,5 +1,6 @@
 //! Route handlers, one module per feature area.
 
+pub mod categories;
 pub mod feed;
 pub mod invite_requests;
 pub mod invites;
@@ -9,7 +10,7 @@ pub mod progress;
 pub mod session;
 pub mod swipes;
 
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 
 use crate::state::AppState;
@@ -39,6 +40,21 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/needs-attention/:item_id/dismiss",
             post(needs_attention::dismiss),
+        )
+        // API-CAT-1 to API-CAT-5 (T-607a). Reads and writes use the default
+        // rate limits through `default_limit_layer`, and the writes are
+        // CSRF-checked by `csrf_layer` like every other `/api/v1` route.
+        .route(
+            "/api/v1/categories",
+            get(categories::list).post(categories::create),
+        )
+        .route(
+            "/api/v1/categories/:category_id",
+            patch(categories::rename).delete(categories::delete),
+        )
+        .route(
+            "/api/v1/categories/:category_id/messages",
+            get(categories::messages),
         )
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
