@@ -215,8 +215,9 @@ async fn after_state(
     let (outcome, login_cookie) = match intent {
         AuthIntent::SignIn => finish_sign_in(&context).await,
         AuthIntent::Join => finish_join(&context).await,
-        // T-601a (`link`, `reconnect`) and T-504 (`step_up`) are later tasks.
-        AuthIntent::Link | AuthIntent::Reconnect | AuthIntent::StepUp => (Outcome::Failed, None),
+        AuthIntent::StepUp => crate::auth::step_up::finish_step_up(&context).await,
+        // T-601a (`link`, `reconnect`) is a later task.
+        AuthIntent::Link | AuthIntent::Reconnect => (Outcome::Failed, None),
     };
     if !outcome.keeps_tokens() {
         discard_tokens(state, &context.tokens, sub_is_linked).await;

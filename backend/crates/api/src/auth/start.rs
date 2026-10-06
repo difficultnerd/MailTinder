@@ -15,7 +15,7 @@ use crate::http::client_ip::client_ip;
 use crate::http::json::{json_ok, ApiJson};
 use crate::http::request_id::RequestId;
 use crate::limits::{policies, LimitSubject};
-use crate::session::extract::AnySession;
+use crate::session::extract::{AnySession, AuthedSession};
 use crate::session::pre_auth::{seal_pre_auth, PreAuthPlain};
 use crate::session::store::{LoadedSession, NewCookie, SessionService};
 use crate::state::AppState;
@@ -167,6 +167,19 @@ pub async fn start_handler(
     let state_kind = session.0.record.record.state;
     validate_intent(intent, state_kind)?;
 
+    // `step_up` (T-504): a fresh Google sign-in for a sensitive action. The
+    // session stays authenticated; the hint is the primary mailbox.
+    if intent == AuthIntent::StepUp {
+        let authed = AuthedSession::load(&state, &session.0).await?;
+        let (body, cookie) =
+            crate::auth::step_up::start_step_up(&state, &session.0, &authed).await?;
+        let mut response = json_ok(StatusCode::OK, &body);
+        if let Some(cookie) = cookie {
+            response.headers_mut().insert(header::SET_COOKIE, cookie.0);
+        }
+        return Ok(response);
+    }
+
     let invite_token_hash = if let Some(token) = body.invite_token.as_deref() {
         if intent != AuthIntent::Join {
             return Err(invalid_request("invite_token"));
@@ -188,7 +201,7 @@ pub async fn start_handler(
             adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
             Some(Prompt::Consent),
         ),
-        // Delegated to T-601a (`link`, `reconnect`) and T-504 (`step_up`).
+        // Delegated to T-601a (`link`, `reconnect`). `step_up` is handled above.
         AuthIntent::Link | AuthIntent::Reconnect | AuthIntent::StepUp => {
             return Err(invalid_request("intent"));
         }

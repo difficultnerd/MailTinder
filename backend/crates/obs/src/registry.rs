@@ -71,6 +71,9 @@ pub const OUTCOMES: &[&str] = &[
     "linked",
     "reconnected",
     "stepped_up",
+    // Step-up outcomes (T-504).
+    "wrong_account",
+    "stale_auth_time",
     "not_invited",
     "not_registered",
     "invite_invalid",

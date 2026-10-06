@@ -37,6 +37,14 @@ pub struct AuthedSession {
 /// An authenticated admin; `403` plus an `authz_failure` event otherwise.
 pub struct AdminSession(pub AuthedSession);
 
+/// An authenticated session with a fresh Google sign-in inside the step-up
+/// window (S7 3.6, T-504).
+pub struct SteppedUpUser(pub AuthedSession);
+
+/// An authenticated admin with a fresh Google sign-in. The admin check runs
+/// first, so a non-admin learns nothing about step-up state (T-504).
+pub struct SteppedUpAdmin(pub AuthedSession);
+
 /// A session awaiting an invite request's approval; `401` otherwise.
 pub struct PendingInviteSession {
     /// The loaded session record.
@@ -91,15 +99,15 @@ impl FromRequestParts<AppState> for PendingInviteSession {
     }
 }
 
-#[async_trait]
-impl FromRequestParts<AppState> for AuthedSession {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let session = loaded(parts)?;
+impl AuthedSession {
+    /// Build from an already loaded session: `401` unless it is authenticated
+    /// and its user still exists (S7 3.2).
+    ///
+    /// # Errors
+    ///
+    /// `ApiError::Unauthenticated` when the session is not authenticated or its
+    /// user is gone; `ApiError::Internal` on a store failure.
+    pub async fn load(state: &AppState, session: &LoadedSession) -> Result<Self, ApiError> {
         if session.record.record.state != SessionState::Authenticated {
             return Err(ApiError::Unauthenticated);
         }
@@ -116,6 +124,49 @@ impl FromRequestParts<AppState> for AuthedSession {
             recent_auth_at: session.record.record.recent_auth_at,
             session_hash: session.record.record.session_hash,
         })
+    }
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for AuthedSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = loaded(parts)?;
+        Self::load(state, &session).await
+    }
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for SteppedUpUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let inner = AuthedSession::from_request_parts(parts, state).await?;
+        crate::auth::step_up::require_step_up(&inner, state.ports.clock.as_ref())?;
+        Ok(Self(inner))
+    }
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for SteppedUpAdmin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        // The admin check runs first: a non-admin gets `403 forbidden`, never
+        // `step_up_required` (T-504).
+        let admin = AdminSession::from_request_parts(parts, state).await?;
+        crate::auth::step_up::require_step_up(&admin.0, state.ports.clock.as_ref())?;
+        Ok(Self(admin.0))
     }
 }
 
