@@ -64,6 +64,22 @@ fn install_panic_hook(service: &'static str, sink: Arc<dyn LogSink>, clock: Arc<
     }));
 }
 
+/// Set once, process-wide: a no-op subscriber so that no callsite is ever
+/// registered while *no* subscriber is current.
+///
+/// `tracing` keeps one process-global "interest" cache per callsite. A
+/// `#[tokio::test]` binary runs its tests in parallel, and a callsite first
+/// seen on a thread with no default dispatcher is cached as disabled, so a
+/// later scoped [`capture`] on another thread silently misses every event
+/// from that callsite. Installing a global subscriber up front keeps the
+/// callsites enabled; the scoped capture still shadows it on its own thread.
+fn ensure_global_default() {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
+}
+
 /// For tests: a scoped subscriber on the current thread. Returns the capture
 /// sink and a guard that restores the previous subscriber when dropped.
 #[must_use]
@@ -71,6 +87,7 @@ pub fn capture(
     service: &'static str,
     clock: Arc<dyn Clock>,
 ) -> (CaptureSink, tracing::subscriber::DefaultGuard) {
+    ensure_global_default();
     let sink = CaptureSink::default();
     let subscriber = tracing_subscriber::registry().with(AllowlistJsonLayer::new(
         service,
