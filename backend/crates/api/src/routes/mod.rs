@@ -1,5 +1,6 @@
 //! Route handlers, one module per feature area.
 
+pub mod feed;
 pub mod invite_requests;
 pub mod invites;
 pub mod mailboxes;
@@ -20,6 +21,7 @@ pub fn router() -> Router<AppState> {
             "/api/v1/mailboxes/:mailbox_id",
             delete(mailboxes::disconnect_mailbox),
         )
+        .route("/api/v1/feed/next", post(feed::next_page_handler))
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(

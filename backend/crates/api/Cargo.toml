@@ -28,6 +28,7 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 async-trait = "0.1"
+futures = "0.3"
 
 [dev-dependencies]
 testkit.workspace = true
