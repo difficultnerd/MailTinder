@@ -561,6 +561,47 @@ async fn asvs_v8_2_2_other_users_item_returns_404() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// ASVS V16.3.2: the refusal on another user's item is logged (security-review
+// F1). The event names the action and carries no item ID.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn asvs_v16_3_2_other_users_item_refusal_logged() -> TestResult {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let a = authed(&state, &fakes).await?;
+    let b = authed(&state, &fakes).await?;
+    let now = fakes.clock.now();
+    let item = seed_item(
+        &fakes,
+        a.user,
+        "A's sender",
+        None,
+        NeedsAttentionReason::UnsubscribeFailed,
+        now,
+        now + RETAIN,
+    )
+    .await?;
+
+    let clock = obs::arc(obs::FixedClock(fakes.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let resp = post_item(&router, &b, item.0, "dismiss").await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let text = capture.text();
+    assert!(
+        text.contains("authz_failure"),
+        "a foreign-item refusal is logged as authz_failure: {text}"
+    );
+    assert!(
+        !text.contains(&item.0.to_string()),
+        "the log line carries no item ID: {text}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ASVS V1.2.2: only https links leave the server.
 // ---------------------------------------------------------------------------
 
