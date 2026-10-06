@@ -24,11 +24,14 @@ jobs:
   # them off pull_request would leave every pull request permanently
   # unmergeable ("Expected - Waiting for status to be reported").
   #
-  # GitHub bills each job rounded up to a whole runner minute, so this
-  # workflow costs a minimum of five runner minutes on every trigger no matter
-  # how fast the individual jobs are. Cutting that means merging jobs into
-  # fewer ones, which changes the check names and therefore has to be done
-  # together with an update to the required status checks in branch protection.
+  # They stay split into five jobs rather than merged into one because branch
+  # protection keys on the check NAME: collapsing them would change the names
+  # and silently drop the gates out of the required set unless branch
+  # protection were updated in the same change.
+  #
+  # Cost: this repository is public, so standard-runner minutes are not billed.
+  # The check-integrity job at the bottom of this file is what stops any of
+  # these five from being skipped and still reading as a pass.
   gitleaks:
     runs-on: ubuntu-latest
     steps:
@@ -91,3 +94,29 @@ jobs:
       - run: flutter pub get
         working-directory: app
       - run: python3 tools/dart_license_check.py
+
+  # Integrity guard, as in ci.yml: a skipped required check reads as a pass in
+  # branch protection, so this job is required and fails unless all five gates
+  # actually ran and succeeded.
+  check-integrity:
+    runs-on: ubuntu-latest
+    needs: [gitleaks, semgrep, cargo-audit, cargo-deny, dart-licenses]
+    if: always()
+    steps:
+      - name: Assert every expected gate ran and passed
+        run: |
+          fail=0
+          report() {
+            if [ "$2" = "success" ]; then
+              echo "OK   $1"
+            else
+              echo "FAIL $1 -> $2 (a skipped or cancelled gate is not a pass)"
+              fail=1
+            fi
+          }
+          report gitleaks      "${{ needs.gitleaks.result }}"
+          report semgrep       "${{ needs.semgrep.result }}"
+          report cargo-audit   "${{ needs.cargo-audit.result }}"
+          report cargo-deny    "${{ needs.cargo-deny.result }}"
+          report dart-licenses "${{ needs.dart-licenses.result }}"
+          exit $fail
