@@ -356,7 +356,21 @@ pub async fn finish_join(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCooki
     let Some(versioned) = found else {
         return (Outcome::InviteInvalid, None);
     };
-    // Claim the invite first, so it cannot be used twice (V2.3.4).
+    // Check the grant and the scopes BEFORE claiming the invite, so a granular
+    // consent refresh or a missing refresh token does not burn a single-use
+    // invite that only an admin can reissue (security review F1).
+    let Some(refresh) = ctx.tokens.refresh_token.as_ref() else {
+        op_failed("join_missing_grant");
+        return (Outcome::Failed, None);
+    };
+    if !has_grant(
+        &ctx.tokens.granted_scopes,
+        adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
+    ) {
+        op_failed("join_missing_grant");
+        return (Outcome::Failed, None);
+    }
+    // Claim the invite, so it cannot be used twice (V2.3.4).
     let mut claimed = versioned.record.clone();
     claimed.status = InviteStatus::Used;
     match state
@@ -370,20 +384,18 @@ pub async fn finish_join(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCooki
         Err(StoreError::PreconditionFailed) => return (Outcome::InviteInvalid, None),
         Err(_) => return (Outcome::Failed, None),
     }
-    let Some(refresh) = ctx.tokens.refresh_token.as_ref() else {
-        op_failed("join_missing_grant");
-        return (Outcome::Failed, None);
-    };
-    if !has_grant(
-        &ctx.tokens.granted_scopes,
-        adapters_gmail::scopes::GMAIL_SCOPES.as_slice(),
-    ) {
-        op_failed("join_missing_grant");
-        return (Outcome::Failed, None);
-    }
+    // Every failure from here on puts the invite back to `Pending`: it has
+    // already been claimed, and leaving it `Used` strands the invitee
+    // (security review F1).
     let created = match create_user_and_mailbox(ctx, &sub, &email, refresh, now).await {
-        None => return (Outcome::Failed, None),
-        Some(Created::LinkedElsewhere) => return (Outcome::MailboxLinkedElsewhere, None),
+        None => {
+            unclaim_invite(state, &claimed).await;
+            return (Outcome::Failed, None);
+        }
+        Some(Created::LinkedElsewhere) => {
+            unclaim_invite(state, &claimed).await;
+            return (Outcome::MailboxLinkedElsewhere, None);
+        }
         Some(Created::Created(user, mailbox_id)) => (user, mailbox_id),
     };
     let (user, mailbox_id) = created;
@@ -391,6 +403,7 @@ pub async fn finish_join(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCooki
         .establish(Some(&ctx.session), &user, ctx.claims.auth_time)
         .await
     else {
+        unclaim_invite(state, &claimed).await;
         return (Outcome::Failed, None);
     };
     event(
@@ -488,12 +501,15 @@ async fn finish_link(ctx: &CallbackContext<'_>) -> (Outcome, Option<NewCookie>) 
     );
     match outcome.outcome() {
         Outcome::Linked => {
-            // A `link` callback also sets `recent_auth_at` (S7 3.6) and rotates
-            // the session ID (S7 3.2).
-            let now = state.ports.clock.now();
+            // The session ID rotates (S7 3.2), but `recent_auth_at` is
+            // deliberately left alone. The ID token that proved this link is a
+            // fresh authentication of the Google account that was linked, not
+            // of the user (security review F1), so a `link` must never extend
+            // the step-up window. Otherwise a caller holding a stolen session
+            // could renew the window forever by linking new accounts of their
+            // own.
             let rotated = SessionService::new(state)
                 .rotate(&ctx.session, move |record| {
-                    record.recent_auth_at = Some(now);
                     record.pre_auth = None;
                 })
                 .await;
@@ -693,6 +709,27 @@ fn has_grant(granted: &[String], required: &[&str]) -> bool {
     required
         .iter()
         .all(|scope| granted.iter().any(|given| given == scope))
+}
+
+/// Put a claimed invite back to `Pending` after a later join step failed, so a
+/// single-use invite is not burned by a partial-consent refresh or a transient
+/// failure (security review F1). Best effort: the record is re-read, and a
+/// record that is no longer `Used` (or is gone) is left alone.
+async fn unclaim_invite(state: &AppState, claimed: &InviteRecord) {
+    let Ok(Some(current)) = state.ports.store.invites().get(&claimed.invite_id).await else {
+        return;
+    };
+    if current.record.status != InviteStatus::Used {
+        return;
+    }
+    let mut record = current.record;
+    record.status = InviteStatus::Pending;
+    let _ = state
+        .ports
+        .store
+        .invites()
+        .put(&record, Precondition::Matches(current.version))
+        .await;
 }
 
 fn invite_state(record: &InviteRecord) -> InviteState {

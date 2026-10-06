@@ -465,7 +465,8 @@ async fn au_04_ac2_three_mailboxes_listed_with_addresses() -> Result<(), Box<dyn
     let router = build_router(state.clone());
     let a = authed(&state, &fakes).await?;
     let (cookie, _) = link(&router, &fakes, &a, "sub-1", "one@example.com").await?;
-    // The link sets `recent_auth_at`, so the next link needs no fresh step-up.
+    // The session's sign-in is 10 s old, so the window is still open for the
+    // next link (a link itself no longer renews it; security review F1).
     let (cookie, _) = link2(&router, &fakes, &cookie, "sub-2", "two@example.com").await?;
     let (cookie, _) = link2(&router, &fakes, &cookie, "sub-3", "three@example.com").await?;
     assert_eq!(count(&fakes, "mailboxes"), 3);
@@ -608,6 +609,64 @@ async fn au_04_ac6_link_without_step_up_refused() -> Result<(), Box<dyn std::err
     assert!(
         loaded.record.record.pre_auth.is_none(),
         "no OAuth state is written on a refused link"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AU-04 AC6 / S7 3.6: a successful `link` rotates the session ID but must not
+// renew `recent_auth_at` (security review F1): the ID token proves the account
+// being linked, not the user, so a link can never extend the step-up window.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn au_04_ac6_link_does_not_extend_the_step_up_window(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, fakes) = fixture()?;
+    let router = build_router(state.clone());
+    let user = seed_user(&fakes, false).await?;
+    // A fresh sign-in 295 s ago: inside the 300 s window, 5 s from lapsing.
+    let signed_in_at = fakes.clock.now() - Duration::seconds(295);
+    let (cookie, record) = SessionService::new(&state)
+        .establish(None, &user, Some(signed_in_at))
+        .await?;
+    let cookie = cookie_value(&cookie.0)?;
+    // The link itself is allowed: the window is still open at the start.
+    let (rotated, oauth_state) =
+        begin(&router, &cookie, &record.record.csrf_token, link_body()).await?;
+    let resp = callback(
+        &router,
+        &fakes,
+        &rotated,
+        &oauth_state,
+        claims("sub-window", "window@example.com"),
+    )
+    .await?;
+    assert_eq!(outcome(&resp), "linked");
+    let new_cookie = set_cookie(&resp).ok_or("rotated cookie")?;
+    assert_ne!(new_cookie, cookie, "the session ID rotates");
+    let after = SessionService::new(&state)
+        .load(&cookie_headers(&new_cookie))
+        .await?
+        .ok_or("session")?;
+    assert_eq!(
+        after.record.record.recent_auth_at,
+        Some(signed_in_at),
+        "a link does not move recent_auth_at"
+    );
+    // Six seconds later the window from the original sign-in has lapsed, and
+    // the link did not renew it.
+    fakes.clock.advance(Duration::seconds(6));
+    let resp = call(
+        &router,
+        Method::GET,
+        "/api/v1/session",
+        &[("cookie", new_cookie.as_str())],
+    )
+    .await?;
+    let json: serde_json::Value = serde_json::from_str(&body_string(resp).await?)?;
+    assert!(
+        json["step_up_valid_until"].is_null(),
+        "the link did not renew the lapsed step-up window"
     );
     Ok(())
 }
