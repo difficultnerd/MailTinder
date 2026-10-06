@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use domain::{LabelSet, MessageId};
-use ports::{ListOrder, MailProvider, MailboxCtx, MessagePage, PageToken};
+use ports::{ListOrder, MailProvider, MailboxCtx, MessagePage, MessageQuery, PageToken};
 
 use crate::mailbox::{state::SeedMessage, SentRecord};
 
@@ -160,9 +160,18 @@ where
                 return Err("trashed message still listed".into());
             }
         }
+
+        // T-602a: typed queries over the inbox and date bounds.
+        list_messages_inbox_and_dates(&make().await).await?;
     }
 
     if groups.modify {
+        // T-602a: typed queries, counts and label changes.
+        list_messages_label_and_sender(&make().await).await?;
+        count_messages_label_exact(&make().await).await?;
+        rename_label_cases(&make().await).await?;
+        remove_label_keeps_messages(&make().await).await?;
+
         // trash then restore_labels(before) gives back exactly that set.
         {
             let t = make().await;
@@ -231,4 +240,292 @@ where
     Ok(())
 }
 
+/// The subjects of a page, in order.
+fn subjects(page: &MessagePage) -> Vec<&str> {
+    page.items.iter().map(|m| m.subject.as_str()).collect()
+}
+
+fn date(secs: i64) -> time::OffsetDateTime {
+    time::OffsetDateTime::from_unix_timestamp(secs).unwrap_or_else(|_| panic!("date"))
+}
+
+async fn list(t: &MailTarget, q: &MessageQuery) -> Result<MessagePage, String> {
+    t.provider
+        .list_messages(&t.ctx, q, None, 100)
+        .await
+        .map_err(|e| format!("list_messages: {e:?}"))
+}
+
+fn expect_subjects(what: &str, page: &MessagePage, want: &[&str]) -> Result<(), String> {
+    let got = subjects(page);
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!("{what}: got {got:?}, want {want:?}"))
+    }
+}
+
+/// XC-02: `list_messages` filters by inbox and date bounds, newest first, and
+/// pages with a token. `t` is a fresh, empty mailbox.
+///
+/// # Errors
+///
+/// Returns `Err` describing the first wrong result.
+pub async fn list_messages_inbox_and_dates(t: &MailTarget) -> Result<(), String> {
+    let _ = t.seeder.seed(&seed("a", "old", 100, &["INBOX"])).await?;
+    let _ = t.seeder.seed(&seed("b", "new", 300, &["INBOX"])).await?;
+    let _ = t.seeder.seed(&seed("c", "mid", 200, &["INBOX"])).await?;
+    let _ = t
+        .seeder
+        .seed(&seed("d", "archived", 250, &["UNREAD"]))
+        .await?;
+
+    let inbox = MessageQuery {
+        in_inbox: true,
+        ..MessageQuery::default()
+    };
+    expect_subjects("inbox", &list(t, &inbox).await?, &["new", "mid", "old"])?;
+
+    let after = MessageQuery {
+        after: Some(date(100)),
+        ..inbox.clone()
+    };
+    expect_subjects("after is strict", &list(t, &after).await?, &["new", "mid"])?;
+
+    let before = MessageQuery {
+        before: Some(date(300)),
+        ..inbox.clone()
+    };
+    expect_subjects(
+        "before is strict",
+        &list(t, &before).await?,
+        &["mid", "old"],
+    )?;
+
+    let both = MessageQuery {
+        after: Some(date(100)),
+        before: Some(date(300)),
+        ..inbox
+    };
+    expect_subjects("after and before", &list(t, &both).await?, &["mid"])?;
+
+    // Paging: one at a time, newest first, no duplicates.
+    let all = MessageQuery {
+        in_inbox: true,
+        ..MessageQuery::default()
+    };
+    let mut seen = Vec::new();
+    let mut token: Option<PageToken> = None;
+    for _ in 0..5 {
+        let page = t
+            .provider
+            .list_messages(&t.ctx, &all, token, 1)
+            .await
+            .map_err(|e| format!("list_messages page: {e:?}"))?;
+        seen.extend(page.items.iter().map(|m| m.subject.clone()));
+        match page.next {
+            Some(n) => token = Some(n),
+            None => break,
+        }
+    }
+    if seen != ["new", "mid", "old"] {
+        return Err(format!("paging walked {seen:?}"));
+    }
+    Ok(())
+}
+
+/// XC-02: `list_messages` filters by label and sender. `t` is a fresh mailbox.
+///
+/// # Errors
+///
+/// Returns `Err` describing the first wrong result.
+pub async fn list_messages_label_and_sender(t: &MailTarget) -> Result<(), String> {
+    let a1 = t.seeder.seed(&seed("alice", "a1", 100, &["INBOX"])).await?;
+    let b1 = t.seeder.seed(&seed("bob", "b1", 200, &["INBOX"])).await?;
+    let _ = t.seeder.seed(&seed("alice", "a2", 300, &["INBOX"])).await?;
+    let label = t
+        .provider
+        .ensure_label(&t.ctx, "Filed")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    let add = LabelSet::from_ids(vec![label.clone()]);
+    for id in [&a1, &b1] {
+        t.provider
+            .set_labels(&t.ctx, id, &add, &LabelSet::new())
+            .await
+            .map_err(|e| format!("set_labels: {e:?}"))?;
+    }
+
+    let by_label = MessageQuery {
+        label: Some(label.clone()),
+        ..MessageQuery::default()
+    };
+    expect_subjects("label", &list(t, &by_label).await?, &["b1", "a1"])?;
+
+    let by_sender = MessageQuery {
+        from: Some("alice@example.com".to_owned()),
+        ..MessageQuery::default()
+    };
+    expect_subjects("sender", &list(t, &by_sender).await?, &["a2", "a1"])?;
+
+    let both = MessageQuery {
+        label: Some(label),
+        from: Some("alice@example.com".to_owned()),
+        ..MessageQuery::default()
+    };
+    expect_subjects("label and sender", &list(t, &both).await?, &["a1"])?;
+    Ok(())
+}
+
+/// XC-02: a label-only count is exact. `t` is a fresh mailbox.
+///
+/// # Errors
+///
+/// Returns `Err` describing the first wrong count.
+pub async fn count_messages_label_exact(t: &MailTarget) -> Result<(), String> {
+    let a = t.seeder.seed(&seed("a", "a", 100, &["INBOX"])).await?;
+    let b = t.seeder.seed(&seed("b", "b", 200, &["INBOX"])).await?;
+    let _ = t.seeder.seed(&seed("c", "c", 300, &["INBOX"])).await?;
+    let label = t
+        .provider
+        .ensure_label(&t.ctx, "Counted")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    let add = LabelSet::from_ids(vec![label.clone()]);
+    for id in [&a, &b] {
+        t.provider
+            .set_labels(&t.ctx, id, &add, &LabelSet::new())
+            .await
+            .map_err(|e| format!("set_labels: {e:?}"))?;
+    }
+    let count = |q: MessageQuery| async move {
+        t.provider
+            .count_messages(&t.ctx, &q)
+            .await
+            .map_err(|e| format!("count_messages: {e:?}"))
+    };
+    let labelled = count(MessageQuery {
+        label: Some(label),
+        ..MessageQuery::default()
+    })
+    .await?;
+    if labelled != 2 {
+        return Err(format!("label count {labelled}, want 2"));
+    }
+    let inbox = count(MessageQuery {
+        in_inbox: true,
+        ..MessageQuery::default()
+    })
+    .await?;
+    if inbox != 3 {
+        return Err(format!("inbox count {inbox}, want 3"));
+    }
+    let ranged = count(MessageQuery {
+        in_inbox: true,
+        after: Some(date(100)),
+        before: Some(date(300)),
+        ..MessageQuery::default()
+    })
+    .await?;
+    if ranged != 1 {
+        return Err(format!("date-range count {ranged}, want 1"));
+    }
+    Ok(())
+}
+
+/// XC-02: `rename_label` renames, refuses a clash with `label_exists` and
+/// reports a missing label as `NotFound`. `t` is a fresh mailbox.
+///
+/// # Errors
+///
+/// Returns `Err` describing the first wrong result.
+pub async fn rename_label_cases(t: &MailTarget) -> Result<(), String> {
+    let old = t
+        .provider
+        .ensure_label(&t.ctx, "Before")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    t.provider
+        .rename_label(&t.ctx, &old, "After")
+        .await
+        .map_err(|e| format!("rename: {e:?}"))?;
+    let again = t
+        .provider
+        .ensure_label(&t.ctx, "After")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    if again != old {
+        return Err("renamed label is not found under its new name".into());
+    }
+    let other = t
+        .provider
+        .ensure_label(&t.ctx, "Other")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    match t.provider.rename_label(&t.ctx, &other, "after").await {
+        Err(ports::MailError::Invalid(reason)) if reason == "label_exists" => {}
+        other => return Err(format!("clash should be label_exists, got {other:?}")),
+    }
+    match t.provider.rename_label(&t.ctx, "Label_9999", "Nope").await {
+        Err(ports::MailError::NotFound) => {}
+        other => return Err(format!("missing label should be NotFound, got {other:?}")),
+    }
+    Ok(())
+}
+
+/// INV-5: `remove_label` removes the label and keeps every message. `t` is a
+/// fresh mailbox.
+///
+/// # Errors
+///
+/// Returns `Err` describing the first wrong result.
+pub async fn remove_label_keeps_messages(t: &MailTarget) -> Result<(), String> {
+    let a = t.seeder.seed(&seed("a", "a", 100, &["INBOX"])).await?;
+    let b = t.seeder.seed(&seed("b", "b", 200, &["INBOX"])).await?;
+    let label = t
+        .provider
+        .ensure_label(&t.ctx, "Doomed")
+        .await
+        .map_err(|e| format!("ensure_label: {e:?}"))?;
+    let add = LabelSet::from_ids(vec![label.clone()]);
+    for id in [&a, &b] {
+        t.provider
+            .set_labels(&t.ctx, id, &add, &LabelSet::new())
+            .await
+            .map_err(|e| format!("set_labels: {e:?}"))?;
+    }
+    t.provider
+        .remove_label(&t.ctx, &label)
+        .await
+        .map_err(|e| format!("remove_label: {e:?}"))?;
+    for id in [&a, &b] {
+        let meta = t
+            .provider
+            .get_meta(&t.ctx, id)
+            .await
+            .map_err(|e| format!("message gone after remove_label: {e:?}"))?;
+        if meta.labels.contains(&label) {
+            return Err("message still carries the removed label".into());
+        }
+        if !meta.labels.contains("INBOX") {
+            return Err("message lost its other labels".into());
+        }
+    }
+    let inbox = t
+        .provider
+        .inbox_count(&t.ctx)
+        .await
+        .map_err(|e| format!("inbox_count: {e:?}"))?;
+    if inbox != 2 {
+        return Err(format!("inbox count {inbox} after remove_label, want 2"));
+    }
+    match t.provider.remove_label(&t.ctx, &label).await {
+        Err(ports::MailError::NotFound) => {}
+        other => return Err(format!("second removal should be NotFound, got {other:?}")),
+    }
+    if t.seeder.permanent_delete_attempts().await? != 0 {
+        return Err("remove_label attempted a permanent delete".into());
+    }
+    Ok(())
+}
 fn _unused(_: &ListOrder) {}

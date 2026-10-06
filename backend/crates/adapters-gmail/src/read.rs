@@ -10,7 +10,8 @@ use domain::text::{html_to_text, sanitise_plain};
 use domain::{LabelSet, MailtoTarget, MessageId, MessageMeta, Provider, SenderKey};
 use futures::StreamExt as _;
 use ports::{
-    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
+    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, MessageQuery, PageToken,
+    ProviderCapabilities,
 };
 use serde::Deserialize;
 use time::OffsetDateTime;
@@ -233,6 +234,37 @@ impl MailProvider for GmailProvider {
 
     async fn send_mailto(&self, mb: &MailboxCtx, to: &MailtoTarget) -> Result<(), MailError> {
         self.send_mailto_target(mb, to).await
+    }
+
+    async fn list_messages(
+        &self,
+        mb: &MailboxCtx,
+        q: &MessageQuery,
+        page: Option<PageToken>,
+        max: u32,
+    ) -> Result<MessagePage, MailError> {
+        self.list_messages_query(mb, q, page, max).await
+    }
+
+    async fn count_messages(&self, mb: &MailboxCtx, q: &MessageQuery) -> Result<u64, MailError> {
+        self.count_messages_query(mb, q).await
+    }
+
+    async fn rename_label(
+        &self,
+        mb: &MailboxCtx,
+        label_id: &str,
+        new_name: &str,
+    ) -> Result<(), MailError> {
+        self.rename_label_named(mb, label_id, new_name).await
+    }
+
+    async fn remove_label(&self, mb: &MailboxCtx, label_id: &str) -> Result<(), MailError> {
+        self.remove_label_by_id(mb, label_id).await
+    }
+
+    fn web_url(&self, mailbox_address: &str, id: &MessageId) -> String {
+        crate::messages::web_url_for(mailbox_address, id)
     }
 }
 

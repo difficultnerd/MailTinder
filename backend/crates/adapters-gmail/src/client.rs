@@ -67,6 +67,34 @@ impl GmailHttp {
             .await
     }
 
+    /// `PATCH` `body` to `path` (relative to the base) and decode the response.
+    pub async fn patch_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        mb: &MailboxCtx,
+        path: &str,
+        query: &[(&str, String)],
+        body: &B,
+    ) -> Result<T, MailError> {
+        let raw = serde_json::to_vec(body).map_err(|_| MailError::Transient)?;
+        self.send(mb, HttpMethod::Patch, path, query, Some(raw))
+            .await
+    }
+
+    /// Send an HTTP DELETE to `path` and ignore the empty success body.
+    ///
+    /// Only the label endpoint uses it; the adapter has no mail removal call.
+    pub async fn remove_empty(&self, mb: &MailboxCtx, path: &str) -> Result<(), MailError> {
+        let url = self.build_url(path, &[]);
+        let response = self
+            .call_raw(mb, HttpMethod::Delete, url, &[], None, None)
+            .await?;
+        if (200..300).contains(&response.status) {
+            Ok(())
+        } else {
+            Err(self.map_response(&response))
+        }
+    }
+
     /// `POST` `path` with no body and decode the JSON response.
     ///
     /// Gmail's `messages.trash` and `messages.untrash` are body-less POSTs.
@@ -270,7 +298,9 @@ fn route_for(path: &str) -> &'static str {
 /// ciphertext, so only the route template and status are ever logged.
 fn route_for_url(method: HttpMethod, url: &Url) -> &'static str {
     let path = url.path();
-    if path == "/drive/v3/files" {
+    if path.contains("/gmail/") {
+        "gmail.labels.list"
+    } else if path == "/drive/v3/files" {
         "drive.files.list"
     } else if path.starts_with("/drive/v2/files") {
         "drive.files.get.v2"

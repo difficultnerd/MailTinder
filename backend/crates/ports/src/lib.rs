@@ -43,7 +43,8 @@ pub use identity::{AuthRequest, IdClaims, IdError, IdentityProvider, Prompt, Tok
 pub use invite_mailer::{InviteLink, InviteMailer};
 pub use keys::{Aad, KeyError, KeyService, SystemAad, SystemKeyService, WrappedKey};
 pub use mail::{
-    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, PageToken, ProviderCapabilities,
+    ListOrder, MailError, MailProvider, MailboxCtx, MessagePage, MessageQuery, PageToken,
+    ProviderCapabilities,
 };
 pub use ports::Ports;
 pub use rng::Rng;

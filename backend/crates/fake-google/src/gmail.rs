@@ -12,6 +12,7 @@
 //! | `POST /messages/{id}/untrash` | removes `TRASH`. |
 //! | `POST /messages/send` | stores a new `SENT` message. |
 //! | `GET /labels`, `GET /labels/{id}`, `POST /labels` | label listing and creation. |
+//! | `PATCH /labels/{id}`, `DELETE /labels/{id}` | rename (409 on a name clash) and remove a label; messages stay. |
 //! | `GET /profile` | profile summary. |
 //! | `DELETE /messages/{id}`, `POST /messages/batchDelete`, `DELETE /threads/{id}` | 500 + `PermanentDeleteAttempted` (INV-5). |
 
@@ -19,7 +20,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::extract::{Path, RawQuery, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
@@ -58,7 +59,10 @@ pub fn router() -> Router<AppState> {
         .route("/messages/{id}/trash", post(trash_message))
         .route("/messages/{id}/untrash", post(untrash_message))
         .route("/labels", get(list_labels).post(create_label))
-        .route("/labels/{id}", get(get_label))
+        .route(
+            "/labels/{id}",
+            get(get_label).patch(rename_label).delete(remove_label),
+        )
         .route("/profile", get(get_profile))
         .route("/threads/{id}", delete(delete_thread))
         .route("/messages/{id}", delete(delete_message))
@@ -303,19 +307,11 @@ fn q_terms_match(q: Option<&str>, m: &StoredMessage) -> bool {
                 return false;
             }
         } else if let Some(addr) = t.strip_prefix("from:") {
-            let raw = String::from_utf8_lossy(&m.raw);
-            if !raw
-                .to_lowercase()
-                .contains(&format!("from: {}", addr.to_lowercase()))
-            {
+            if !header_line_contains(&m.raw, "from:", addr) {
                 return false;
             }
         } else if let Some(list) = t.strip_prefix("list:") {
-            let raw = String::from_utf8_lossy(&m.raw);
-            if !raw
-                .to_lowercase()
-                .contains(&format!("list-id: {}", list.to_lowercase()))
-            {
+            if !header_line_contains(&m.raw, "list-id:", list) {
                 return false;
             }
         } else {
@@ -695,6 +691,82 @@ async fn create_label(
     Ok(Json(json!({ "id": id, "name": body.name, "type": "user" })))
 }
 
+#[derive(Deserialize)]
+struct RenameLabelBody {
+    name: String,
+}
+
+async fn rename_label(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenameLabelBody>,
+) -> Result<Json<Value>, GmailError> {
+    let mut st = st.0.lock().unwrap();
+    let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
+    record(&mut st, "PATCH", "labels.rename", vec![]);
+    if let Some(e) = check_fail(&mut st, "PATCH", &format!("/gmail/v1/users/me/labels/{id}")) {
+        return Err(e);
+    }
+    let mb = st
+        .mailboxes
+        .get_mut(&email)
+        .ok_or_else(|| GmailError::new(404, "notFound"))?;
+    match mb.labels.get(&id) {
+        None => return Err(GmailError::new(404, "notFound")),
+        Some(l) if l.kind == "system" => return Err(GmailError::new(400, "invalidArgument")),
+        Some(_) => {}
+    }
+    if mb
+        .labels
+        .values()
+        .any(|l| l.id != id && l.name.eq_ignore_ascii_case(&body.name))
+    {
+        return Err(GmailError::new(409, "alreadyExists"));
+    }
+    let label = mb
+        .labels
+        .get_mut(&id)
+        .ok_or_else(|| GmailError::new(404, "notFound"))?;
+    label.name = body.name;
+    Ok(Json(
+        json!({ "id": label.id, "name": label.name, "type": label.kind }),
+    ))
+}
+
+/// Remove the label definition and detach it from every message. A message is
+/// never removed (INV-5), and no `PermanentDeleteAttempted` is recorded.
+async fn remove_label(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, GmailError> {
+    let mut st = st.0.lock().unwrap();
+    let email = require_scope(&st, &headers, GMAIL_MODIFY)?;
+    record(&mut st, "DELETE", "labels.delete", vec![]);
+    if let Some(e) = check_fail(
+        &mut st,
+        "DELETE",
+        &format!("/gmail/v1/users/me/labels/{id}"),
+    ) {
+        return Err(e);
+    }
+    let mb = st
+        .mailboxes
+        .get_mut(&email)
+        .ok_or_else(|| GmailError::new(404, "notFound"))?;
+    match mb.labels.get(&id) {
+        None => return Err(GmailError::new(404, "notFound")),
+        Some(l) if l.kind == "system" => return Err(GmailError::new(400, "invalidArgument")),
+        Some(_) => {}
+    }
+    mb.labels.remove(&id);
+    for m in mb.messages.values_mut() {
+        m.labels.remove(&id);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn get_profile(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -752,4 +824,17 @@ async fn delete_thread(
         &format!("/gmail/v1/users/me/threads/{id}"),
     );
     Err(GmailError::new(500, "backendError"))
+}
+
+/// True if the header line starting with `name` (lower-case, with the colon)
+/// contains `needle`, case-insensitively. Matches `From: Name <a@x>` as well as
+/// a bare address.
+fn header_line_contains(raw: &[u8], name: &str, needle: &str) -> bool {
+    let text = String::from_utf8_lossy(raw).to_lowercase();
+    let needle = needle.to_lowercase();
+    text.split("\r\n\r\n")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .any(|line| line.starts_with(name) && line.contains(&needle))
 }

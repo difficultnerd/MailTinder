@@ -1,12 +1,12 @@
 //! Tests for the ports crate (T-201a).
 
 use domain::JobId;
-use ports::{TaskName, WrappedKey};
+use ports::{MessageQuery, TaskName, WrappedKey};
 use uuid::Uuid;
 
 /// INV-5: `MailProvider` has no delete method. Hand-maintained list of the
 /// trait's method names; keep in step with the trait.
-const MAIL_PROVIDER_METHODS: [&str; 12] = [
+const MAIL_PROVIDER_METHODS: [&str; 17] = [
     "provider",
     "capabilities",
     "list_inbox",
@@ -19,6 +19,11 @@ const MAIL_PROVIDER_METHODS: [&str; 12] = [
     "ensure_label",
     "send_mailto",
     "inbox_count",
+    "list_messages",
+    "count_messages",
+    "rename_label",
+    "remove_label",
+    "web_url",
 ];
 
 #[test]
@@ -84,4 +89,17 @@ fn task_name_for_job_is_stable_and_hyphen_free() {
     // The simple UUID has no hyphens.
     assert!(!name.0[4..].contains('-'));
     assert_eq!(name, TaskName::for_job(&job));
+}
+
+/// INV-7: every `MessageQuery` field is a std, `time` or domain type, so a
+/// provider type in the struct would not compile.
+#[test]
+fn inv_7_message_query_has_no_provider_types() {
+    let q = MessageQuery::default();
+    let _: bool = q.in_inbox;
+    let _: Option<String> = q.label;
+    let _: Option<time::OffsetDateTime> = q.after;
+    let _: Option<time::OffsetDateTime> = q.before;
+    let _: Option<String> = q.from;
+    let _: Option<String> = q.list_id;
 }
