@@ -26,8 +26,8 @@ use ports::{
     AgeBucket, Ciphertext, ClassifierEvalRecord, ClassifierEvalRepo, Clock, EmailLookupHash,
     EvalHeaderFacts, EvalId, EvalOutcome, HeaderRulesResult, InviteId, InviteRecord, InviteRepo,
     JobOutcomeCode, JobRecord, JobRepo, KeyService, ListKeyHash, MailboxRecord, MailboxRepo,
-    NeedsAttentionRecord, NeedsAttentionRepo, PageRequest, Precondition, RateLimitKey, Repo, Rng,
-    ServerStore, SessionHash, SessionRecord, SessionRecordId, SessionRepo, SessionState,
+    NeedsAttentionRecord, NeedsAttentionRepo, Page, PageRequest, Precondition, RateLimitKey, Repo,
+    Rng, ServerStore, SessionHash, SessionRecord, SessionRecordId, SessionRepo, SessionState,
     Sha256Hash, SwipeDirection, TextTokensBucket, UserPseudoId, UserRecord, UserRepo, Versioned,
 };
 use proptest::prelude::*;
@@ -910,8 +910,8 @@ impl SessionRepo for FailingSessions {
     async fn expires_by(
         &self,
         _now: OffsetDateTime,
-        _limit: u32,
-    ) -> Result<Vec<SessionHash>, ports::StoreError> {
+        _page: PageRequest,
+    ) -> Result<Page<SessionHash>, ports::StoreError> {
         Err(ports::StoreError::Unavailable)
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, ports::StoreError> {

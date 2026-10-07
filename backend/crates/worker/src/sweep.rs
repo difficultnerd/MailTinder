@@ -13,7 +13,10 @@
 
 use domain::{JobMethod, JobStatus, NeedsAttentionReason};
 use obs::{metric_event, Pseudonymiser, SecurityEvent};
-use ports::store::{JobOutcome, JobOutcomeCode, JobRecord, Precondition, StoreError, Version};
+use ports::store::{
+    JobOutcome, JobOutcomeCode, JobRecord, NeedsAttentionId, PageRequest, Precondition,
+    SessionHash, StoreError, Version, Versioned, MAX_PAGE,
+};
 use ports::{Ports, SecretName};
 use serde::Serialize;
 use svc_common::internal_auth::InternalAuthConfig;
@@ -102,12 +105,29 @@ async fn expire_and_purge_jobs(
     now: OffsetDateTime,
     counts: &mut SweepCounts,
 ) -> Result<(), SvcError> {
-    let due = ports
-        .store
-        .jobs()
-        .expires_by(now, SWEEP_BATCH)
-        .await
-        .map_err(|_| SvcError::Store)?;
+    let mut due: Vec<Versioned<JobRecord>> = Vec::new();
+    let mut after = None;
+    while due.len() < SWEEP_BATCH as usize {
+        let page = ports
+            .store
+            .jobs()
+            .expires_by(
+                now,
+                PageRequest {
+                    limit: MAX_PAGE,
+                    after,
+                },
+            )
+            .await
+            .map_err(|_| SvcError::Store)?;
+        let full = page.items.len() == MAX_PAGE as usize;
+        due.extend(page.items);
+        match page.next {
+            Some(cursor) if full => after = Some(cursor),
+            _ => break,
+        }
+    }
+    due.truncate(SWEEP_BATCH as usize);
     if due.len() >= SWEEP_BATCH as usize {
         counts.more = true;
     }
@@ -269,12 +289,29 @@ async fn purge_needs_attention(
     now: OffsetDateTime,
     counts: &mut SweepCounts,
 ) -> Result<(), SvcError> {
-    let ids = ports
-        .store
-        .needs_attention()
-        .expires_by(now, SWEEP_BATCH)
-        .await
-        .map_err(|_| SvcError::Store)?;
+    let mut ids: Vec<NeedsAttentionId> = Vec::new();
+    let mut after = None;
+    while ids.len() < SWEEP_BATCH as usize {
+        let page = ports
+            .store
+            .needs_attention()
+            .expires_by(
+                now,
+                PageRequest {
+                    limit: MAX_PAGE,
+                    after,
+                },
+            )
+            .await
+            .map_err(|_| SvcError::Store)?;
+        let full = page.items.len() == MAX_PAGE as usize;
+        ids.extend(page.items);
+        match page.next {
+            Some(cursor) if full => after = Some(cursor),
+            _ => break,
+        }
+    }
+    ids.truncate(SWEEP_BATCH as usize);
     if ids.len() >= SWEEP_BATCH as usize {
         counts.more = true;
     }
@@ -298,12 +335,29 @@ async fn purge_sessions(
     now: OffsetDateTime,
     counts: &mut SweepCounts,
 ) -> Result<(), SvcError> {
-    let ids = ports
-        .store
-        .sessions()
-        .expires_by(now, SWEEP_BATCH)
-        .await
-        .map_err(|_| SvcError::Store)?;
+    let mut ids: Vec<SessionHash> = Vec::new();
+    let mut after = None;
+    while ids.len() < SWEEP_BATCH as usize {
+        let page = ports
+            .store
+            .sessions()
+            .expires_by(
+                now,
+                PageRequest {
+                    limit: MAX_PAGE,
+                    after,
+                },
+            )
+            .await
+            .map_err(|_| SvcError::Store)?;
+        let full = page.items.len() == MAX_PAGE as usize;
+        ids.extend(page.items);
+        match page.next {
+            Some(cursor) if full => after = Some(cursor),
+            _ => break,
+        }
+    }
+    ids.truncate(SWEEP_BATCH as usize);
     if ids.len() >= SWEEP_BATCH as usize {
         counts.more = true;
     }
