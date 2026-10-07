@@ -358,10 +358,9 @@ async fn au_07_ac5_jobs_keep_running_after_session_end() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
-// AU-07 AC6: an admin ending a session is a security event. Two correlated
-// lines are written, one naming the target and one naming the actor; they share
-// the request ID, the documented join key (S6 section 7). Neither carries an
-// address.
+// AU-07 AC6: an admin ending a session is a single security event naming both
+// principals — the acting admin and the target user — by their pseudonymous IDs
+// (S2 AU-07 AC6, S6 section 7). Neither carries an address.
 // ---------------------------------------------------------------------------
 #[tokio::test]
 async fn au_07_ac6_admin_session_end_logged() -> TestResult {
@@ -386,55 +385,44 @@ async fn au_07_ac6_admin_session_end_logged() -> TestResult {
     let victim_pseudo = pseudo_of(&victim.user);
     let admin_pseudo = pseudo_of(&admin.user);
 
-    // The target's session end is logged, named for the target.
-    let target_events: Vec<&serde_json::Value> = events
+    // Exactly one event records the termination.
+    let ended: Vec<&serde_json::Value> = events
         .iter()
-        .filter(|e| field(e, "action") == Some("session_end"))
+        .filter(|e| field(e, "action") == Some("session_ended_by_admin"))
         .collect();
     assert_eq!(
-        target_events.len(),
+        ended.len(),
         1,
-        "one session_end per deleted session: {text}"
+        "one security event for the session end: {text}"
     );
     assert_eq!(
-        field(target_events[0], "outcome"),
-        Some("admin_ended"),
-        "with the admin-ended outcome: {text}"
+        field(ended[0], "outcome"),
+        Some("success"),
+        "with the success outcome: {text}"
     );
+
+    // The one line names the target's pseudonymous ID, never the address.
     assert_eq!(
-        field(target_events[0], "user_pseudo"),
+        field(ended[0], "target_user_pseudo"),
         Some(victim_pseudo.as_str()),
-        "the target's pseudonymous ID, not the address: {text}"
+        "the target's pseudonymous ID: {text}"
     );
-
-    // The actor's admin action is logged, named for the admin.
-    let actor_events: Vec<&serde_json::Value> = events
-        .iter()
-        .filter(|e| field(e, "action") == Some("admin_action"))
-        .collect();
-    assert_eq!(actor_events.len(), 1, "one admin_action: {text}");
+    // ...and the acting admin's on the same line, so removing either ID fails.
     assert_eq!(
-        field(actor_events[0], "user_pseudo"),
+        field(ended[0], "user_pseudo"),
         Some(admin_pseudo.as_str()),
-        "the admin's pseudonymous ID: {text}"
-    );
-
-    // The documented join key: the two lines share the request ID, so an
-    // investigator can attribute the termination to the admin (S6 section 7).
-    let target_request_id = field(target_events[0], "request_id");
-    assert!(
-        target_request_id.is_some_and(|id| !id.is_empty()),
-        "the target line carries a request ID: {text}"
-    );
-    assert_eq!(
-        field(actor_events[0], "request_id"),
-        target_request_id,
-        "the actor and target lines share the request ID: {text}"
+        "the acting admin's pseudonymous ID: {text}"
     );
     assert_ne!(
-        field(target_events[0], "user_pseudo"),
-        field(actor_events[0], "user_pseudo"),
-        "the two lines name different principals: {text}"
+        field(ended[0], "user_pseudo"),
+        field(ended[0], "target_user_pseudo"),
+        "the event distinguishes actor from target: {text}"
+    );
+
+    // The request ID ties the event to the request that caused it.
+    assert!(
+        field(ended[0], "request_id").is_some_and(|id| !id.is_empty()),
+        "the event carries a request ID: {text}"
     );
 
     assert!(

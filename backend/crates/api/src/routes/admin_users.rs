@@ -9,13 +9,15 @@
 //! day (S7 6).
 //!
 //! The responses hold addresses, so nothing here is ever logged: the security
-//! events carry only the two pseudonymous IDs and the action/outcome, and the
-//! `no-store` header comes from the shared security-headers layer.
+//! event carries only the two pseudonymous IDs (actor and target) and the
+//! action/outcome, and the `no-store` header comes from the shared
+//! security-headers layer.
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use domain::UserId;
+use obs::Pseudonymiser;
 use ports::store::aad_fields;
 use ports::{Aad, PageRequest, SessionState, UserRecord};
 use serde::Serialize;
@@ -26,9 +28,9 @@ use crate::error::ApiError;
 use crate::http::json::json_ok;
 use crate::http::request_id::RequestId;
 use crate::limits::{policies, LimitSubject};
-use crate::routes::invites::{open_cursor, rfc3339, seal_cursor, security_event, ListParams};
+use crate::routes::invites::{open_cursor, rfc3339, seal_cursor, ListParams};
 use crate::session::extract::{AdminSession, AuthedSession, SteppedUpAdmin};
-use crate::session::store::{EndReason, SessionService, ABSOLUTE_TIMEOUT, IDLE_TIMEOUT};
+use crate::session::store::{ABSOLUTE_TIMEOUT, IDLE_TIMEOUT};
 use crate::state::AppState;
 
 /// One user in the admin list (S7 5.11, API-ADM-16).
@@ -154,17 +156,38 @@ pub async fn end_user_session(
     if app.ports.store.users().get(&target).await?.is_none() {
         return Err(ApiError::NotFound);
     }
-    // Two correlated events, as S6 7 documents: a `session_end`/`admin_ended`
-    // event per deleted session naming the target, and an `admin_action` event
-    // naming the actor. Both carry the same request ID, the documented join key
-    // that attributes the termination to the admin; a log line holds one
-    // pseudonymous user ID, so neither event can name both (S5 logs). Neither
-    // carries an address.
-    SessionService::new(app)
-        .end_all_for_user(&target, EndReason::AdminEnded, request_id)
+    // One event names both principals (S2 AU-07 AC6, task step 3): the acting
+    // admin as `user_pseudo` and the target as `target_user_pseudo`, both
+    // pseudonymous and sharing the request ID (S5 logs, S6 7). The sessions are
+    // deleted without a per-session line, so one admin termination is exactly
+    // one audit record naming actor and target together. Neither carries an
+    // address.
+    app.ports
+        .store
+        .sessions()
+        .delete_all_for_user(&target)
         .await?;
-    security_event(app, "admin_action", "success", Some(admin), request_id);
+    session_end_event(app, admin, &target, request_id);
     Ok(())
+}
+
+/// The single security event for an admin ending a user's session: the actor
+/// (`user_pseudo`) and the target (`target_user_pseudo`), both pseudonymous,
+/// sharing the request ID (S6 7, S5 logs).
+fn session_end_event(
+    app: &AppState,
+    admin: &AuthedSession,
+    target: &UserId,
+    request_id: RequestId,
+) {
+    let pseudo = |user: &UserId| Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0);
+    obs::security_event_pair(
+        "session_ended_by_admin",
+        "success",
+        Some(pseudo(&admin.user)),
+        Some(pseudo(target)),
+        Some(request_id.0),
+    );
 }
 
 /// Build the DTO for one user, or `None` when the user has no mailbox left
