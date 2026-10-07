@@ -38,6 +38,12 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/swipes",
     "/api/v1/swipes/undo",
     "/api/v1/progress",
+    "/api/v1/needs-attention",
+    "/api/v1/needs-attention/{item_id}/resolve",
+    "/api/v1/needs-attention/{item_id}/dismiss",
+    "/api/v1/categories",
+    "/api/v1/categories/{category_id}",
+    "/api/v1/categories/{category_id}/messages",
     "/api/v1/invite-requests",
     "/api/v1/admin/invites",
     "/api/v1/admin/invites/{invite_id}/resend",
@@ -230,6 +236,14 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         "/api/v1/swipes/undo"
     } else if path == "/api/v1/progress" {
         "/api/v1/progress"
+    } else if path == "/api/v1/categories" {
+        "/api/v1/categories"
+    } else if path.starts_with("/api/v1/categories/") {
+        if path.ends_with("/messages") {
+            "/api/v1/categories/{category_id}/messages"
+        } else {
+            "/api/v1/categories/{category_id}"
+        }
     } else if path == "/api/v1/auth/sign-out" {
         "/api/v1/auth/sign-out"
     } else if path.starts_with("/api/v1/auth/") {
