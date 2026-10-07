@@ -178,18 +178,53 @@ jobs:
           else
             echo "OK   no roles/iam.serviceAccountTokenCreator"
           fi
+          # `actAs` (roles/iam.serviceAccountUser) is allowed, but only on an
+          # individual service account - never on the project, where it would be
+          # actAs on every account. Reset the tracked resource type at every
+          # top-level block, then record it on each resource header, so a grant
+          # is only flagged when it is inside a google_project_iam_* resource
+          # (a `locals`/`variable` block or an unparsed file no longer counts).
           if awk '
+            /^[a-z_]+[[:space:]]/ && $0 !~ /^[[:space:]]*resource[[:space:]]+"/ { type = "" }
             /^[[:space:]]*resource[[:space:]]+"/ {
               type = $0
               sub(/^[[:space:]]*resource[[:space:]]+"/, "", type)
               sub(/".*/, "", type)
             }
-            /roles\/iam\.serviceAccountUser/ && type ~ /^google_project_iam/ { bad = 1 }
+            /role[[:space:]]*=[[:space:]]*"roles\/iam\.serviceAccountUser"/ && type ~ /^google_project_iam/ { bad = 1 }
             END { exit bad ? 1 : 0 }
           ' $(find modules envs -name '*.tf'); then
             echo "OK   roles/iam.serviceAccountUser only on individual service accounts"
           else
             echo "FAIL roles/iam.serviceAccountUser granted on the project (ASVS V13.2.1)"
+            fail=1
+          fi
+
+          # Only `api_public` may name allUsers / allAuthenticatedUsers. The
+          # role allowlist permits roles/run.invoker globally, so it cannot see
+          # a second public binding on another service; this can (V13.2.1).
+          if awk '
+            /^[[:space:]]*resource[[:space:]]+"/ { res = $0 }
+            /^[a-z_]+[[:space:]]/ && $0 !~ /^[[:space:]]*resource[[:space:]]+"/ { res = "" }
+            /allUsers|allAuthenticatedUsers/ && res !~ /"api_public"/ { bad = 1 }
+            END { exit bad ? 1 : 0 }
+          ' $(find modules envs -name '*.tf'); then
+            echo "OK   allUsers/allAuthenticatedUsers only on api_public"
+          else
+            echo "FAIL allUsers/allAuthenticatedUsers outside api_public (ASVS V13.2.1)"
+            fail=1
+          fi
+
+          # `ignore_changes` on the container image cannot be read from a
+          # Terraform expression, so terraform test cannot prove it. Without it
+          # every apply would roll production back to the placeholder image
+          # (T-1102b edge case), so guard it per service here.
+          services=$(grep -cE '^resource "google_cloud_run_v2_service" "' modules/runtime/cloud_run.tf)
+          ignores=$(grep -cE 'template\[0\]\.containers\[0\]\.image' modules/runtime/cloud_run.tf)
+          if [ "$services" -ge 1 ] && [ "$ignores" -eq "$services" ]; then
+            echo "OK   every Cloud Run service ignores the container image"
+          else
+            echo "FAIL image ignore_changes: $ignores of $services Cloud Run services (T-1102b)"
             fail=1
           fi
           exit $fail

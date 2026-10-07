@@ -5,14 +5,24 @@
 # suite they cannot prove the absence of a resource type. The absence
 # properties the task claims (no additional Cloud Run invoker, no
 # roles/iam.serviceAccountUser on the project, no deployer KMS/Secret Manager/
-# Firestore/IAM role, no primitive role) are additionally enforced by the
-# `terraform` CI job's role allowlist and actAs-scope guard, which scan every
-# `*.tf` file under `modules/` and `envs/`. In particular `ignore_changes` on
-# the container image cannot be read from an expression, so its presence on
-# every service is enforced by the CI guard, and the run below checks the image
-# Terraform is told to use.
+# Firestore/IAM role, no primitive role, no `allUsers`/`allAuthenticatedUsers`
+# outside `api_public`) are additionally enforced by the `terraform` CI job's
+# role allowlist, actAs-scope guard, allUsers guard and image-ignore guard,
+# which scan every `*.tf` file under `modules/` and `envs/`. In particular
+# `ignore_changes` on the container image cannot be read from an expression, so
+# its presence on every service is enforced by the CI image-ignore guard, and
+# the run below checks the image Terraform is told to use.
 mock_provider "google" {}
 mock_provider "google-beta" {}
+
+# The project number fixes each service's deterministic URL (used as the
+# UNSUB_AUDIENCE / WORKER_AUDIENCE the services check).
+override_data {
+  target = data.google_project.current
+  values = {
+    number = "123456789012"
+  }
+}
 
 # Deterministic service URLs, made available during plan (override_during =
 # plan). Without them the scheduler target and the OIDC audiences are unknown at
@@ -208,6 +218,26 @@ run "sweep_every_15_minutes_with_oidc" {
   }
 }
 
+run "internal_services_carry_their_own_oidc_audience" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.name == "UNSUB_AUDIENCE" && e.value == "https://mt-unsub-123456789012.us-central1.run.app"
+    ])
+    error_message = "unsub must be given UNSUB_AUDIENCE, its own deterministic URL, or it refuses to start (S7 5.12)"
+  }
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.worker.template[0].containers[0].env :
+      e.name == "WORKER_AUDIENCE" && e.value == "https://mt-worker-123456789012.us-central1.run.app"
+    ])
+    error_message = "worker must be given WORKER_AUDIENCE, its own deterministic URL, or it refuses to start (S7 5.12)"
+  }
+}
+
 run "deployer_has_no_kms_secret_or_firestore_role" {
   command = plan
 
@@ -253,17 +283,18 @@ run "wif_condition_pins_repository_and_ref" {
   command = plan
 
   assert {
-    condition     = google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.repository == 'difficultnerd/MailTinder' && assertion.ref == 'refs/heads/main'"
-    error_message = "the WIF condition must pin exactly the MailTinder repository and main (V13.2.2)"
+    condition     = google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.repository == 'difficultnerd/MailTinder' && assertion.ref == 'refs/heads/main' && assertion.environment == 'production'"
+    error_message = "the WIF condition must pin exactly the MailTinder repository, main and the production environment (V13.2.2)"
   }
 
   assert {
     condition = (
       google_iam_workload_identity_pool_provider.github.attribute_mapping["google.subject"] == "assertion.sub" &&
       google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.repository"] == "assertion.repository" &&
-      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref"] == "assertion.ref"
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref"] == "assertion.ref" &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.environment"] == "assertion.environment"
     )
-    error_message = "the WIF provider must map subject, repository and ref"
+    error_message = "the WIF provider must map subject, repository, ref and environment"
   }
 
   assert {

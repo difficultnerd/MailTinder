@@ -63,6 +63,12 @@ variable "deploy_ref" {
   description = "The only ref whose GitHub Actions runs may impersonate the deployer. Production deploys additionally need the GitHub `production` environment approval (T-1104)."
 }
 
+variable "deploy_environment" {
+  type        = string
+  default     = "production"
+  description = "The only GitHub Actions environment whose OIDC token may impersonate the deployer. The `production` environment carries the required-reviewer approval (T-1104), so pinning it here makes that approval a server-side control (V13.2.2), not just a workflow convention."
+}
+
 variable "max_instances" {
   type        = number
   default     = 3

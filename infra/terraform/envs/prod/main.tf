@@ -13,7 +13,10 @@ module "foundation" {
 # The runtime: Cloud Run, Cloud Tasks, Scheduler, Hosting and the deploy
 # identity (T-1102b). Only production deploys from main, and a production
 # deploy additionally needs the GitHub `production` environment approval
-# (T-1104); the ref pin here is what Terraform can enforce.
+# (T-1104): the WIF provider's condition pins repository, ref AND environment,
+# so a token from a job outside the `production` environment cannot impersonate
+# the deployer at all - the approval is enforced on the GCP side, not only in
+# the workflow.
 module "runtime" {
   source = "../../modules/runtime"
 

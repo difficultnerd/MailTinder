@@ -16,12 +16,13 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   display_name                       = "GitHub Actions OIDC"
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
-    "attribute.ref"        = "assertion.ref"
+    "google.subject"        = "assertion.sub"
+    "attribute.repository"  = "assertion.repository"
+    "attribute.ref"         = "assertion.ref"
+    "attribute.environment" = "assertion.environment"
   }
 
-  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == '${var.deploy_ref}'"
+  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == '${var.deploy_ref}' && assertion.environment == '${var.deploy_environment}'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -84,15 +85,7 @@ resource "google_project_iam_member" "deployer_hosting_admin" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# The complete set of roles the deployer holds. Nothing for KMS, Secret
-# Manager, Firestore or IAM administration (V13.2.2); the run and actAs roles
-# are per service, not per project.
-locals {
-  deployer_roles = toset([
-    "roles/run.developer",
-    "roles/iam.serviceAccountUser",
-    "roles/artifactregistry.writer",
-    "roles/firebasehosting.admin",
-    "roles/iam.workloadIdentityUser",
-  ])
-}
+# The complete set of roles the deployer holds is the five resources above;
+# there is deliberately no `locals` list to keep in sync (nothing referenced
+# one), and nothing grants KMS, Secret Manager, Firestore or IAM administration
+# (V13.2.2). The run and actAs roles are per service, not per project.

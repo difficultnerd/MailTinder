@@ -11,13 +11,26 @@
 #   KMS key   MT_KMS_KEY
 #   secrets   MT_SECRET_* (_container_ names only: the services read the values
 #             through Secret Manager at start-up, T-305, so no value is in state)
-#   audience  UNSUB_AUDIENCE / WORKER_AUDIENCE (each service's own URL) is NOT
-#             set here: a Cloud Run service's URL is unknown until the service
-#             exists, and referencing it inside its own resource is a cycle. The
-#             scheduler's OIDC audience and the API's MT_UNSUB_URL below do
-#             carry the service URLs; the services get their own audience from
-#             the pipeline (T-1104) with the image.
+#   audience  UNSUB_AUDIENCE / WORKER_AUDIENCE is each service's own URL (S7
+#             5.12). A service cannot reference its own `uri` inside its own
+#             resource (a cycle), and no other task sets these variables, so the
+#             URL is rebuilt deterministically from the project number here:
+#             https://<name>-<project-number>.<region>.run.app. The scheduler's
+#             OIDC audience and the API's MT_UNSUB_URL carry the same URLs.
 #   caller    UNSUB_TASKS_CALLER / WORKER_SCHEDULER_CALLER
+
+# A Cloud Run service's URL is deterministic: name, project number, region. The
+# runtime accounts need it as the audience they check (UNSUB_AUDIENCE /
+# WORKER_AUDIENCE), so it is derived from the project number rather than from
+# the service's own (cyclic) `uri`.
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+locals {
+  unsub_url  = "https://mt-unsub-${data.google_project.current.number}.${var.region}.run.app"
+  worker_url = "https://mt-worker-${data.google_project.current.number}.${var.region}.run.app"
+}
 locals {
   # Variables every service gets. Only non-secret values: the secret *names* go
   # to the service, never a value (ASVS V13.3.1).
@@ -43,10 +56,12 @@ locals {
 
   unsub_env = merge(local.base_env, {
     UNSUB_TASKS_CALLER = var.service_accounts["tasks_invoker"]
+    UNSUB_AUDIENCE     = local.unsub_url
   })
 
   worker_env = merge(local.base_env, {
     WORKER_SCHEDULER_CALLER = var.service_accounts["scheduler_invoker"]
+    WORKER_AUDIENCE         = local.worker_url
   })
 }
 
