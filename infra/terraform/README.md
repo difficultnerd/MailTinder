@@ -77,6 +77,27 @@ CI runs the `terraform` job: `terraform fmt -check -recursive`, then inside
 `init`/`validate` for `envs/prod`. The module's `tests/foundation.tftest.hcl`
 uses `mock_provider`, so it needs no credentials and no network.
 
+The module tests inspect the resources the module declares; they cannot prove
+the absence of a resource type, or see a grant a later change adds elsewhere.
+That property is enforced by the job's final step, which scans every `.tf` file
+under `modules/` and `envs/`:
+
+- a resource-type guard rejects `google_service_account_key`,
+  `google_secret_manager_secret_version`, `google_firestore_backup_schedule` and
+  `google_project_iam_policy`;
+- a role allowlist rejects any `role = "roles/..."` that is not one of
+  `roles/cloudkms.cryptoKeyEncrypterDecrypter`, `roles/aiplatform.user`,
+  `roles/datastore.user`, `roles/secretmanager.secretAccessor` or
+  `roles/logging.bucketWriter` (the sink's writer). This is what covers
+  "no primitive role", "no `roles/iam.serviceAccountUser`" and "no logging role
+  for an app identity".
+
+Note the log bucket holds application stdout/stderr only. The Cloud Run platform
+request log (`run.googleapis.com%2Frequests`) records the request URL, its query
+string and the client IP, so the sink excludes it and `_Default` drops it - those
+entries are never captured in the locked 90-day store (S5 bans URLs and
+addresses in logs).
+
 To run the same checks locally:
 
 ```

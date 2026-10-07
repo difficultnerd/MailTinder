@@ -82,8 +82,11 @@ jobs:
   # Terraform (T-1102a). `fmt`, `validate` and the module's plan-time tests.
   # The tests use mock_provider, so they need no credentials and no network.
   # The final step is the set of absence checks Terraform cannot express over a
-  # plan: no service account keys, no secret versions in state, no Firestore
-  # backups, no primitive role, and no infrastructure scanner (CLAUDE.md).
+  # plan. A role allowlist over every .tf file replaces hand-picked checks: it
+  # fails on any role not authorised by the task (primitive roles,
+  # roles/iam.serviceAccountUser, roles/logging.* for an app identity, ...),
+  # wherever it is granted. Resource-type guards cover service account keys,
+  # secret versions in state, Firestore backups and infrastructure scanners.
   terraform:
     runs-on: ubuntu-latest
     defaults:
@@ -118,11 +121,47 @@ jobs:
               echo "OK   $message"
             fi
           }
-          guard '^resource "google_service_account_key"' 'no service account keys' '*.tf'
+          guard '^resource "google_service_account_key"' 'no service account keys (ASVS V13.2.1)' '*.tf'
           guard '^resource "google_secret_manager_secret_version"' 'no secret versions in state (ASVS V13.3.1)' '*.tf'
           guard '^resource "google_firestore_backup_schedule"' 'no Firestore backups (S6 5)' '*.tf'
-          guard 'role[[:space:]]*=[[:space:]]*"roles/(owner|editor|viewer)"' 'no primitive roles (ASVS V13.2.3)' '*.tf'
+          guard '^resource "google_project_iam_policy"' 'no authoritative project IAM policy (hidden role grants)' '*.tf'
           guard 'tfsec|checkov|terrascan|trivy' 'no infrastructure scanner (CLAUDE.md)' '*.tf'
+
+          # Role allowlist (ASVS V13.2.1, V13.2.3, V16.4.2). `terraform test`
+          # only inspects the resources the module declares, so a role granted by
+          # a new IAM resource anywhere else would slip past it. This scans every
+          # .tf file under modules/ and envs/ for a literal `role = "roles/..."`
+          # assignment and fails unless the role is one this task authorises. It
+          # catches primitive roles (owner/editor/viewer), the impersonation
+          # roles roles/iam.serviceAccountUser and serviceAccountTokenCreator,
+          # any roles/logging.* role other than the sink's bucketWriter, and any
+          # other role a later change adds.
+          allowed_roles=$(printf '%s\n' \
+            roles/cloudkms.cryptoKeyEncrypterDecrypter \
+            roles/aiplatform.user \
+            roles/datastore.user \
+            roles/secretmanager.secretAccessor \
+            roles/logging.bucketWriter | sort -u)
+          used_roles=$(grep -rhoE 'role[[:space:]]*=[[:space:]]*"roles/[A-Za-z0-9._]+"' \
+            --include='*.tf' modules envs | grep -oE 'roles/[A-Za-z0-9._]+' | sort -u)
+          unapproved=$(comm -23 <(printf '%s\n' "$used_roles") <(printf '%s\n' "$allowed_roles"))
+          if [ -n "$unapproved" ]; then
+            echo "FAIL unapproved IAM role(s) granted:"
+            printf '%s\n' "$unapproved"
+            fail=1
+          else
+            echo "OK   every granted IAM role is on the allowlist"
+          fi
+
+          # Belt and braces for V13.2.1: an explicit check and message for the
+          # service account impersonation roles, even though the allowlist above
+          # already rejects them.
+          if grep -rnE 'roles/iam\.serviceAccount(User|TokenCreator)' --include='*.tf' modules envs; then
+            echo "FAIL roles/iam.serviceAccountUser or roles/iam.serviceAccountTokenCreator granted (ASVS V13.2.1)"
+            fail=1
+          else
+            echo "OK   no roles/iam.serviceAccount(User|TokenCreator)"
+          fi
           exit $fail
 
   # Integrity guard. Branch protection treats a SKIPPED required job as a pass,

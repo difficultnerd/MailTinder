@@ -1,11 +1,17 @@
 # Plan-time tests for the foundation module (T-1102a step 13).
 #
 # Every run uses mock_provider, so the suite needs no credentials and no
-# network. Absence checks that Terraform cannot express over a plan (no
-# google_service_account_key, no google_secret_manager_secret_version, no
-# google_firestore_backup_schedule resource anywhere in the module) are also
-# enforced as greps in the `terraform` CI job.
-
+# network.
+#
+# These runs inspect the resources the module *declares*. They cannot prove the
+# absence of a resource type, and they cannot see a binding a later change adds
+# somewhere else: `terraform test` has no view of resources the module does not
+# use. The absence properties the task claims (no google_service_account_key, no
+# google_secret_manager_secret_version, no google_firestore_backup_schedule, no
+# primitive role, no roles/iam.serviceAccountUser, no logging role for an app
+# identity) are enforced instead by the role allowlist and resource guards in
+# the `terraform` CI job, which scan every `*.tf` file under `modules/` and
+# `envs/`. The runs below are named for what they actually check.
 mock_provider "google" {}
 
 # Deterministic, distinct values for the computed attributes the assertions
@@ -223,12 +229,27 @@ run "log_bucket_90_days_locked_in_region" {
   }
 
   assert {
-    condition     = google_logging_project_exclusion.app_default.filter == google_logging_project_sink.app.filter
-    error_message = "_Default must exclude the same app logs the sink routes (V16.2.3)"
+    condition = (
+      strcontains(google_logging_project_sink.app.filter, "resource.type=\"cloud_run_revision\"") &&
+      strcontains(google_logging_project_sink.app.filter, "NOT logName:\"run.googleapis.com%2Frequests\"")
+    )
+    error_message = "the sink routes app logs but must keep the Cloud Run request log (request URL and client IP, S5 88-90) out of the locked bucket (review F3)"
+  }
+
+  assert {
+    condition = (
+      strcontains(google_logging_project_exclusion.app_default.filter, "resource.type=\"cloud_run_revision\"") &&
+      !strcontains(google_logging_project_exclusion.app_default.filter, "run.googleapis.com%2Frequests")
+    )
+    error_message = "_Default must exclude every app entry, request log included, so nothing banned is retained elsewhere (V16.2.3, review F3)"
   }
 }
 
-run "no_logging_roles_for_app_accounts" {
+# Checks the module's declared bindings only (see the file header): it proves
+# that none of the project-level grants the module makes gives an app identity a
+# roles/logging.* role. Absence of a logging grant added elsewhere is enforced
+# by the CI role allowlist.
+run "declared_bindings_give_app_identities_no_logging_role" {
   command = plan
 
   assert {
@@ -249,12 +270,12 @@ run "no_logging_roles_for_app_accounts" {
   }
 }
 
-run "no_service_account_keys" {
+run "five_service_accounts_are_created" {
   command = plan
 
   assert {
     condition     = length(google_service_account.service) == 5
-    error_message = "the module creates five identities and no keys: google_service_account_key must not appear anywhere (ASVS V13.2.1)"
+    error_message = "the module creates exactly five identities (S4 2)"
   }
 
   assert {
@@ -263,7 +284,10 @@ run "no_service_account_keys" {
   }
 }
 
-run "no_primitive_roles" {
+# Checks the module's declared bindings only (see the file header): no role the
+# module grants is a primitive role. A primitive role added anywhere else is
+# caught by the CI role allowlist, which scans every .tf file.
+run "declared_bindings_grant_no_primitive_role" {
   command = plan
 
   assert {

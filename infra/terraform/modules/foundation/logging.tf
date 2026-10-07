@@ -17,11 +17,22 @@ resource "google_logging_project_bucket_config" "app" {
 }
 
 locals {
-  app_log_filter = join(" OR ", [
+  # Every entry the application and its runtime produce.
+  app_log_resource_filter = join(" OR ", [
     "resource.type=\"cloud_run_revision\"",
     "resource.type=\"cloud_tasks_queue\"",
     "resource.type=\"cloud_scheduler_job\"",
   ])
+
+  # Cloud Run additionally writes a platform "request log" per inbound request
+  # (`logName` .../logs/run.googleapis.com%2Frequests). Those entries record the
+  # request URL with its query string and the client IP, which S5 bans from logs
+  # (S5-data-inventory "Logs and telemetry"; S7-api-contract: the OAuth callback
+  # is a GET carrying `state` and an authorisation `code`). The application
+  # cannot redact a platform log, so the sink routes the application's own
+  # stdout/stderr only and leaves the request log out of the locked, 90-day,
+  # unremovable bucket (review F3).
+  app_log_filter = "${local.app_log_resource_filter} AND NOT logName:\"run.googleapis.com%2Frequests\""
 }
 
 resource "google_logging_project_sink" "app" {
@@ -44,12 +55,15 @@ resource "google_project_iam_member" "log_sink_writer" {
 }
 
 # Keep the app logs out of _Default as well, so they are not retained for 30
-# days in a second, less-protected place.
+# days in a second, less-protected place. This uses the full resource filter
+# (including the Cloud Run request log): those entries are dropped entirely
+# rather than retained anywhere, so the banned request URL and client IP are
+# never captured (review F3).
 resource "google_logging_project_exclusion" "app_default" {
   project     = var.project_id
   name        = "mailtinder-app-default"
   description = "App logs are routed only to the locked mailtinder-logs bucket"
-  filter      = local.app_log_filter
+  filter      = local.app_log_resource_filter
 }
 
 # Audit logs (S6 5, T-1102a step 9): data access on KMS and Secret Manager, and
