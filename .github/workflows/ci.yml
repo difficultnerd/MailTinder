@@ -104,6 +104,12 @@ jobs:
           terraform init -backend=false -input=false
           terraform validate
           terraform test
+      - name: Validate and test the runtime module
+        working-directory: infra/terraform/modules/runtime
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
       - name: Validate the production root
         working-directory: infra/terraform/envs/prod
         run: |
@@ -141,7 +147,15 @@ jobs:
             roles/aiplatform.user \
             roles/datastore.user \
             roles/secretmanager.secretAccessor \
-            roles/logging.bucketWriter | sort -u)
+            roles/logging.bucketWriter \
+            roles/run.invoker \
+            roles/run.developer \
+            roles/cloudtasks.enqueuer \
+            roles/cloudtasks.taskDeleter \
+            roles/artifactregistry.writer \
+            roles/firebasehosting.admin \
+            roles/iam.workloadIdentityUser \
+            roles/iam.serviceAccountUser | sort -u)
           used_roles=$(grep -rhoE 'role[[:space:]]*=[[:space:]]*"roles/[A-Za-z0-9._]+"' \
             --include='*.tf' modules envs | grep -oE 'roles/[A-Za-z0-9._]+' | sort -u)
           unapproved=$(comm -23 <(printf '%s\n' "$used_roles") <(printf '%s\n' "$allowed_roles"))
@@ -153,14 +167,30 @@ jobs:
             echo "OK   every granted IAM role is on the allowlist"
           fi
 
-          # Belt and braces for V13.2.1: an explicit check and message for the
-          # service account impersonation roles, even though the allowlist above
-          # already rejects them.
-          if grep -rnE 'roles/iam\.serviceAccount(User|TokenCreator)' --include='*.tf' modules envs; then
-            echo "FAIL roles/iam.serviceAccountUser or roles/iam.serviceAccountTokenCreator granted (ASVS V13.2.1)"
+          # Belt and braces for V13.2.1. roles/iam.serviceAccountTokenCreator is
+          # never allowed: it lets an identity mint a token for any service
+          # account. roles/iam.serviceAccountUser (actAs) is allowed, but only
+          # on an individual service account - it must never be granted on the
+          # project, where it would be actAs on every account in the project.
+          if grep -rnE 'roles/iam\.serviceAccountTokenCreator' --include='*.tf' modules envs; then
+            echo "FAIL roles/iam.serviceAccountTokenCreator granted (ASVS V13.2.1)"
             fail=1
           else
-            echo "OK   no roles/iam.serviceAccount(User|TokenCreator)"
+            echo "OK   no roles/iam.serviceAccountTokenCreator"
+          fi
+          if awk '
+            /^[[:space:]]*resource[[:space:]]+"/ {
+              type = $0
+              sub(/^[[:space:]]*resource[[:space:]]+"/, "", type)
+              sub(/".*/, "", type)
+            }
+            /roles\/iam\.serviceAccountUser/ && type ~ /^google_project_iam/ { bad = 1 }
+            END { exit bad ? 1 : 0 }
+          ' $(find modules envs -name '*.tf'); then
+            echo "OK   roles/iam.serviceAccountUser only on individual service accounts"
+          else
+            echo "FAIL roles/iam.serviceAccountUser granted on the project (ASVS V13.2.1)"
+            fail=1
           fi
           exit $fail
 
