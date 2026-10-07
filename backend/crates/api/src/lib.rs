@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod experiments;
 pub mod http;
 pub mod limits;
 pub mod routes;
@@ -32,6 +33,7 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/auth/{provider}/callback",
     "/api/v1/auth/sign-out",
     "/api/v1/session",
+    "/api/v1/me/experiments",
     "/api/v1/mailboxes",
     "/api/v1/mailboxes/{mailbox_id}",
     "/api/v1/feed/next",
@@ -228,6 +230,8 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         "/api/v1/healthz"
     } else if path == "/api/v1/session" {
         "/api/v1/session"
+    } else if path == "/api/v1/me/experiments" {
+        "/api/v1/me/experiments"
     } else if path == "/api/v1/mailboxes" {
         "/api/v1/mailboxes"
     } else if path == "/api/v1/feed/next" {

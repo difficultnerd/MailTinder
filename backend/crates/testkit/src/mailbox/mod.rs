@@ -24,6 +24,11 @@ pub const SYS_UNREAD: &str = "UNREAD";
 /// Labels that `set_labels` refuses (T-403).
 const REFUSED_LABELS: [&str; 5] = ["TRASH", "SPAM", "SENT", "DRAFT", "CHAT"];
 
+/// The user label the Gmail adapter applies to a sent `mailto:` message
+/// (UN-03 AC2). Modelled here so a service test sees the same sent-mailbox
+/// behaviour the real adapter produces.
+pub const MAIL_TINDER_LABEL: &str = "Mail Tinder";
+
 /// A record of a sent mailto message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentRecord {
@@ -418,13 +423,20 @@ impl MailProvider for FakeMailbox {
             .mailboxes
             .lock()
             .unwrap_or_else(|_| panic!("mailbox poisoned"));
-        let state = map.entry(mb.mailbox).or_default();
-        state.sent.push(SentRecord {
-            mailbox: mb.mailbox,
-            to: to.to().to_owned(),
-            subject: to.subject().map(str::to_owned),
-            body: to.body().map(str::to_owned),
-        });
+        // The real adapter files the sent message under the "Mail Tinder" label
+        // (UN-03 AC2); mirror that so a service test sees the same behaviour.
+        let label = {
+            let state = map.entry(mb.mailbox).or_default();
+            let label = find_user_label_id(state, MAIL_TINDER_LABEL)
+                .unwrap_or_else(|| add_user_label(state, MAIL_TINDER_LABEL));
+            state.sent.push(SentRecord {
+                mailbox: mb.mailbox,
+                to: to.to().to_owned(),
+                subject: to.subject().map(str::to_owned),
+                body: to.body().map(str::to_owned),
+            });
+            label
+        };
         let seed = SeedMessage {
             from_display: String::new(),
             from_address: String::new(),
@@ -433,7 +445,7 @@ impl MailProvider for FakeMailbox {
             facts: domain::HeaderFacts::default(),
             preview_text: String::new(),
             internal_date: time::OffsetDateTime::now_utc(),
-            labels: vec![SYS_SENT.to_owned()],
+            labels: vec![SYS_SENT.to_owned(), label],
         };
         self.seed_inner(&mut map, &mb.mailbox, seed);
         Ok(())

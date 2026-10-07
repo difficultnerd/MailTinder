@@ -1,7 +1,9 @@
 //! Route handlers, one module per feature area.
 
+pub mod account;
 pub mod admin_users;
 pub mod categories;
+pub mod experiments;
 pub mod feed;
 pub mod invite_requests;
 pub mod invites;
@@ -21,6 +23,11 @@ use crate::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/session", get(session::get_session))
+        .route(
+            "/api/v1/me/experiments",
+            get(experiments::get_experiments).put(experiments::put_experiments),
+        )
+        .route("/api/v1/account", delete(account::delete_account))
         .route("/api/v1/mailboxes", get(mailboxes::list_mailboxes))
         .route(
             "/api/v1/mailboxes/:mailbox_id",
