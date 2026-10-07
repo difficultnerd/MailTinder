@@ -49,6 +49,7 @@ use ports::{
     ServerStore, SessionHash, SessionRecordId, TaskName, UserRecord, Versioned, WrappedKey,
 };
 use proptest::prelude::*;
+use testkit::app_folder::FolderOp;
 use testkit::scheduler::SchedulerEvent;
 use testkit::{fake_ports, Fakes, MailOp, SeedMessage};
 use time::{Duration, OffsetDateTime};
@@ -1122,5 +1123,43 @@ async fn reject_schedule_failure_restores_message() -> TestResult {
     assert!(state.rules.is_empty());
     assert!(state.recent_swipes.is_empty());
     assert_eq!(state.totals.triaged, 0);
+    Ok(())
+}
+
+/// Security review R1: a failure after the unsubscribe job is queued rolls the
+/// job back and restores the labels, so a reject can never leave a trashed
+/// message with an orphan job and no rule, stats or History entry. The
+/// user-state write is the last step, so failing it exercises exactly the
+/// window the earlier code left unrolled-back.
+#[tokio::test]
+async fn sw_03_ac1_reject_failure_after_queue_restores_message() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let id = w.seed("news", one_click_facts(Some(LIST_ID)), 10);
+    let before = w.labels_of(&id).ok_or("seeded")?;
+    assert_eq!(before, label_set(&["INBOX", "UNREAD"]));
+    // The job is queued first; the user-state write then fails with a transient
+    // provider error.
+    w.fakes.app_folder.fail_op(FolderOp::Write, 1);
+    let req = w
+        .reject_request(&session, &id, MessageClass::Notice)
+        .await?;
+    let err = err_of(swipe(&w.app, &session, Uuid::from_u128(1), req).await);
+    assert_eq!(
+        err,
+        ApiError::ProviderUnavailable {
+            mailbox_id: None,
+            retry_after_s: None
+        }
+    );
+    // The trash is undone and the job is gone: no orphan job, no rule, no stats.
+    assert_eq!(w.labels_of(&id).ok_or("still present")?, before);
+    assert!(w.jobs().await?.is_empty());
+    let state = w.state().await?;
+    assert!(state.rules.is_empty());
+    assert!(state.recent_swipes.is_empty());
+    assert!(state.pending_unsubscribes.is_empty());
+    assert_eq!(state.totals.triaged, 0);
+    assert_eq!(state.totals.unsubscribes_queued, 0);
     Ok(())
 }
