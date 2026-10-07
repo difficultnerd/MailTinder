@@ -38,8 +38,8 @@ use ports::{
     Aad, AppFolderStore, BakeoffSnapshotRepo, Ciphertext, ClassifierEvalRepo, Clock, ConfigRepo,
     InviteRepo, InviteRequestRepo, JobOutcome, JobOutcomeCode, JobRecord, JobRepo, JobScheduler,
     KeyService, ListKeyHash, MailboxCtx, MailboxRecord, MailboxRepo, NeedsAttentionId,
-    NeedsAttentionRecord, NeedsAttentionRepo, Precondition, RateLimitRepo, Repo, Rng, ServerStore,
-    SessionRepo, StoreError, TaskName, UserRecord, UserRepo, Version, Versioned,
+    NeedsAttentionRecord, NeedsAttentionRepo, Page, PageRequest, Precondition, RateLimitRepo, Repo,
+    Rng, ServerStore, SessionRepo, StoreError, TaskName, UserRecord, UserRepo, Version, Versioned,
 };
 use testkit::app_folder::FolderOp;
 use testkit::{fake_ports, Fakes, InMemoryServerStore, SchedulerEvent};
@@ -736,8 +736,15 @@ async fn inv_2_cancelled_job_keeps_outcome_and_expiry() -> Result<(), Box<dyn st
         fakes
             .store
             .jobs()
-            .expires_by(fakes.clock.now(), 100)
+            .expires_by(
+                fakes.clock.now(),
+                PageRequest {
+                    limit: 100,
+                    after: None,
+                },
+            )
             .await?
+            .items
             .iter()
             .any(|j| j.record.job_id == job),
         "the record is collectable after the retention window"
@@ -821,9 +828,9 @@ impl JobRepo for RacingJobs {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<Versioned<JobRecord>>, StoreError> {
-        self.inner.jobs().expires_by(now, limit).await
+        page: PageRequest,
+    ) -> Result<Page<Versioned<JobRecord>>, StoreError> {
+        self.inner.jobs().expires_by(now, page).await
     }
 
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
@@ -1002,6 +1009,10 @@ impl MailboxRepo for StaleOnceMailboxes {
         subject: &ProviderSubjectId,
     ) -> Result<Option<Versioned<MailboxRecord>>, StoreError> {
         self.inner.mailboxes().by_subject(provider, subject).await
+    }
+
+    async fn list(&self, page: PageRequest) -> Result<Page<Versioned<MailboxRecord>>, StoreError> {
+        self.inner.mailboxes().list(page).await
     }
 
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {

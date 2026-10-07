@@ -264,6 +264,60 @@ fn paginate<K: CursorKey + Ord, R: Keyed<Key = K>>(
     Page { items, next }
 }
 
+/// Encode a scan position `(order value, record key)` as an opaque cursor.
+///
+/// The value comes first so a resumed page skips every record whose
+/// `(value, key)` is not greater than the cursor, which keeps a scan moving
+/// even when a record between pages was deleted meanwhile.
+fn encode_position(value: i128, key: &str) -> StoreCursor {
+    StoreCursor(format!("{value}\u{1f}{key}"))
+}
+
+/// Decode a [`encode_position`] cursor.
+fn decode_position(cursor: &StoreCursor) -> Option<(i128, String)> {
+    let (value, key) = cursor.0.split_once('\u{1f}')?;
+    Some((value.parse().ok()?, key.to_owned()))
+}
+
+/// Page `items` for a scan ordered by a numeric field, then the record key.
+/// Both form the cursor, so unlike [`paginate`] a page can resume after a
+/// record between pages was deleted.
+fn paginate_by_value<R: Keyed>(
+    mut items: Vec<Versioned<R>>,
+    page: &PageRequest,
+    value: impl Fn(&R) -> i128,
+) -> Page<Versioned<R>>
+where
+    R::Key: CursorKey,
+{
+    items.sort_by(|a, b| {
+        value(&a.record)
+            .cmp(&value(&b.record))
+            .then(a.record.key().cursor().cmp(&b.record.key().cursor()))
+    });
+    if let Some(cursor) = page.after.as_ref().and_then(decode_position) {
+        let resume = items
+            .iter()
+            .position(|v| (value(&v.record), v.record.key().cursor()) > cursor);
+        match resume {
+            Some(pos) => {
+                items.drain(..pos);
+            }
+            None => items.clear(),
+        }
+    }
+    let limit = page.limit.clamp(1, MAX_PAGE) as usize;
+    let has_more = items.len() > limit;
+    let next = if has_more {
+        let last = &items[limit - 1].record;
+        Some(encode_position(value(last), &last.key().cursor()))
+    } else {
+        None
+    };
+    items.truncate(limit);
+    Page { items, next }
+}
+
 struct UsersImpl {
     table: Table<UserId, UserRecord>,
     fail_next: Arc<AtomicU32>,
@@ -392,6 +446,13 @@ impl MailboxRepo for MailboxesImpl {
             .scan()
             .into_iter()
             .find(|v| v.record.provider == provider && v.record.provider_subject_id == *subject))
+    }
+    async fn list(&self, page: PageRequest) -> Result<Page<Versioned<MailboxRecord>>, StoreError> {
+        Ok(paginate_by_value(
+            self.table.scan(),
+            &page,
+            |r: &MailboxRecord| r.linked_at.unix_timestamp_nanos(),
+        ))
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         Ok(self.table.retain(|r| r.user_id != *user))
@@ -648,22 +709,17 @@ impl JobRepo for JobsImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<Versioned<JobRecord>>, StoreError> {
-        let mut items: Vec<_> = self
+        page: PageRequest,
+    ) -> Result<Page<Versioned<JobRecord>>, StoreError> {
+        let items: Vec<_> = self
             .table
             .scan()
             .into_iter()
             .filter(|v| v.record.expires_at <= now)
             .collect();
-        items.sort_by(|a, b| {
-            a.record
-                .expires_at
-                .cmp(&b.record.expires_at)
-                .then(a.record.job_id.cmp(&b.record.job_id))
-        });
-        items.truncate(limit as usize);
-        Ok(items)
+        Ok(paginate_by_value(items, &page, |r: &JobRecord| {
+            r.expires_at.unix_timestamp_nanos()
+        }))
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         Ok(self.table.retain(|r| r.user_id != *user))
@@ -745,17 +801,21 @@ impl NeedsAttentionRepo for NeedsAttentionImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        _limit: u32,
-    ) -> Result<Vec<NeedsAttentionId>, StoreError> {
-        let mut ids: Vec<_> = self
+        page: PageRequest,
+    ) -> Result<Page<NeedsAttentionId>, StoreError> {
+        let items: Vec<_> = self
             .table
             .scan()
             .into_iter()
             .filter(|v| v.record.expires_at <= now)
-            .map(|v| v.record.item_id)
             .collect();
-        ids.sort();
-        Ok(ids)
+        let paged = paginate_by_value(items, &page, |r: &NeedsAttentionRecord| {
+            r.expires_at.unix_timestamp_nanos()
+        });
+        Ok(Page {
+            items: paged.items.into_iter().map(|v| v.record.item_id).collect(),
+            next: paged.next,
+        })
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         Ok(self.table.retain(|r| r.user_id != *user))
@@ -811,17 +871,25 @@ impl SessionRepo for SessionsImpl {
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        _limit: u32,
-    ) -> Result<Vec<SessionHash>, StoreError> {
-        let mut ids: Vec<_> = self
+        page: PageRequest,
+    ) -> Result<Page<SessionHash>, StoreError> {
+        let items: Vec<_> = self
             .table
             .scan()
             .into_iter()
             .filter(|v| v.record.expires_at <= now)
-            .map(|v| v.record.session_hash)
             .collect();
-        ids.sort();
-        Ok(ids)
+        let paged = paginate_by_value(items, &page, |r: &SessionRecord| {
+            r.expires_at.unix_timestamp_nanos()
+        });
+        Ok(Page {
+            items: paged
+                .items
+                .into_iter()
+                .map(|v| v.record.session_hash)
+                .collect(),
+            next: paged.next,
+        })
     }
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError> {
         Ok(self.table.retain(|r| r.user_id != Some(*user)))
