@@ -10,8 +10,8 @@ use std::sync::Arc;
 use domain::feed::{card_visible, feed_order, is_boss};
 use domain::user_state::{MailboxPosition, SkipReturn, SkipState, UserState};
 use domain::{
-    header_guard, next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId,
-    MessageMeta, Provider, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
+    next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId, MessageMeta,
+    Provider, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
 };
 use futures::stream::{self, StreamExt};
 use ports::store::{aad_fields, MailboxRecord, Precondition, Versioned};
@@ -19,10 +19,11 @@ use ports::{Aad, MailError, MailboxCtx, MessagePage, MessageQuery, WrappedKey};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::classify::{classify_page, CardToClassify, ClassifiedCard};
 use crate::error::ApiError;
 use crate::routes::feed::{
-    BossDto, CardDto, ClassificationPayload, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto,
-    Phase, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
+    BossDto, CardDto, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto, Phase, FEED_LIMIT_MAX,
+    SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
 use crate::services::user_state_store::UserStateStore;
@@ -200,11 +201,7 @@ pub async fn next_page(
         expires_at,
     };
     let all: Vec<MessageMeta> = page_metas.into_iter().chain(returns).collect();
-    let built: Vec<Option<Built>> = bounded(all.into_iter().map(|m| build_card(&env, m)))
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let built: Vec<Built> = built.into_iter().flatten().collect();
+    let built = build_cards(&env, all).await?;
 
     // Steps 13 and 14: one state write, then the cursor.
     persist(
@@ -773,30 +770,76 @@ fn seal_error(e: TokenError) -> ApiError {
     }
 }
 
-/// Step 11: one card. `None` drops the message silently (FD-04 AC1).
-async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, ApiError> {
+/// Step 11: previews, then one classification pass for the page, then the cards.
+async fn build_cards(env: &Env<'_>, all: Vec<MessageMeta>) -> Result<Vec<Built>, ApiError> {
+    let previews: Vec<Option<(MessageMeta, String)>> =
+        bounded(all.into_iter().map(|m| fetch_preview(env, m))).await;
+    let previews: Vec<(MessageMeta, String)> = previews.into_iter().flatten().collect();
+    // One pipeline for every card on the page (T-901).
+    let to_classify: Vec<CardToClassify<'_>> = previews
+        .iter()
+        .map(|(meta, preview)| CardToClassify {
+            meta,
+            stripped_text: preview,
+            provider: env
+                .live
+                .get(&meta.mailbox.0)
+                .map_or(Provider::Gmail, |l| l.provider),
+        })
+        .collect();
+    let classified = classify_page(
+        &env.app.classifiers,
+        env.app.bakeoff_gate,
+        env.app.ports.clock.now(),
+        &to_classify,
+    )
+    .await;
+    drop(to_classify);
+    let built: Vec<Option<Built>> = bounded(
+        previews
+            .into_iter()
+            .zip(classified)
+            .map(|((meta, preview), classified)| build_card(env, meta, preview, classified)),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(built.into_iter().flatten().collect())
+}
+
+/// Step 11, first half: the preview for one card. `None` drops the message
+/// silently (FD-04 AC1).
+async fn fetch_preview(env: &Env<'_>, meta: MessageMeta) -> Option<(MessageMeta, String)> {
+    let live = env.live.get(&meta.mailbox.0)?;
+    let provider = env.app.ports.mail(live.provider);
+    match provider.get_preview(&live.ctx, &meta.id).await {
+        Ok(text) => Some((meta, plain_text(&text, PREVIEW_MAX_CHARS))),
+        Err(MailError::NotFound) => None,
+        Err(_) => Some((meta, String::new())),
+    }
+}
+
+/// Step 11, second half: one card from its classification. The badge is the
+/// guarded header-rules answer; model output only travels inside the token.
+async fn build_card(
+    env: &Env<'_>,
+    meta: MessageMeta,
+    preview: String,
+    classified: ClassifiedCard,
+) -> Result<Option<Built>, ApiError> {
     let Some(live) = env.live.get(&meta.mailbox.0) else {
         return Ok(None);
     };
     let provider = env.app.ports.mail(live.provider);
-    let preview = match provider.get_preview(&live.ctx, &meta.id).await {
-        Ok(text) => plain_text(&text, PREVIEW_MAX_CHARS),
-        Err(MailError::NotFound) => return Ok(None),
-        Err(_) => String::new(),
-    };
-    let header_rules = HeaderRules::classify(&meta.facts, &meta.sender);
-    let shown = header_guard(&meta.facts, &header_rules, Some(&header_rules)).classification;
+    let ClassifiedCard {
+        badge: shown,
+        payload,
+    } = classified;
     let (method, one_click) = match HeaderRules::unsubscribe_route(&meta.facts) {
         UnsubscribeRoute::OneClick(_) => ("one_click", true),
         UnsubscribeRoute::Mailto(_) => ("mailto", false),
         UnsubscribeRoute::ManualLink(_) => ("manual", false),
         UnsubscribeRoute::None => ("none", false),
-    };
-    let payload = ClassificationPayload {
-        mailbox_id: meta.mailbox.0,
-        message_id: meta.id.as_str().to_owned(),
-        header_rules,
-        classifier_id: HEADER_RULES_ID.to_owned(),
     };
     let classification_token = env
         .sealer

@@ -18,4 +18,8 @@ pub struct AppState {
     pub tokens: Arc<TokenService>,
     /// Sends the invite email from the admin's own mailbox (T-505).
     pub invite_mailer: Arc<dyn InviteMailer>,
+    /// The bake-off models (T-901); empty until T-904 and T-905 wire them.
+    pub classifiers: crate::classify::ClassifierSet,
+    /// Stand-in for the per-request gate (T-902 consent AND T-906b switch); closed.
+    pub bakeoff_gate: crate::classify::BakeoffGate,
 }

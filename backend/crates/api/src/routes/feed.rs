@@ -142,6 +142,11 @@ pub struct ClassificationPayload {
     pub header_rules: Classification,
     /// `header_rules@1`.
     pub classifier_id: String,
+    /// When the card was sealed, for time to swipe (T-906a).
+    #[serde(with = "time::serde::rfc3339")]
+    pub issued_at: time::OffsetDateTime,
+    /// `None` when the gate was closed for both models.
+    pub bakeoff: Option<crate::classify::BakeoffPayload>,
 }
 
 /// `POST /api/v1/feed/next` (API-FEED-1).

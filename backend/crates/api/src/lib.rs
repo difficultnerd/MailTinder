@@ -1,6 +1,7 @@
 //! The `MailTinder` API service.
 
 pub mod auth;
+pub mod classify;
 pub mod config;
 pub mod error;
 pub mod experiments;
@@ -278,5 +279,7 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         limits,
         tokens: Arc::new(crate::tokens::TokenService::new()),
         invite_mailer,
+        classifiers: classify::ClassifierSet::default(),
+        bakeoff_gate: classify::BakeoffGate::default(),
     }
 }

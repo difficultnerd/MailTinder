@@ -265,7 +265,7 @@ async fn owned_mailbox(
 
 /// Step 4: the classification token. Its clear type must be `classification`
 /// and, if it opens, it must name this mailbox and message; every other open
-/// failure just means no `classifier_eval` record is written (T-906a).
+/// failure is `400 invalid_request`; no model is called here (BAKE-5).
 async fn check_classification_token(
     sealer: &SealedTokens,
     session: &AuthedSession,
@@ -296,11 +296,10 @@ async fn check_classification_token(
             mailbox_id: None,
             retry_after_s: None,
         }),
-        Err(TokenError::WrongType | TokenError::Malformed) => Err(ApiError::InvalidRequest {
+        // Wrong type, expired, for another user or session, or tampered with (CL-03 AC4).
+        Err(_) => Err(ApiError::InvalidRequest {
             fields: vec!["classification_token".to_owned()],
         }),
-        // Expired, for another user or session, or tampered with: proceed.
-        Err(_) => Ok(()),
     }
 }
 
