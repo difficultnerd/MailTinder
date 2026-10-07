@@ -12,6 +12,8 @@ use obs::{Pseudonymiser, SecurityEvent};
 use ports::store::aad_fields;
 use ports::{Aad, AppFolderError, ETag, MailboxCtx, WrappedKey};
 
+use uuid::Uuid;
+
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -153,6 +155,36 @@ impl UserStateStore {
             mailbox_id: None,
             retry_after_s: Some(1),
         })
+    }
+
+    /// `update`, but applied at most once per swipe. When a `RecentSwipe` with
+    /// `swipe_id` is already in the state, `f` is not applied and `false` is
+    /// returned.
+    ///
+    /// The check runs inside the write closure, so an `ETag`-conflict retry
+    /// re-reads the state and re-evaluates it: two concurrent requests with the
+    /// same `Idempotency-Key` cannot both apply, whichever order they resolve
+    /// in (ASVS V2.3.4). The losing side answers from the recorded response.
+    ///
+    /// # Errors
+    /// As `update`.
+    pub async fn update_once<F>(
+        &self,
+        user: &UserId,
+        swipe_id: Uuid,
+        f: F,
+    ) -> Result<bool, ApiError>
+    where
+        F: Fn(&mut UserState) + Send,
+    {
+        self.update(user, move |s: &mut UserState| {
+            if s.recent_swipes.iter().any(|r| r.swipe_id == swipe_id) {
+                return false;
+            }
+            f(s);
+            true
+        })
+        .await
     }
 
     /// The file exists but cannot be read; it is never overwritten.

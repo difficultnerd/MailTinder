@@ -186,8 +186,14 @@ pub async fn swipe(
         skip_queue,
         stored_json: stored_json(&result, &undo)?,
     };
-    persist(&store, &user, effects).await?;
-    Ok(result)
+    let applied = persist(&store, &user, effects).await?;
+    if applied {
+        return Ok(result);
+    }
+    // The losing side of a concurrent request with the same `Idempotency-Key`:
+    // answer from the response the winner recorded, exactly as the sequential
+    // retry path does, and never apply the effects twice (ASVS V2.3.4).
+    answer_recorded(&store, &user, sid, &seal, result).await
 }
 
 /// The request body rules (S7 5.5): `file` needs exactly one of `category_id`
@@ -461,11 +467,36 @@ pub(crate) fn stored_json(result: &SwipeResultDto, undo: &UndoPayload) -> Result
 
 /// Step 2, retry path: rebuild the recorded response and re-seal its undo
 /// payload under the current session.
-async fn rebuild(seal: &SealCtx<'_>, json: &str) -> Result<SwipeResultDto, ApiError> {
+pub(crate) async fn rebuild(seal: &SealCtx<'_>, json: &str) -> Result<SwipeResultDto, ApiError> {
     let stored: StoredSwipe = serde_json::from_str(json).map_err(|_| ApiError::Internal)?;
     let mut result = stored.result;
     result.undo_token = seal.seal_undo(&stored.undo).await?;
     Ok(result)
+}
+
+/// The losing side of a concurrent same-key swipe: the response the winner
+/// recorded, re-sealed for the caller's session. `fallback` is used only if the
+/// record vanished between the write and this read, which cannot happen in the
+/// same request without a concurrent undo.
+pub(crate) async fn answer_recorded(
+    store: &UserStateStore,
+    user: &UserId,
+    sid: Uuid,
+    seal: &SealCtx<'_>,
+    fallback: SwipeResultDto,
+) -> Result<SwipeResultDto, ApiError> {
+    let stored = store
+        .load(user)
+        .await?
+        .state
+        .recent_swipes
+        .into_iter()
+        .find(|r| r.swipe_id == sid)
+        .map(|r| r.result_json);
+    match stored {
+        Some(json) => rebuild(seal, &json).await,
+        None => Ok(fallback),
+    }
 }
 
 /// Everything step 10's one state write needs.
@@ -486,10 +517,12 @@ struct Effects {
 
 /// Step 10: one `UserStateStore::update`. The closure is pure: it only copies
 /// in values computed before the call, so a retry after an `ETag` conflict is
-/// safe.
-async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<(), ApiError> {
+/// safe. `false` means a concurrent request with the same `Idempotency-Key`
+/// already applied this swipe, so nothing here was applied.
+async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bool, ApiError> {
+    let sid = e.sid;
     store
-        .update(user, move |s: &mut UserState| {
+        .update_once(user, sid, move |s: &mut UserState| {
             if s.skips.session_record_id != Some(e.session) {
                 s.skips = SkipState {
                     session_record_id: Some(e.session),
