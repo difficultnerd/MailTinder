@@ -37,6 +37,7 @@ fn checks() -> &'static [(&'static str, Check)] {
         ("event", Check::Registry(registry::EVENTS)),
         ("request_id", Check::Uuid),
         ("user_pseudo", Check::Pseudo),
+        ("target_user_pseudo", Check::Pseudo),
         ("route", Check::Registry(registry::OPS)),
         ("status", Check::Int(100, 599)),
         ("latency_ms", Check::UInt),

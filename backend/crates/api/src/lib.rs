@@ -53,6 +53,8 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/admin/invite-requests",
     "/api/v1/admin/invite-requests/{request_id}/approve",
     "/api/v1/admin/invite-requests/{request_id}/decline",
+    "/api/v1/admin/users",
+    "/api/v1/admin/users/{user_id}/sessions",
 ];
 
 use crate::config::ApiConfig;
