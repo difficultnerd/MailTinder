@@ -10,6 +10,7 @@ pub mod invites;
 pub mod mailboxes;
 pub mod needs_attention;
 pub mod progress;
+pub mod rules;
 pub mod session;
 pub mod swipes;
 
@@ -64,6 +65,14 @@ pub fn router() -> Router<AppState> {
             "/api/v1/categories/:category_id/messages",
             get(categories::messages),
         )
+        // API-RULE-1 to API-RULE-5 (T-608). The writes are CSRF-checked by
+        // `csrf_layer` like every other `/api/v1` route.
+        .route("/api/v1/rules", get(rules::list).post(rules::create))
+        .route(
+            "/api/v1/rules/:rule_id",
+            patch(rules::patch).delete(rules::delete),
+        )
+        .route("/api/v1/block-prompts/decline", post(rules::decline))
         .route("/api/v1/auth/sign-out", post(session::sign_out))
         .route("/api/v1/invite-requests", post(invite_requests::request))
         .route(
