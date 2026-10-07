@@ -196,8 +196,11 @@ mod tests {
         use proptest::prelude::*;
         // A string under an `_at` key must be a valid RFC 3339 timestamp
         // (the `_at` rule, T-201b), so every generated string is a canonical
-        // timestamp. That keeps the round-trip identity at any nesting depth.
-        let timestamp = "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+        // timestamp. The field ranges are real (month 01-12, day 01-28, hour
+        // 00-23 and so on): `[0-9]{2}` would let the generator build
+        // `2026-13-45T25:00:00Z`, which `to_fields` refuses as a bad response
+        // and the round trip never gets to see.
+        let timestamp = "[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|1[0-9]|2[0-8])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z"
             .prop_map(|s| Value::String(s.clone()));
         let leaf = prop_oneof![
             Just(Value::Null),

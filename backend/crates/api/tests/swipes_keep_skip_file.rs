@@ -33,7 +33,7 @@ use api::services::user_state_store::UserStateStore;
 use api::session::extract::AuthedSession;
 use api::state::AppState;
 use api::{app_state, config::ApiConfig};
-use domain::user_state::{Category, UserState};
+use domain::user_state::{Category, RecentSwipe, UserState};
 use domain::{
     Classification, EmailAddress, LabelSet, MailboxId, MessageClass, MessageId, Provider,
     ProviderSubjectId, SenderKey, SenderStats, SwipeAction, SwipeOutcome, SwipeRecord, UserId,
@@ -758,6 +758,39 @@ async fn asvs_v2_3_4_retried_swipe_counts_once() -> TestResult {
     // The retry is answered from the recorded response: no second re-read.
     assert_eq!(w.fakes.mailbox.calls(MailOp::GetMeta), 1);
     assert!(second.undo_token.starts_with("mt1.undo."));
+    Ok(())
+}
+
+#[tokio::test]
+async fn asvs_v2_3_4_concurrent_same_key_swipe_applied_once() -> TestResult {
+    let w = World::new().await?;
+    let store = UserStateStore::new(Arc::new(w.app.clone()));
+    let sid = Uuid::from_u128(0x0005_ee01);
+    let now = w.fakes.clock.now();
+    fn apply(s: &mut UserState, sid: Uuid, now: OffsetDateTime) {
+        s.totals.triaged = s.totals.triaged.saturating_add(1);
+        s.recent_swipes.push(RecentSwipe {
+            swipe_id: sid,
+            at: now,
+            result_json: "{}".to_owned(),
+        });
+    }
+    // The winner of the race applies its effects.
+    assert!(
+        store
+            .update_once(&w.user, sid, |s| apply(s, sid, now))
+            .await?
+    );
+    // The loser is `update`'s closure re-run on the fresh state after an `ETag`
+    // conflict: the same `swipe_id` is already there, so nothing is applied.
+    assert!(
+        !store
+            .update_once(&w.user, sid, |s| apply(s, sid, now))
+            .await?
+    );
+    let state = w.state().await?;
+    assert_eq!(state.totals.triaged, 1);
+    assert_eq!(state.recent_swipes.len(), 1);
     Ok(())
 }
 

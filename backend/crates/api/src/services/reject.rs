@@ -29,6 +29,7 @@ use ports::{
     NeedsAttentionRecord, Precondition, StoreError, WrappedKey,
 };
 use serde::{Deserialize, Serialize};
+use svc_common::links::safe_link;
 use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
@@ -82,6 +83,7 @@ pub struct BlockPromptRef {
 /// `ProviderError`, `ProviderUnavailable` or `MailboxNeedsSignIn` from the
 /// provider, `ProviderUnavailable` when the job cannot be stored or scheduled
 /// (the trash is then undone), `Internal` for a store failure.
+#[allow(clippy::too_many_lines)]
 pub async fn execute(
     app: &AppState,
     session: &AuthedSession,
@@ -109,87 +111,135 @@ pub async fn execute(
     // Step 2: the provider change.
     let previous_labels = change_mailbox(&**mail, ctx, meta, plan).await?;
 
-    // Steps 3 and 4: the job (never without the trash) and the manual item.
+    // Step 3: the job (never without the trash).
     if let Some(unsub) = &plan.unsubscribe {
-        let queued = queue_job(app, &user, &wrapped, meta, unsub, &tunables).await;
-        if let Err(e) = queued {
+        if let Err(e) = queue_job(app, &user, &wrapped, meta, unsub, &tunables).await {
             rollback_job(app, &**mail, ctx, meta, unsub.job_id, &previous_labels).await;
             return Err(e);
         }
     }
-    let na_item = match &plan.manual_unsubscribe {
-        Some(manual) => {
-            let link = manual.link.as_ref();
-            Some(raise_item(app, &user, &wrapped, meta, link, now, &tunables).await?)
+
+    // Steps 4 to 9: once the job is queued, any later failure must undo it as
+    // well as the trash, so a reject can never leave a trashed message plus an
+    // orphan job with no rule, stats or History entry (security review R1). The
+    // losing side of a same-key race is not a failure: the winner's effects are
+    // already stored, so it is returned as `Persisted::Lost` and never rolled
+    // back.
+    let outcome: Result<Persisted, ApiError> = async {
+        let na_item = match &plan.manual_unsubscribe {
+            Some(manual) => {
+                let link = manual.link.as_ref();
+                Some(raise_item(app, &user, &wrapped, meta, link, now, &tunables).await?)
+            }
+            None => None,
+        };
+
+        // Step 5: the mail-stopped estimate, one count over all folders.
+        let rate = if plan.rule.is_some() || plan.unsubscribe.is_some() {
+            mail_stopped_rate(&**mail, ctx, meta, now).await
+        } else {
+            None
+        };
+
+        // Steps 6 to 9: read state, build the response, write once.
+        let store = UserStateStore::new(Arc::new(app.clone()));
+        let loaded = store.load(&user).await?;
+        let state = &loaded.state;
+        let was_boss = is_boss(meta.sender.as_str(), &state.sender_stats, &tunables);
+        let mut stats_after = plan.stats_after.clone();
+        let boss_defeated = defeat_boss_on_reject(&mut stats_after, was_boss);
+        let new_rule = new_rule_for(state, plan, rate);
+
+        let expires_at = now + Duration::hours(SWIPE_TOKEN_TTL_HOURS);
+        let sealer = SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
+        let seal = SealCtx {
+            sealer: &sealer,
+            session,
+            user: &user,
+            wrapped: &wrapped,
+            expires_at,
+        };
+        let mut prompts = Vec::new();
+        if plan.block_prompt {
+            prompts.push(block_prompt(&seal, meta, swipe_id).await?);
         }
-        None => None,
-    };
 
-    // Step 5: the mail-stopped estimate, one count over all folders.
-    let rate = if plan.rule.is_some() || plan.unsubscribe.is_some() {
-        mail_stopped_rate(&**mail, ctx, meta, now).await
-    } else {
-        None
-    };
-
-    // Steps 6 to 9: read state, build the response, write once.
-    let store = UserStateStore::new(Arc::new(app.clone()));
-    let loaded = store.load(&user).await?;
-    let state = &loaded.state;
-    let was_boss = is_boss(meta.sender.as_str(), &state.sender_stats, &tunables);
-    let mut stats_after = plan.stats_after.clone();
-    let boss_defeated = defeat_boss_on_reject(&mut stats_after, was_boss);
-    let new_rule = new_rule_for(state, plan, rate);
-
-    let expires_at = now + Duration::hours(SWIPE_TOKEN_TTL_HOURS);
-    let sealer = SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
-    let seal = SealCtx {
-        sealer: &sealer,
-        session,
-        user: &user,
-        wrapped: &wrapped,
-        expires_at,
-    };
-    let mut prompts = Vec::new();
-    if plan.block_prompt {
-        prompts.push(block_prompt(&seal, meta, swipe_id).await?);
+        let suspect = plan.change == MailboxChange::ReportSpamAndTrash;
+        let undo = undo_payload(
+            plan,
+            meta,
+            now,
+            swipe_id,
+            previous_labels.clone(),
+            new_rule.as_ref(),
+            na_item,
+        );
+        let result = SwipeResultDto {
+            outcome: plan.outcome,
+            unsubscribe_due_at: plan.unsubscribe.as_ref().map(|u| u.due_at),
+            filed_category: None,
+            undo_token: seal.seal_undo(&undo).await?,
+            prompts,
+            achievements_unlocked: Vec::new(),
+            boss_defeated,
+        };
+        let writes = Writes {
+            sid: swipe_id,
+            session: session.session_record_id.0,
+            now,
+            mailbox: meta.mailbox,
+            sender_key: meta.sender.as_str().to_owned(),
+            display: meta.from_display.clone(),
+            list_id: meta.facts.list_id.clone(),
+            stats_after,
+            new_rule,
+            job: plan.unsubscribe.as_ref().map(|u| u.job_id),
+            suspect,
+            stored_json: stored_json(&result, &undo)?,
+        };
+        if persist(&store, &user, writes).await? {
+            return Ok(Persisted::Applied(result));
+        }
+        Ok(Persisted::Lost(result))
     }
+    .await;
 
-    let suspect = plan.change == MailboxChange::ReportSpamAndTrash;
-    let undo = undo_payload(
-        plan,
-        meta,
-        now,
-        swipe_id,
-        previous_labels,
-        new_rule.as_ref(),
-        na_item,
-    );
-    let result = SwipeResultDto {
-        outcome: plan.outcome,
-        unsubscribe_due_at: plan.unsubscribe.as_ref().map(|u| u.due_at),
-        filed_category: None,
-        undo_token: seal.seal_undo(&undo).await?,
-        prompts,
-        achievements_unlocked: Vec::new(),
-        boss_defeated,
-    };
-    let writes = Writes {
-        sid: swipe_id,
-        session: session.session_record_id.0,
-        now,
-        mailbox: meta.mailbox,
-        sender_key: meta.sender.as_str().to_owned(),
-        display: meta.from_display.clone(),
-        list_id: meta.facts.list_id.clone(),
-        stats_after,
-        new_rule,
-        job: plan.unsubscribe.as_ref().map(|u| u.job_id),
-        suspect,
-        stored_json: stored_json(&result, &undo)?,
-    };
-    persist(&store, &user, writes).await?;
-    Ok(result)
+    match outcome {
+        Ok(Persisted::Applied(result)) => Ok(result),
+        Ok(Persisted::Lost(result)) => {
+            // The losing side of a concurrent request with the same
+            // `Idempotency-Key`: answer from the response the winner recorded,
+            // exactly as the sequential retry path does, and never apply the
+            // effects twice (ASVS V2.3.4).
+            let store = UserStateStore::new(Arc::new(app.clone()));
+            let sealer =
+                SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
+            let seal = SealCtx {
+                sealer: &sealer,
+                session,
+                user: &user,
+                wrapped: &wrapped,
+                expires_at: now + Duration::hours(SWIPE_TOKEN_TTL_HOURS),
+            };
+            crate::services::swipe::answer_recorded(&store, &user, swipe_id, &seal, result).await
+        }
+        Err(e) => {
+            if let Some(unsub) = &plan.unsubscribe {
+                rollback_job(app, &**mail, ctx, meta, unsub.job_id, &previous_labels).await;
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The result of steps 4 to 9 of a reject: either this request applied the
+/// effects, or it lost a same-key race and must answer from the winner's record.
+enum Persisted {
+    /// This request won: the response is its own.
+    Applied(SwipeResultDto),
+    /// A concurrent request with the same `Idempotency-Key` already stored the
+    /// effects; the response is rebuilt from that record by the caller.
+    Lost(SwipeResultDto),
 }
 
 /// Step 2: trash, or report spam and then trash. Returns the labels before the
@@ -310,6 +360,10 @@ async fn queue_job(
     )
     .await
     .map_err(|_| unavailable())?;
+    let state = JobState::new_queued(unsub.due_at, tunables);
+    // The sender display is sealed for T-701's runner to raise the Needs
+    // Attention item and clear at finish (`aad_fields::JOB_SENDER_DISPLAY`,
+    // scope = job ID). It is written here, with the job, never in clear.
     let sender_display = seal_field(
         app,
         user,
@@ -320,7 +374,6 @@ async fn queue_job(
     )
     .await
     .map_err(|_| unavailable())?;
-    let state = JobState::new_queued(unsub.due_at, tunables);
     let key = HmacKey(app.config.email_lookup_key.clone());
     let record = JobRecord {
         job_id: unsub.job_id,
@@ -376,6 +429,12 @@ async fn rollback_job(
 
 /// Step 4: the https-only Needs Attention item, keyed on user and sender so a
 /// retry or a second reject of the same sender does not duplicate it.
+///
+/// The link is sanitised by `svc_common::links::safe_link` (T-704, ASVS
+/// V1.2.2) before it is encrypted: only an `https` URL with a host, no
+/// username or password, no control characters or whitespace and at most
+/// `MAX_LINK_CHARS` characters is stored. Anything else becomes `None`, so the
+/// item shows no "Open unsubscribe page" link rather than an unsafe one.
 async fn raise_item(
     app: &AppState,
     user: &UserId,
@@ -391,7 +450,7 @@ async fn raise_item(
     let item_id = NeedsAttentionId(Uuid::new_v5(&NS_NA_ITEM, &bytes));
     let item = NewNeedsAttention::new(
         NeedsAttentionReason::HttpsOnlyUnsubscribe,
-        link.cloned(),
+        link.and_then(|u| safe_link(u.as_str())),
         now,
         tunables,
     );
@@ -505,10 +564,12 @@ struct Writes {
 }
 
 /// Step 8: one `UserStateStore::update`. The closure is pure over `w`, so a
-/// retry after an `ETag` conflict is safe.
-async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<(), ApiError> {
+/// retry after an `ETag` conflict is safe. `false` means a concurrent request
+/// with the same `Idempotency-Key` already applied this reject.
+async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<bool, ApiError> {
+    let sid = w.sid;
     store
-        .update(user, move |s: &mut UserState| apply(s, &w))
+        .update_once(user, sid, move |s: &mut UserState| apply(s, &w))
         .await
 }
 

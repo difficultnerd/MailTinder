@@ -7,14 +7,20 @@
 
 use std::sync::Arc;
 
-use domain::undo::{plan_undo, reverse_stats, SwipeRecord, UndoResponse};
-use domain::user_state::UserState;
-use domain::{SwipeAction, UserId};
-use ports::WrappedKey;
+use domain::undo::{
+    plan_undo, reverse_stats, undo_response, JobCancelOutcome, SwipeRecord, UndoResponse,
+};
+use domain::user_state::{HistoryAction, HistoryEntry, HistoryOutcome, UserState};
+use domain::{JobStatus, SwipeAction, UserId};
+use obs::{Pseudonymiser, SecurityEvent};
+use ports::store::NeedsAttentionId;
+use ports::{Precondition, WrappedKey};
+use time::OffsetDateTime;
 
 use crate::error::ApiError;
 use crate::sealed::{http_status_for, SealedTokens, TokenType};
 use crate::services::categories::provider_error;
+use crate::services::jobs::{cancel_queued_job, CancelResult};
 use crate::services::swipe::UndoPayload;
 use crate::services::user_state_store::UserStateStore;
 use crate::session::extract::AuthedSession;
@@ -27,8 +33,7 @@ use crate::state::AppState;
 /// `UndoExpired` for a token that does not open or that names a swipe which has
 /// already been undone, `NotFound` when the mailbox is
 /// gone, `MailboxNeedsSignIn` or `ProviderError` when the provider refuses the
-/// restore (the token stays valid), `Internal` for a `reject` (T-606) or a
-/// store failure.
+/// restore (the token stays valid), `Internal` for a store failure.
 pub async fn undo(
     app: &AppState,
     session: &AuthedSession,
@@ -49,9 +54,9 @@ pub async fn undo(
         .await
         .map_err(open_error)?;
 
-    // Step 2: `reject` undo belongs to T-606.
+    // Step 2: `reject` undo also cancels the job and removes the rule (T-606).
     if payload.record.action == SwipeAction::Reject {
-        return Err(ApiError::Internal);
+        return undo_reject(app, session, &payload).await;
     }
     let plan = plan_undo(&payload.record);
 
@@ -145,6 +150,203 @@ fn reverse(
     }
     s.recent_swipes.retain(|r| r.swipe_id != swipe);
     true
+}
+
+/// Undo a `reject` (T-606; SW-05 AC1 to AC5, UN-01 AC1/AC3, INV-6).
+///
+/// Cancels the queued job first, so the cancel has the best chance of beating
+/// the due time; restores the exact previous labels (also after a spam report);
+/// removes the rule and Needs Attention item the swipe created; reverses the
+/// counts and the spam History entry; and, when the cancel won, removes the job
+/// and appends the cancelled unsubscribe to History (UN-01 AC3).
+///
+/// # Errors
+///
+/// `UndoExpired` for a token whose swipe record is already gone (single-use),
+/// `NotFound` when the mailbox is gone, `503`/`502` when the provider refuses
+/// the restore (the token stays valid), `Internal` for a store failure.
+#[allow(clippy::too_many_lines)]
+pub async fn undo_reject(
+    app: &AppState,
+    session: &AuthedSession,
+    payload: &UndoPayload,
+) -> Result<UndoResponse, ApiError> {
+    let user = session.user;
+    let record = payload.record.clone();
+    let store = UserStateStore::new(Arc::new(app.clone()));
+
+    // The token is single-use (T-604 F1): its swipe record must still be in
+    // `recent_swipes`. A gone record means this undo already ran.
+    if !store
+        .load(&user)
+        .await?
+        .state
+        .recent_swipes
+        .iter()
+        .any(|r| r.swipe_id == payload.swipe_id)
+    {
+        return Err(ApiError::UndoExpired);
+    }
+
+    // Step 1: cancel the queued job (conditional `queued -> cancelled`) before
+    // anything else. A terminal job is mapped to its answer.
+    let outcome = match record.job_id {
+        Some(job) => cancel_outcome(&cancel_queued_job(app, &job).await?),
+        None => JobCancelOutcome::NoJob,
+    };
+
+    // Step 2: put the exact previous label set back. A failure changes nothing,
+    // so the token stays valid; the cancelled job stays `Cancelled`, so a retry
+    // maps `NotQueued(Cancelled)` back to `Cancelled` and gives the same answer.
+    if let Some(exact) = plan_undo(&record).restore_labels {
+        restore(app, &user, &record, &exact).await?;
+    }
+
+    // Step 3: the Needs Attention item belonged to this swipe.
+    if let Some(item) = payload.na_item {
+        app.ports
+            .store
+            .needs_attention()
+            .delete(&NeedsAttentionId(item), Precondition::None)
+            .await?;
+    }
+
+    // Step 4: one state write reverses every recorded change. The record is
+    // claimed inside that write, so a concurrent replay changes nothing and
+    // also answers `410`.
+    let history_entry = payload.history_entry;
+    let swipe = payload.swipe_id;
+    let now = app.ports.clock.now();
+    let job = record.job_id;
+    let claimed = store
+        .update(&user, move |s: &mut UserState| {
+            reverse_reject(&record, history_entry, now, outcome, swipe, s)
+        })
+        .await?;
+    if !claimed {
+        return Err(ApiError::UndoExpired);
+    }
+
+    // Step 5: with the cancel won, the job record goes last, so every earlier
+    // failure leaves a retryable `Cancelled` record.
+    if outcome == JobCancelOutcome::Cancelled {
+        if let Some(job) = job {
+            app.ports
+                .store
+                .jobs()
+                .delete(&job, Precondition::None)
+                .await?;
+        }
+    }
+
+    // Step 6: `unsubscribe_already_sent` is true only for `AlreadySent`.
+    security_event(app, &user, outcome);
+    Ok(undo_response(outcome))
+}
+
+/// Map the store result to T-105b's outcome. The only place this mapping lives.
+#[must_use]
+pub fn cancel_outcome(r: &CancelResult) -> JobCancelOutcome {
+    match r {
+        // An earlier undo attempt cancelled it, then failed later.
+        CancelResult::Cancelled | CancelResult::NotQueued(JobStatus::Cancelled) => {
+            JobCancelOutcome::Cancelled
+        }
+        // The runner claimed it; a request may have gone, or the record was
+        // collected by a Feed load after it ran. `NotQueued(Queued)` is
+        // unreachable by construction; treat it as sent.
+        CancelResult::NotQueued(
+            JobStatus::Running | JobStatus::Sent | JobStatus::NeedsAttention | JobStatus::Queued,
+        )
+        | CancelResult::Missing => JobCancelOutcome::AlreadySent,
+        CancelResult::NotQueued(JobStatus::Failed | JobStatus::Expired) => {
+            JobCancelOutcome::AlreadyFinishedNotSent
+        }
+    }
+}
+
+/// Reverse the state a reject applied. Returns `false`, and changes nothing,
+/// when the swipe record is already gone: a concurrent or replayed undo must
+/// not be applied twice.
+fn reverse_reject(
+    record: &SwipeRecord,
+    history_entry: Option<uuid::Uuid>,
+    now: OffsetDateTime,
+    outcome: JobCancelOutcome,
+    swipe: uuid::Uuid,
+    s: &mut UserState,
+) -> bool {
+    if !s.recent_swipes.iter().any(|r| r.swipe_id == swipe) {
+        return false;
+    }
+    if let Some(stats) = s.sender_stats.get_mut(record.sender.as_str()) {
+        reverse_stats(record, stats);
+        // The swipe may have defeated a boss; undo puts the boss back.
+        stats.boss_defeated = false;
+    }
+    // Remove only the rule this swipe created (`rule_id` is `None` when an
+    // identical rule already existed).
+    if let Some(rule_id) = record.rule_id {
+        let before = s.rules.len();
+        s.rules.retain(|r| r.rule.rule_id != rule_id);
+        if s.rules.len() != before {
+            s.totals.senders_silenced = s.totals.senders_silenced.saturating_sub(1);
+        }
+    }
+    // The `reported_spam` History entry this swipe wrote.
+    if let Some(entry_id) = history_entry {
+        s.history.retain(|h| h.entry_id != entry_id);
+    }
+    s.totals.triaged = s.totals.triaged.saturating_sub(1);
+    s.totals.cleared = s.totals.cleared.saturating_sub(1);
+    if record.job_id.is_some() {
+        s.totals.unsubscribes_queued = s.totals.unsubscribes_queued.saturating_sub(1);
+        s.totals.round_unsubscribes = s.totals.round_unsubscribes.saturating_sub(1);
+    }
+    // A cancelled job is recorded in History once and leaves `pending`.
+    if outcome == JobCancelOutcome::Cancelled {
+        if let Some(job) = record.job_id {
+            let display = s
+                .pending_unsubscribes
+                .get(&job.0)
+                .map_or_else(String::new, |p| p.sender_display.clone());
+            s.pending_unsubscribes.remove(&job.0);
+            let _ = s.push_history(HistoryEntry {
+                entry_id: job.0,
+                at: now,
+                mailbox_id: record.mailbox,
+                sender_display: display,
+                action: HistoryAction::Unsubscribe,
+                outcome: HistoryOutcome::Cancelled,
+                rule_id: record.rule_id,
+            });
+        }
+    }
+    s.recent_swipes.retain(|r| r.swipe_id != swipe);
+    true
+}
+
+/// The outcome code for the security event; no IDs beyond the pseudonymous user.
+fn outcome_code(o: JobCancelOutcome) -> &'static str {
+    match o {
+        JobCancelOutcome::NoJob => "no_job",
+        JobCancelOutcome::Cancelled => "cancelled",
+        JobCancelOutcome::AlreadySent => "already_sent",
+        JobCancelOutcome::AlreadyFinishedNotSent => "already_finished",
+    }
+}
+
+/// Security event `undo` with the outcome code (S5; no IDs).
+fn security_event(app: &AppState, user: &UserId, outcome: JobCancelOutcome) {
+    obs::security_event(&SecurityEvent {
+        action: "undo",
+        outcome: outcome_code(outcome),
+        user: Some(Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0)),
+        request_id: None,
+        amr: None,
+        provider: None,
+        method: None,
+    });
 }
 
 /// The user's wrapped `data_key`, needed to open the undo token.
