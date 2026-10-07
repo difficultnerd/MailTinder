@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use domain::feed::{card_visible, feed_order, is_boss};
 use domain::filing::{self, FilingInput};
-use domain::user_state::{MailboxPosition, SkipReturn, SkipState, UserState};
+use domain::user_state::{
+    HistoryEntry, HistoryOutcome, MailboxPosition, PendingDeliveryCheck, SkipReturn, SkipState,
+    UserState,
+};
 use domain::{
     header_guard, next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId,
     MessageMeta, Provider, RuleKind, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
@@ -26,6 +29,10 @@ use crate::routes::feed::{
     MailboxErrorDto, Phase, SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
+use crate::services::history_catch_up::{
+    collect_job_outcomes, delete_collected, CollectedOutcomes,
+};
+pub use crate::services::rule_actions::apply_rules;
 use crate::services::user_state_store::UserStateStore;
 use crate::session::extract::AuthedSession;
 use crate::state::AppState;
@@ -51,22 +58,8 @@ pub struct RuleApplication {
     pub acted_on: BTreeSet<(Uuid, String)>,
     /// How many actions were applied.
     pub applied: u32,
-}
-
-/// Hook for T-609: applies enabled sort rules to the freshly fetched mail and
-/// returns what it acted on. This task ships a no-op.
-///
-/// # Errors
-///
-/// None yet; T-609 returns the store and provider errors.
-#[allow(clippy::unused_async)]
-pub async fn apply_rules(
-    _app: &AppState,
-    _session: &AuthedSession,
-    _state: &UserState,
-    _metas: &[MessageMeta],
-) -> Result<RuleApplication, ApiError> {
-    Ok(RuleApplication::default())
+    /// Successful provider changes, appended by the Feed's single state update.
+    pub entries: Vec<HistoryEntry>,
 }
 
 /// A connected mailbox with a usable token for this request.
@@ -210,6 +203,7 @@ pub async fn next_page(
     let built: Vec<Built> = built.into_iter().flatten().collect();
 
     // Steps 13 and 14: one state write, then the cursor.
+    let collected = collect_job_outcomes(app, &user, &loaded.state).await?;
     persist(
         &store,
         &user,
@@ -217,8 +211,11 @@ pub async fn next_page(
         skips.clone(),
         &built,
         app.ports.clock.now(),
+        &rules,
+        &collected,
     )
     .await?;
+    delete_collected(app, &user, &collected).await;
     let next_cursor = if phase == Phase::Backlog && nothing_fetched && errors.is_empty() {
         None
     } else {
@@ -268,6 +265,7 @@ fn fresh_skips(stored: &SkipState, session: Uuid) -> SkipState {
 
 /// Step 13: one state write. The closure is pure: it only copies in values
 /// computed before the call, so a retry after an `ETag` conflict is safe.
+#[allow(clippy::too_many_arguments)]
 async fn persist(
     store: &UserStateStore,
     user: &UserId,
@@ -275,6 +273,8 @@ async fn persist(
     skips: SkipState,
     built: &[Built],
     at: OffsetDateTime,
+    rules: &RuleApplication,
+    collected: &CollectedOutcomes,
 ) -> Result<(), ApiError> {
     let seen: Vec<(String, String)> = built
         .iter()
@@ -282,6 +282,37 @@ async fn persist(
         .collect();
     store
         .update(user, move |s: &mut UserState| {
+            for entry in &rules.entries {
+                if s.push_history(entry.clone()) {
+                    s.totals.cleared = s.totals.cleared.saturating_add(1);
+                    if let Some(rule) = s
+                        .rules
+                        .iter_mut()
+                        .find(|r| Some(r.rule.rule_id) == entry.rule_id)
+                    {
+                        rule.times_applied = rule.times_applied.saturating_add(1);
+                    }
+                }
+            }
+            for entry in &collected.entries {
+                let newly_pushed = s.push_history(entry.clone());
+                s.pending_unsubscribes.remove(&entry.entry_id);
+                if newly_pushed && entry.outcome == HistoryOutcome::Sent {
+                    s.totals.senders_unsubscribed = s.totals.senders_unsubscribed.saturating_add(1);
+                    if let Some((_, pending, unsubscribed_at)) = collected
+                        .sent
+                        .iter()
+                        .find(|(id, _, _)| id.0 == entry.entry_id)
+                    {
+                        s.pending_delivery_checks.push(PendingDeliveryCheck {
+                            sender_key: pending.sender_key.clone(),
+                            list_id: pending.list_id.clone(),
+                            mailbox_id: pending.mailbox_id,
+                            unsubscribed_at: *unsubscribed_at,
+                        });
+                    }
+                }
+            }
             for (id, position) in &positions {
                 s.positions.insert(*id, position.clone());
             }
