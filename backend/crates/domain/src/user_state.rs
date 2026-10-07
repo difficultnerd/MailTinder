@@ -179,6 +179,10 @@ pub struct PendingDeliveryCheck {
     pub list_id: Option<String>,
     pub mailbox_id: MailboxId,
     pub unsubscribed_at: OffsetDateTime,
+    #[serde(default)]
+    pub mail_seen: bool,
+    #[serde(default)]
+    pub confirm_counted: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

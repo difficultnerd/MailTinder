@@ -29,6 +29,7 @@ use crate::routes::feed::{
     MailboxErrorDto, Phase, SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
+use crate::services::delivery_check::{self, DeliveryHookInput, IgnoredUnsubscribe, ListMail};
 use crate::services::history_catch_up::{
     collect_job_outcomes, delete_collected, CollectedOutcomes,
 };
@@ -92,6 +93,7 @@ struct Built {
     card: CardDto,
     sender_key: String,
     display: String,
+    delivery_mail: ListMail,
 }
 
 /// Everything card building reads.
@@ -121,11 +123,7 @@ pub async fn next_page(
     session: &AuthedSession,
     req: FeedRequest,
 ) -> Result<FeedPage, ApiError> {
-    if req.limit == 0 || req.limit > FEED_LIMIT_MAX {
-        return Err(ApiError::InvalidRequest {
-            fields: vec!["/limit".to_owned()],
-        });
-    }
+    validate_limit(req.limit)?;
     let user = session.user;
     let store = UserStateStore::new(Arc::new(app.clone()));
     // Without the primary mailbox the state file is out of reach, so no page
@@ -204,7 +202,8 @@ pub async fn next_page(
 
     // Steps 13 and 14: one state write, then the cursor.
     let collected = collect_job_outcomes(app, &user, &loaded.state).await?;
-    persist(
+    let list_mail = delivery_mail(&user, &taken, &rules, &loaded.state, &built);
+    let (ignored, confirmed) = persist(
         &store,
         &user,
         start_positions,
@@ -213,8 +212,11 @@ pub async fn next_page(
         app.ports.clock.now(),
         &rules,
         &collected,
+        &app.business_calendar,
+        &list_mail,
     )
     .await?;
+    delivery_check::publish(app, &user, &ignored, confirmed).await?;
     delete_collected(app, &user, &collected).await;
     let next_cursor = if phase == Phase::Backlog && nothing_fetched && errors.is_empty() {
         None
@@ -238,6 +240,16 @@ pub async fn next_page(
             .collect(),
         rule_actions_applied: rules.applied,
     })
+}
+
+fn validate_limit(limit: u32) -> Result<(), ApiError> {
+    if limit == 0 || limit > FEED_LIMIT_MAX {
+        Err(ApiError::InvalidRequest {
+            fields: vec!["/limit".to_owned()],
+        })
+    } else {
+        Ok(())
+    }
 }
 
 async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
@@ -275,7 +287,9 @@ async fn persist(
     at: OffsetDateTime,
     rules: &RuleApplication,
     collected: &CollectedOutcomes,
-) -> Result<(), ApiError> {
+    calendar: &domain::delivery::BusinessCalendar,
+    list_mail: &[ListMail],
+) -> Result<(Vec<IgnoredUnsubscribe>, u64), ApiError> {
     let seen: Vec<(String, String)> = built
         .iter()
         .map(|b| (b.sender_key.clone(), b.display.clone()))
@@ -304,12 +318,19 @@ async fn persist(
                         .iter()
                         .find(|(id, _, _)| id.0 == entry.entry_id)
                     {
-                        s.pending_delivery_checks.push(PendingDeliveryCheck {
-                            sender_key: pending.sender_key.clone(),
-                            list_id: pending.list_id.clone(),
-                            mailbox_id: pending.mailbox_id,
-                            unsubscribed_at: *unsubscribed_at,
-                        });
+                        if !s.pending_delivery_checks.iter().any(|check| {
+                            check.sender_key == pending.sender_key
+                                && check.list_id == pending.list_id
+                        }) {
+                            s.pending_delivery_checks.push(PendingDeliveryCheck {
+                                sender_key: pending.sender_key.clone(),
+                                list_id: pending.list_id.clone(),
+                                mailbox_id: pending.mailbox_id,
+                                unsubscribed_at: *unsubscribed_at,
+                                mail_seen: false,
+                                confirm_counted: false,
+                            });
+                        }
                     }
                 }
             }
@@ -323,8 +344,56 @@ async fn persist(
                 stats.display.clone_from(display);
                 stats.last_seen = Some(at);
             }
+            let before = s.totals.unsubscribes_confirmed;
+            let ignored = delivery_check::apply_delivery_checks(
+                s,
+                calendar,
+                at,
+                &DeliveryHookInput { list_mail },
+            );
+            (ignored, s.totals.unsubscribes_confirmed - before)
         })
         .await
+}
+
+/// Successful reject-list trash actions plus cards actually about to be shown.
+fn delivery_mail(
+    user: &UserId,
+    taken: &[MessageMeta],
+    applied: &RuleApplication,
+    state: &UserState,
+    built: &[Built],
+) -> Vec<ListMail> {
+    let mut mail: Vec<ListMail> = built.iter().map(|b| b.delivery_mail.clone()).collect();
+    let rules: Vec<_> = state.rules.iter().map(|r| r.rule.clone()).collect();
+    for meta in taken {
+        let Some(rule) = domain::first_match(&rules, meta) else {
+            continue;
+        };
+        if rule.kind != RuleKind::RejectList {
+            continue;
+        }
+        let mut name = Vec::new();
+        name.extend_from_slice(user.0.as_bytes());
+        name.extend_from_slice(meta.mailbox.0.as_bytes());
+        name.extend_from_slice(meta.id.as_str().as_bytes());
+        name.extend_from_slice(rule.rule_id.0.as_bytes());
+        let entry_id = Uuid::new_v5(&crate::services::rule_actions::NS_RULE_ACTION, &name);
+        if applied
+            .entries
+            .iter()
+            .any(|entry| entry.entry_id == entry_id)
+        {
+            mail.push(ListMail {
+                sender_key: meta.sender.as_str().to_owned(),
+                list_id: meta.facts.list_id.clone(),
+                mailbox_id: meta.mailbox,
+                received_at: meta.internal_date,
+                sender_display: plain_text(&meta.from_display, NAME_MAX),
+            });
+        }
+    }
+    mail
 }
 
 /// Step 14: the sealed cursor for the next page.
@@ -933,9 +1002,17 @@ async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, A
         classification_token,
         classifier_id: env.session.is_admin.then(|| HEADER_RULES_ID.to_owned()),
     };
+    let delivery_mail = ListMail {
+        sender_key: sender_key.clone(),
+        list_id: meta.facts.list_id.clone(),
+        mailbox_id: meta.mailbox,
+        received_at: meta.internal_date,
+        sender_display: sender_name.clone(),
+    };
     Ok(Some(Built {
         card,
         sender_key,
         display: sender_name,
+        delivery_mail,
     }))
 }
