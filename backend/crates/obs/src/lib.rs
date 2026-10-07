@@ -17,8 +17,8 @@ pub mod sink;
 
 pub use clock::{arc, Clock, FixedClock};
 pub use events::{
-    metric_event, op_log, request_log, security_event, MetricEvent, OpLog, RequestLog,
-    SecurityEvent,
+    metric_event, op_log, request_log, security_event, security_event_pair, MetricEvent, OpLog,
+    RequestLog, SecurityEvent,
 };
 pub use init::{capture, init, unregistered_count};
 pub use layer::AllowlistJsonLayer;

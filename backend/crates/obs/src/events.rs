@@ -70,6 +70,35 @@ pub fn security_event(e: &SecurityEvent) {
     );
 }
 
+/// A security event naming two principals: the actor (`user_pseudo`) and the
+/// target it acted on (`target_user_pseudo`). Both are pseudonymous HMACs, so
+/// one line attributes the action to the actor without naming the target in
+/// clear (S5 logs). Used by an admin ending another user's session
+/// (`session_ended_by_admin`, S2 AU-07 AC6).
+pub fn security_event_pair(
+    action: &'static str,
+    outcome: &'static str,
+    actor: Option<PseudoId>,
+    target: Option<PseudoId>,
+    request_id: Option<uuid::Uuid>,
+) {
+    let actor = actor.map(|p| p.as_str().to_owned());
+    let target = target.map(|p| p.as_str().to_owned());
+    let request_id = request_id.map(|u| u.to_string()).unwrap_or_default();
+    tracing::event!(
+        tracing::Level::WARN,
+        event = "security",
+        action = action,
+        outcome = outcome,
+        user_pseudo = actor.as_deref().unwrap_or(""),
+        target_user_pseudo = target.as_deref().unwrap_or(""),
+        request_id = request_id,
+        amr = "",
+        provider = "",
+        method = "",
+    );
+}
+
 pub fn metric_event(e: &MetricEvent) {
     let user = e.user.as_ref().map_or("", PseudoId::as_str);
     tracing::event!(

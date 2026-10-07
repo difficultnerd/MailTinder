@@ -79,6 +79,7 @@ fn xc_01_helpers_emit_only_allowlisted_keys() {
         "event",
         "request_id",
         "user_pseudo",
+        "target_user_pseudo",
         "route",
         "status",
         "latency_ms",

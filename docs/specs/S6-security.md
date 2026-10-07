@@ -99,7 +99,11 @@ Each user has one key, `data_key`, usable by the server without the user, so que
 
 ## 7. Security logging
 
-Events logged (pseudonymous, C1 fields only): sign-in success and failure (with `amr` where present), step-up success and failure, session termination (sign-out, replaced by a new sign-in, or ended by an admin), mailbox link and unlink, invite created, revoked, used, request approved or declined, consent changes (experiments opt-in and opt-out), kill switch changes, bake-off snapshot save and delete, admin actions, authorisation failures, CSRF failures, rate-limit hits, job outcomes, account deletion. Log bucket locked, 90-day retention, no delete permission for application identities.
+Events logged (C1 fields only: the request ID and the pseudonymous user ID(s), the action type and the outcome code): sign-in success and failure (with `amr` where present), step-up success and failure, session termination (sign-out, replaced by a new sign-in, or ended by an admin as `session_ended_by_admin`), mailbox link and unlink, invite created, revoked, used, request approved or declined, consent changes (experiments opt-in and opt-out), kill switch changes, bake-off snapshot save and delete, admin actions, authorisation failures, CSRF failures, rate-limit hits, job outcomes, account deletion. Every line carries the request ID (S5 logs, C1), so all lines written for one request can be joined on it. Log bucket locked, 90-day retention, no delete permission for application identities.
+
+A log line carries the request ID and one or two pseudonymous user IDs (S5 logs): a single-principal action names the actor, and a two-principal action names both the actor and the target on the same line. An admin ending a user's session is one `session_ended_by_admin` event that carries the target's pseudonymous ID and the acting admin's, so the termination is attributed to the admin from a single record. It carries no address.
+
+**Status of the two-principal event.** Naming both principals on one line is a convention introduced with the admin session-end behaviour (S2 AU-07 AC6, T-804); before it, every security line named a single pseudonymous user ID. It is verified by `au_07_ac6_admin_session_end_logged`, which parses the captured security line and asserts that the target's and the admin's pseudonymous IDs are both present, so removing either ID fails the test.
 
 ## 8. Security verification in CI
 
