@@ -83,7 +83,7 @@ pub struct CardDto {
     /// `one_click`, `mailto`, `manual` or `none`, from header rules.
     pub unsubscribe_method: &'static str,
     pub has_one_click: bool,
-    /// Filled by T-607b.
+    /// Filled by T-607b from the sender's filing history.
     pub suggestion: Option<SuggestionDto>,
     /// Filled by T-607b.
     pub keep_prompt: Option<CategoryRefDto>,
@@ -96,11 +96,12 @@ pub struct CardDto {
     pub classifier_id: Option<String>,
 }
 
-/// Filing suggestion; T-607b fills it, so this task never builds one.
+/// Filing suggestion (S7 `Suggestion`); T-607b fills it.
 #[derive(Serialize)]
 pub struct SuggestionDto {
     pub category_id: Option<Uuid>,
-    pub name: String,
+    pub name: Option<String>,
+    pub alternates: Vec<CategoryRefDto>,
     pub confidence: &'static str,
 }
 
