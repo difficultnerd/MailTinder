@@ -90,6 +90,9 @@ pub async fn create_block(
     let find = sender.clone();
     let rule = store
         .update(&s.user, move |st: &mut UserState| -> StoredRule {
+            if let Some(same) = st.rules.iter().find(|r| r.rule.rule_id == rule_id) {
+                return same.clone();
+            }
             if let Some(existing) = block_rule_for(st, &find) {
                 return existing;
             }

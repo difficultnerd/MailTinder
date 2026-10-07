@@ -253,6 +253,12 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         } else {
             "/api/v1/categories/{category_id}"
         }
+    } else if path == "/api/v1/rules" {
+        "/api/v1/rules"
+    } else if path.starts_with("/api/v1/rules/") {
+        "/api/v1/rules/{rule_id}"
+    } else if path == "/api/v1/block-prompts/decline" {
+        "/api/v1/block-prompts/decline"
     } else if path == "/api/v1/auth/sign-out" {
         "/api/v1/auth/sign-out"
     } else if path.starts_with("/api/v1/auth/") {

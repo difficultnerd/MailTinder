@@ -378,6 +378,23 @@ async fn pb_01_ac2_retry_creates_one_rule() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn pb_01_ac2_retry_after_disable_creates_one_rule() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let swipe = Uuid::from_u128(0xabd);
+    let prompt_ref = w.seal_prompt(&session, "alice@example.com", swipe).await?;
+
+    let first = create_block(&w.app, &session, &prompt_ref).await?;
+    patch(&w.app, &session, first.rule_id, false).await?;
+    let second = create_block(&w.app, &session, &prompt_ref).await?;
+    assert_eq!(first.rule_id, second.rule_id);
+    let state = w.state().await?;
+    assert_eq!(state.rules.len(), 1, "a disabled rule is not duplicated");
+    assert_eq!(state.totals.people_blocked, 1);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // PB-01 AC3: declining suppresses the prompt for that sender for 90 days
 // ---------------------------------------------------------------------------
