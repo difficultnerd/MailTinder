@@ -14,6 +14,7 @@
 
 pub mod config;
 pub mod mailto;
+pub mod one_click;
 pub mod quota;
 pub mod runner;
 pub mod sender;

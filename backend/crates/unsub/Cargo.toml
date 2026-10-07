@@ -31,6 +31,8 @@ tracing = "0.1"
 
 [dev-dependencies]
 testkit.workspace = true
+egress = { workspace = true, features = ["test-policy"] }
+unsub-testbed.workspace = true
 tower = { version = "0.5", features = ["util"] }
 proptest.workspace = true
 tokio.workspace = true
