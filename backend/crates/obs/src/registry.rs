@@ -13,6 +13,7 @@ pub const ACTIONS: &[&str] = &[
     "sign_in",
     "step_up",
     "session_end",
+    "session_ended_by_admin",
     "mailbox_link",
     "mailbox_reconnect",
     "mailbox_unlink",
