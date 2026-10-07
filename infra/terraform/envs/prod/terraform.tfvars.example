@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars (gitignored - never commit a real project id) and
+# fill in the project. Then, from this directory:
+#
+#   terraform init -backend-config="bucket=<project>-tfstate"
+#   terraform plan
+#   terraform apply
+#
+# The bootstrap steps (project, billing, state bucket) are in
+# ../../README.md.
+
+project_id = "REPLACE_WITH_PROJECT_ID"
+
+# Every regional service lives here; the Firestore location is permanent once
+# created, so this is never changed for production (S4 1).
+region = "us-central1"
+
+# Locking the log bucket cannot be undone. Staging passes false (T-1103).
+lock_log_bucket = true

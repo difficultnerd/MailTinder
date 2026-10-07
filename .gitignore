@@ -41,3 +41,10 @@ __pycache__/
 # Local check tooling (not committed)
 tools/.bin/
 tools/.venv-semgrep/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

@@ -79,6 +79,52 @@ jobs:
       - run: python3 -m unittest discover -s tools -p 'test_*.py'
       - run: python3 tools/check_ac_coverage.py
 
+  # Terraform (T-1102a). `fmt`, `validate` and the module's plan-time tests.
+  # The tests use mock_provider, so they need no credentials and no network.
+  # The final step is the set of absence checks Terraform cannot express over a
+  # plan: no service account keys, no secret versions in state, no Firestore
+  # backups, no primitive role, and no infrastructure scanner (CLAUDE.md).
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.16.5"
+      - run: terraform fmt -check -recursive
+      - name: Validate and test the foundation module
+        working-directory: infra/terraform/modules/foundation
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
+      - name: Validate the production root
+        working-directory: infra/terraform/envs/prod
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Absence checks
+        run: |
+          fail=0
+          guard() { # pattern message [globs...]
+            pattern="$1"; message="$2"; shift 2
+            if grep -rnE "$pattern" --include="$1" modules envs 2>/dev/null; then
+              echo "FAIL $message"
+              fail=1
+            else
+              echo "OK   $message"
+            fi
+          }
+          guard '^resource "google_service_account_key"' 'no service account keys' '*.tf'
+          guard '^resource "google_secret_manager_secret_version"' 'no secret versions in state (ASVS V13.3.1)' '*.tf'
+          guard '^resource "google_firestore_backup_schedule"' 'no Firestore backups (S6 5)' '*.tf'
+          guard 'role[[:space:]]*=[[:space:]]*"roles/(owner|editor|viewer)"' 'no primitive roles (ASVS V13.2.3)' '*.tf'
+          guard 'tfsec|checkov|terrascan|trivy' 'no infrastructure scanner (CLAUDE.md)' '*.tf'
+          exit $fail
+
   # Integrity guard. Branch protection treats a SKIPPED required job as a pass,
   # so a gate that quietly does not run is worse than no gate at all. This job
   # is required, and fails unless every gate above actually ran and succeeded -
@@ -90,13 +136,14 @@ jobs:
   # jobs sharing one name would make it ambiguous which run gates a merge.
   ci-integrity:
     runs-on: ubuntu-latest
-    needs: [rust, dart, language-policy, ac-coverage]
+    needs: [rust, dart, language-policy, ac-coverage, terraform]
     if: always()
     env:
       R_RUST: ${{ needs.rust.result }}
       R_DART: ${{ needs.dart.result }}
       R_LANG: ${{ needs.language-policy.result }}
       R_AC: ${{ needs.ac-coverage.result }}
+      R_TF: ${{ needs.terraform.result }}
     steps:
       - name: Assert every expected gate ran and passed
         run: |
@@ -113,4 +160,5 @@ jobs:
           report dart            "$R_DART"
           report language-policy "$R_LANG"
           report ac-coverage     "$R_AC"
+          report terraform       "$R_TF"
           exit $fail
