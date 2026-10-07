@@ -20,6 +20,7 @@ pub mod error;
 pub mod internal_auth;
 pub mod invites;
 pub mod job_record;
+pub mod links;
 pub mod mint;
 pub mod needs_attention;
 
