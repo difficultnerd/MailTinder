@@ -17,7 +17,7 @@
     clippy::assert_is_empty
 )]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use api::error::ApiError;
@@ -35,10 +35,10 @@ use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use axum::Router;
 use domain::feed::choose_skip_return;
-use domain::user_state::{SkipReturn, UserState};
+use domain::user_state::{Category, SkipReturn, UserState};
 use domain::{
-    EmailAddress, MailboxId, MailboxStatus, MessageId, Provider, ProviderSubjectId, SenderStats,
-    Tunables, UserId,
+    CategoryId, EmailAddress, MailboxId, MailboxStatus, MessageId, Provider, ProviderSubjectId,
+    SenderStats, Tunables, UserId,
 };
 use obs::Sensitive;
 use ports::store::aad_fields;
@@ -279,17 +279,24 @@ async fn fd_01_ac1_card_has_required_fields() -> TestResult {
     assert!(["list", "bulk_no_header", "notice", "personal", "suspect"].contains(&card.class));
     assert!(card.provider_web_url.starts_with("https://"));
     assert!(card.classification_token.starts_with("mt1.classification."));
-    assert!(card.suggestion.is_none() && card.keep_prompt.is_none() && card.boss.is_none());
+    let suggestion = card.suggestion.as_ref().ok_or("suggestion")?;
+    assert_eq!(suggestion.confidence, "none");
+    assert_eq!(suggestion.category_id, None);
+    assert!(card.keep_prompt.is_none() && card.boss.is_none());
     assert_eq!(card.skip_count, 0);
     // classifier_id is absent, not null, for a non-admin; present for an admin.
     let json = serde_json::to_value(&page.cards[0])?;
     assert!(json.get("classifier_id").is_none());
-    for key in ["suggestion", "keep_prompt", "boss"] {
+    // T-607b: the suggestion is always an object; the other two stay null.
+    for key in ["keep_prompt", "boss"] {
         assert!(
             json.get(key).is_some_and(serde_json::Value::is_null),
             "{key}"
         );
     }
+    assert!(json
+        .get("suggestion")
+        .is_some_and(serde_json::Value::is_object));
     let admin = w.page(&w.session(1, true), None, 20, false).await?;
     let json = serde_json::to_value(&admin.cards[0])?;
     assert_eq!(json["classifier_id"], "header_rules@1");
@@ -1098,5 +1105,92 @@ async fn s9_feed_empty_no_mail() -> TestResult {
     let state = w.state().await?;
     let outcome = apply_rules(&w.app, &w.session(1, false), &state, &[]).await?;
     assert!(outcome.acted_on.is_empty() && outcome.applied == 0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// T-607b: filing suggestions and the keep prompt (FL-01, FL-03, FL-04, SW-04)
+// ---------------------------------------------------------------------------
+
+/// A category plus the sender's filing and keep counts, written by hand.
+async fn set_filing_state(
+    w: &World,
+    category_id: CategoryId,
+    category_name: &str,
+    sender: &str,
+    files: u32,
+    keeps: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = category_name.to_owned();
+    let key = sender.to_owned();
+    w.state_store()
+        .update(&w.user, move |s: &mut UserState| {
+            s.categories.push(Category {
+                category_id,
+                name: name.clone(),
+                labels: BTreeMap::new(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+            });
+            let stats = s.sender_stats.entry(key.clone()).or_default();
+            for _ in 0..files {
+                stats.record_file(category_id);
+            }
+            for _ in 0..keeps {
+                stats.record_keep();
+            }
+        })
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fl_03_ac2_feed_never_files() -> TestResult {
+    let w = World::new().await?;
+    let category = CategoryId::new(Uuid::from_u128(7));
+    set_filing_state(&w, category, "Receipts", "alice@example.com", 3, 0).await?;
+    w.seed(&w.primary, "alice", 10);
+    let before = w.fakes.mailbox.calls(MailOp::SetLabels);
+
+    let page = w.page(&w.session(1, false), None, 20, false).await?;
+    let suggestion = page.cards[0].suggestion.as_ref().ok_or("suggestion")?;
+    assert_eq!(suggestion.confidence, "learned");
+    assert_eq!(suggestion.category_id, Some(category.0));
+    assert_eq!(suggestion.name.as_deref(), Some("Receipts"));
+    assert!(suggestion.alternates.is_empty());
+
+    // A suggestion never files anything by itself (FL-03 AC2).
+    assert_eq!(
+        w.fakes.mailbox.calls(MailOp::SetLabels),
+        before,
+        "the Feed must not label anything"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn fl_04_ac1_keep_prompt_on_card() -> TestResult {
+    let w = World::new().await?;
+    let category = CategoryId::new(Uuid::from_u128(9));
+    set_filing_state(&w, category, "Receipts", "alice@example.com", 1, 5).await?;
+    w.seed(&w.primary, "alice", 10);
+
+    let page = w.page(&w.session(1, false), None, 20, false).await?;
+    let prompt = page.cards[0].keep_prompt.as_ref().ok_or("keep prompt")?;
+    assert_eq!(prompt.category_id, category.0);
+    assert_eq!(prompt.name, "Receipts");
+    Ok(())
+}
+
+#[tokio::test]
+async fn sw_04_ac3_card_suggestion_confidence_none() -> TestResult {
+    let w = World::new().await?;
+    w.seed(&w.primary, "alice", 10);
+    let page = w.page(&w.session(1, false), None, 20, false).await?;
+    let suggestion = page.cards[0].suggestion.as_ref().ok_or("suggestion")?;
+    assert_eq!(suggestion.confidence, "none");
+    assert_eq!(suggestion.category_id, None);
+    assert!(suggestion.alternates.is_empty());
+    // FL-01 AC2: the header-rules hint stands in for a category name.
+    assert_eq!(suggestion.name.as_deref(), Some("People"));
     Ok(())
 }

@@ -8,10 +8,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use domain::feed::{card_visible, feed_order, is_boss};
+use domain::filing::{self, FilingInput};
 use domain::user_state::{MailboxPosition, SkipReturn, SkipState, UserState};
 use domain::{
     header_guard, next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId,
-    MessageMeta, Provider, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
+    MessageMeta, Provider, RuleKind, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
 };
 use futures::stream::{self, StreamExt};
 use ports::store::{aad_fields, MailboxRecord, Precondition, Versioned};
@@ -21,8 +22,8 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::routes::feed::{
-    BossDto, CardDto, ClassificationPayload, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto,
-    Phase, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
+    BossDto, CardDto, CategoryRefDto, ClassificationPayload, CursorPayload, FeedPage, FeedRequest,
+    MailboxErrorDto, Phase, SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
 use crate::services::user_state_store::UserStateStore;
@@ -38,6 +39,8 @@ const NAME_MAX: usize = 256;
 const ADDRESS_MAX: usize = 320;
 const SUBJECT_MAX: usize = 998;
 const REASON_MAX: usize = 200;
+/// `CategoryRef.name` maxLength (S7 5.4).
+const CATEGORY_NAME_MAX: usize = 100;
 /// The provider's largest page (`MailProvider::list_messages`).
 const PROVIDER_PAGE_MAX: u32 = 100;
 
@@ -773,6 +776,53 @@ fn seal_error(e: TokenError) -> ApiError {
     }
 }
 
+/// T-607b: the filing suggestion and the keep prompt for one card. Pure and in
+/// memory (FL-01 AC3), and a suggestion never files anything (FL-03 AC2).
+fn filing_dtos(
+    env: &Env<'_>,
+    sender_key: &str,
+    sender_domain: &str,
+    class: domain::MessageClass,
+) -> (SuggestionDto, Option<CategoryRefDto>) {
+    let input = FilingInput {
+        sender_key,
+        sender_domain,
+        class,
+        categories: &env.state.categories,
+        sender_stats: &env.state.sender_stats,
+    };
+    let has_file_rule = env.state.rules.iter().any(|stored| {
+        stored.rule.enabled
+            && stored.rule.kind == RuleKind::File
+            && stored.rule.matcher.sender.as_str() == sender_key
+    });
+    let suggestion = filing::suggest(&input);
+    let suggestion = SuggestionDto {
+        category_id: suggestion.category.map(|category| category.0),
+        name: suggestion
+            .name
+            .as_deref()
+            .map(|name| plain_text(name, CATEGORY_NAME_MAX)),
+        alternates: suggestion
+            .alternates
+            .iter()
+            .map(|(category, name)| CategoryRefDto {
+                category_id: category.0,
+                name: plain_text(name, CATEGORY_NAME_MAX),
+            })
+            .collect(),
+        confidence: suggestion.confidence.as_str(),
+    };
+    let keep_prompt =
+        filing::keep_prompt(&input, has_file_rule, env.tunables).map(|(category, name)| {
+            CategoryRefDto {
+                category_id: category.0,
+                name: plain_text(&name, CATEGORY_NAME_MAX),
+            }
+        });
+    (suggestion, keep_prompt)
+}
+
 /// Step 11: one card. `None` drops the message silently (FD-04 AC1).
 async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, ApiError> {
     let Some(live) = env.live.get(&meta.mailbox.0) else {
@@ -826,6 +876,11 @@ async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, A
         None
     };
     let sender_name = plain_text(&meta.from_display, NAME_MAX);
+    // T-607b: the filing suggestion and the keep prompt (FL-01, FL-03, FL-04,
+    // SW-04). `filing_dtos` stays pure and in memory (FL-01 AC3) and never
+    // files anything (FL-03 AC2).
+    let (suggestion, keep_prompt) =
+        filing_dtos(env, &sender_key, meta.sender.domain(), shown.class);
     let card = CardDto {
         mailbox_id: meta.mailbox.0,
         message_id: meta.id.as_str().to_owned(),
@@ -839,8 +894,8 @@ async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, A
         class: shown.class.as_str(),
         unsubscribe_method: method,
         has_one_click: one_click && shown.class == domain::MessageClass::List,
-        suggestion: None,
-        keep_prompt: None,
+        suggestion: Some(suggestion),
+        keep_prompt,
         skip_count: skip_count(env.skips, &meta),
         boss,
         provider_web_url: provider.web_url(&live.address, &meta.id),

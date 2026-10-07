@@ -17,6 +17,7 @@ pub mod address;
 mod class;
 mod error;
 pub mod feed;
+pub mod filing;
 mod gamification;
 pub mod guard;
 mod header_rules;

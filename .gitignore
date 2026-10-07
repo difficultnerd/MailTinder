@@ -13,12 +13,10 @@ app/ios/Pods/
 app/android/.gradle/
 app/android/local.properties
 app/coverage/
-
 # Python (tooling only)
 __pycache__/
 *.pyc
 .venv/
-
 # Secrets and local config
 .env
 .env.*
@@ -32,19 +30,22 @@ __pycache__/
 *.p12
 *.jks
 *.keystore
-
 # Editors / OS
 .idea/
 .vscode/
 .DS_Store
-
 # Local check tooling (not committed)
 tools/.bin/
 tools/.venv-semgrep/
-
-# Terraform
+# Terraform provider cache and state (never commit these).
+# A single Google provider binary is ~114 MB and GitHub hard-rejects
+# anything over 100 MB — the T-607b push died on exactly that.
 .terraform/
+**/.terraform/
 *.tfstate
 *.tfstate.*
+crash.log
+*.tfplan
+# Terraform
 *.tfvars
 !*.tfvars.example
