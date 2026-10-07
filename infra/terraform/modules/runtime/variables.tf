@@ -66,7 +66,16 @@ variable "deploy_ref" {
 variable "deploy_environment" {
   type        = string
   default     = "production"
-  description = "The only GitHub Actions environment whose OIDC token may impersonate the deployer. The `production` environment carries the required-reviewer approval (T-1104), so pinning it here makes that approval a server-side control (V13.2.2), not just a workflow convention."
+  description = <<-EOT
+    The only GitHub Actions environment whose OIDC token may impersonate the
+    deployer. The `production` environment carries the required-reviewer
+    approval (T-1104), so pinning it here makes that approval a server-side
+    control (V13.2.2), not just a workflow convention. Staging is a separate
+    project built from this same module (T-1103) and must set its own value
+    (`"staging"`); its deploy job must then name `environment: staging`
+    (T-1104), or the provider condition rejects the token. The production root
+    keeps the `production` default.
+  EOT
 }
 
 variable "max_instances" {

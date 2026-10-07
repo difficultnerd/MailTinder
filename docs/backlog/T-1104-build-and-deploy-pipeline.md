@@ -39,7 +39,7 @@ ENTRYPOINT ["/app"]
 ```yaml
 # deploy.yml jobs (names are fixed; T-1105 calls into `smoke`)
 # build:        matrix [api, unsub, worker]; push to staging Artifact Registry tagged ${{ github.sha }}; output digests
-# deploy-staging: gcloud run deploy <svc> --image <repo>/<svc>@<digest> --region us-central1 (image only); firebase deploy --only hosting
+# deploy-staging: environment: staging (its WIF provider pins assertion.environment == 'staging'); gcloud run deploy <svc> --image <repo>/<svc>@<digest> --region us-central1 (image only); firebase deploy --only hosting
 # smoke:        reusable workflow from T-1105
 # deploy-prod:  environment: production (James approves); copy digests to the prod repository; deploy the same digests; firebase deploy
 ```
@@ -50,7 +50,7 @@ ENTRYPOINT ["/app"]
 2. **Auth:** `google-github-actions/auth` with `workload_identity_provider` and `service_account` from repository variables (`STAGING_WIF_PROVIDER`, `STAGING_DEPLOYER`, `PROD_WIF_PROVIDER`, `PROD_DEPLOYER`), outputs of T-1102b. No JSON keys.
 3. **Build** each service with `docker build --build-arg SERVICE=<svc> -f backend/Dockerfile backend`, push to `us-central1-docker.pkg.dev/<staging-project>/mailtinder/<svc>:<sha>`, record the digest.
 4. **Web:** `flutter build web --release` (no `MT_E2E` define), then `firebase deploy --only hosting --project staging` using `firebase-tools` pinned to an exact version through `npx` (the app's headers and rewrites come from `firebase.json`, owned by T-006).
-5. **Deploy staging:** `gcloud run deploy <svc> --image ...@<digest> --region us-central1 --quiet` with no other flags, so Terraform keeps owning env vars, service accounts and scaling.
+5. **Deploy staging:** job with `environment: staging` (a GitHub environment with no required reviewer). The staging WIF provider (T-1103 sets `deploy_environment = "staging"`) pins `assertion.environment == 'staging'`, so a job that names no environment presents no claim and its token is rejected. `gcloud run deploy <svc> --image ...@<digest> --region us-central1 --quiet` with no other flags, so Terraform keeps owning env vars, service accounts and scaling.
 6. **Smoke:** call T-1105's reusable workflow; production is blocked unless it passes.
 7. **Promote to production:** job with `environment: production` (GitHub environment with James as required reviewer `[DEFAULT]`). Copy each digest from the staging repository to the production repository with `gcloud artifacts docker images copy` or `crane copy` (pin the tool), deploy those exact digests, then deploy Hosting to `prod` from the same commit.
 8. **Rollback** `[DEFAULT]`: documented in the README as `gcloud run services update-traffic <svc> --to-revisions=<previous>=100`; no automation.
@@ -77,6 +77,7 @@ ENTRYPOINT ["/app"]
 - `gcloud run deploy` with `--set-env-vars`, `--service-account` or scaling flags would fight Terraform; pass `--image` only.
 - Pin every action by full commit SHA like the existing workflows, and pin `firebase-tools` and the Rust image tag.
 - The deploy job must not run on pull requests (no secrets or WIF tokens for forks).
+- Each deploy job must name its GitHub environment (`environment: staging` for the staging job, `environment: production` for the promote job): each WIF provider's condition pins `assertion.environment`, so a job that names no environment is rejected server-side (T-1102b, T-1103).
 - Never print tokens; `gcloud` and `firebase` read credentials from the auth step.
 - No container scanning step in CI (CLAUDE.md); Artifact Registry scanning, if ever enabled, runs in Google Cloud.
 
@@ -88,4 +89,4 @@ ENTRYPOINT ["/app"]
 
 - The tests above pass and every required check is green (S10 10.1).
 - Definition of done in S10 10.4.
-- James has created the `production` GitHub environment with himself as required reviewer and set the four WIF variables.
+- James has created the `production` GitHub environment with himself as required reviewer, a `staging` GitHub environment with no required reviewer, and set the four WIF variables.

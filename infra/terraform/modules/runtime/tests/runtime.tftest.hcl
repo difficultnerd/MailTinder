@@ -314,6 +314,30 @@ run "wif_condition_pins_repository_and_ref" {
   }
 }
 
+# Staging is a separate project built from this same module (T-1103). Its
+# deploy identity must pin ITS OWN GitHub environment: the staging root sets
+# `deploy_environment = "staging"` and the staging deploy job names
+# `environment: staging` (T-1104), or the WIF condition below rejects every
+# staging token. Production keeps the `production` default above.
+run "staging_environment_is_its_own_pin" {
+  command = plan
+
+  variables {
+    env                = "staging"
+    deploy_environment = "staging"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.repository == 'difficultnerd/MailTinder' && assertion.ref == 'refs/heads/main' && assertion.environment == 'staging'"
+    error_message = "the staging root must set deploy_environment = \"staging\" and its deploy job must name environment: staging, or the staging token is rejected (T-1103, T-1104)"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.environment"] == "assertion.environment"
+    error_message = "the WIF provider must map the environment claim in staging as well as production"
+  }
+}
+
 run "max_instances_three" {
   command = plan
 

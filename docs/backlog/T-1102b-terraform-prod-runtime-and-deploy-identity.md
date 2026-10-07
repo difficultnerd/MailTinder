@@ -35,6 +35,7 @@ variable "kms_key_id"         { type = string }
 variable "secret_ids"         { type = map(string) }
 variable "github_repository"  { type = string default = "difficultnerd/MailTinder" }
 variable "deploy_ref"         { type = string default = "refs/heads/main" }
+variable "deploy_environment" { type = string default = "production" }  # GitHub environment the OIDC token must name (T-1103 sets "staging")
 variable "max_instances"      { type = number default = 3 }   # S7 6 [ASSUMES] 3
 variable "placeholder_image"  { type = string default = "us-docker.pkg.dev/cloudrun/container/hello" }
 
@@ -105,6 +106,7 @@ None enforced by `ac-coverage` (Terraform). This task provides `review` evidence
 - `api` has `actAs` on `tasks-invoker` only; Cloud Tasks and Scheduler calls carry OIDC tokens with the service URL as audience.
 - The deployer can deploy images and Hosting only: no KMS, Secret Manager, Firestore, IAM admin or primitive role (V13.2.2).
 - The workload identity condition pins the repository and branch; no service account keys exist.
+- The workload identity condition also pins the GitHub environment (`production` by default), so each deploy job must name its environment. Staging reuses this module (T-1103) and sets `deploy_environment = "staging"`; its deploy job names `environment: staging` (T-1104). The production pin is not weakened.
 - Every resource is in `us-central1`.
 
 ## Done when
