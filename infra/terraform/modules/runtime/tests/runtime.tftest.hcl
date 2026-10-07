@@ -204,7 +204,7 @@ run "sweep_every_15_minutes_with_oidc" {
   assert {
     condition = (
       google_cloud_scheduler_job.sweep.http_target[0].http_method == "POST" &&
-      google_cloud_scheduler_job.sweep.http_target[0].uri == "${google_cloud_run_v2_service.worker.uri}/internal/v1/sweep"
+      google_cloud_scheduler_job.sweep.http_target[0].uri == "${one([for e in google_cloud_run_v2_service.worker.template[0].containers[0].env : e.value if e.name == "WORKER_AUDIENCE"])}/internal/v1/sweep"
     )
     error_message = "the sweep must POST the worker's /internal/v1/sweep (S7 5.12)"
   }
@@ -212,9 +212,9 @@ run "sweep_every_15_minutes_with_oidc" {
   assert {
     condition = (
       google_cloud_scheduler_job.sweep.http_target[0].oidc_token[0].service_account_email == var.service_accounts["scheduler_invoker"] &&
-      google_cloud_scheduler_job.sweep.http_target[0].oidc_token[0].audience == google_cloud_run_v2_service.worker.uri
+      google_cloud_scheduler_job.sweep.http_target[0].oidc_token[0].audience == one([for e in google_cloud_run_v2_service.worker.template[0].containers[0].env : e.value if e.name == "WORKER_AUDIENCE"])
     )
-    error_message = "the sweep must call as scheduler-invoker with worker's URL as the OIDC audience (S7 5.12)"
+    error_message = "the sweep's OIDC audience must equal the worker's WORKER_AUDIENCE, or worker rejects every sweep (S7 5.12)"
   }
 }
 
@@ -235,6 +235,17 @@ run "internal_services_carry_their_own_oidc_audience" {
       e.name == "WORKER_AUDIENCE" && e.value == "https://mt-worker-123456789012.us-central1.run.app"
     ])
     error_message = "worker must be given WORKER_AUDIENCE, its own deterministic URL, or it refuses to start (S7 5.12)"
+  }
+
+  assert {
+    condition = one([
+      for e in google_cloud_run_v2_service.api.template[0].containers[0].env :
+      e.value if e.name == "MT_UNSUB_URL"
+      ]) == one([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.value if e.name == "UNSUB_AUDIENCE"
+    ])
+    error_message = "api's MT_UNSUB_URL must equal unsub's UNSUB_AUDIENCE (one source per URL), or every unsubscribe task 401s (S7 5.12)"
   }
 }
 

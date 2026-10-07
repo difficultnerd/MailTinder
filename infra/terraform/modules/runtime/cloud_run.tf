@@ -50,7 +50,7 @@ locals {
 
   api_env = merge(local.base_env, {
     MT_TASKS_QUEUE      = google_cloud_tasks_queue.unsubscribe.id
-    MT_UNSUB_URL        = google_cloud_run_v2_service.unsub.uri
+    MT_UNSUB_URL        = local.unsub_url
     MT_TASKS_INVOKER_SA = var.service_accounts["tasks_invoker"]
   })
 
