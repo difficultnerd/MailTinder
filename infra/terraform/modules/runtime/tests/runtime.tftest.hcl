@@ -56,6 +56,10 @@ variables {
   env        = "prod"
   kms_key_id = "projects/mailtinder-test/locations/us-central1/keyRings/mailtinder/cryptoKeys/data-key-kek"
 
+  # A fake client id: the module takes the real one as an input (M1), so the
+  # suite must supply one. It is a fixture, not a real identifier.
+  google_oauth_client_id = "test-client-id.apps.googleusercontent.com"
+
   service_accounts = {
     api               = "mt-api@mailtinder-test.iam.gserviceaccount.com"
     unsub             = "mt-unsub@mailtinder-test.iam.gserviceaccount.com"
@@ -227,6 +231,38 @@ run "internal_services_carry_their_own_oidc_audience" {
       e.name == "UNSUB_AUDIENCE" && e.value == "https://mt-unsub-123456789012.us-central1.run.app"
     ])
     error_message = "unsub must be given UNSUB_AUDIENCE, its own deterministic URL, or it refuses to start (S7 5.12)"
+  }
+
+  # M1: unsub also reads UNSUB_BASE_URL (parsed as a URL) and
+  # GOOGLE_OAUTH_CLIENT_ID at start-up. Without them it fails to boot, so the
+  # service carries both. UNSUB_BASE_URL is set from the same local as
+  # UNSUB_AUDIENCE, so the audience Cloud Tasks signs for and the base URL the
+  # service builds links against cannot diverge.
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.name == "UNSUB_BASE_URL" && e.value == "https://mt-unsub-123456789012.us-central1.run.app"
+    ])
+    error_message = "unsub must be given UNSUB_BASE_URL, its own deterministic URL, or it refuses to start (M1)"
+  }
+
+  assert {
+    condition = one([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.value if e.name == "UNSUB_BASE_URL"
+      ]) == one([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.value if e.name == "UNSUB_AUDIENCE"
+    ])
+    error_message = "unsub's UNSUB_BASE_URL must equal its UNSUB_AUDIENCE (one source per URL), or the audience and the emitted links disagree (M1, S7 5.12)"
+  }
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.unsub.template[0].containers[0].env :
+      e.name == "GOOGLE_OAUTH_CLIENT_ID" && e.value == var.google_oauth_client_id
+    ])
+    error_message = "unsub must be given GOOGLE_OAUTH_CLIENT_ID from the module input, or it refuses to start (M1)"
   }
 
   assert {

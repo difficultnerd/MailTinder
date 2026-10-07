@@ -51,6 +51,23 @@ variable "secret_ids" {
   EOT
 }
 
+variable "google_oauth_client_id" {
+  type        = string
+  description = <<-EOT
+    The Google OAuth client id the unsub service presents for the Gmail
+    identity flow; it reads it as GOOGLE_OAUTH_CLIENT_ID at start-up and
+    refuses to start without a non-empty value. It is deliberately an input
+    with no default: a missing or blank value fails the plan loudly instead of
+    deploying a service that cannot boot. Each environment has its own client
+    id (staging's differs from production's, T-1103).
+  EOT
+
+  validation {
+    condition     = length(trimspace(var.google_oauth_client_id)) > 0
+    error_message = "google_oauth_client_id must be a non-empty Google OAuth client id (unsub refuses to start without it)."
+  }
+}
+
 variable "github_repository" {
   type        = string
   default     = "difficultnerd/MailTinder"
@@ -68,13 +85,17 @@ variable "deploy_environment" {
   default     = "production"
   description = <<-EOT
     The only GitHub Actions environment whose OIDC token may impersonate the
-    deployer. The `production` environment carries the required-reviewer
-    approval (T-1104), so pinning it here makes that approval a server-side
-    control (V13.2.2), not just a workflow convention. Staging is a separate
-    project built from this same module (T-1103) and must set its own value
-    (`"staging"`); its deploy job must then name `environment: staging`
-    (T-1104), or the provider condition rejects the token. The production root
-    keeps the `production` default.
+    deployer. GitHub only puts an `environment` claim in the token when a job
+    names one, so this WIF condition requires the token to carry the
+    `production` claim. The approval itself is GitHub's: the `production`
+    environment is configured with a required reviewer (T-1104), and the claim
+    this condition demands is only as trustworthy as that environment's
+    configuration - GitHub withholds the claim until the reviewer approves, and
+    GCP then rejects any token without it. Staging is a separate project built
+    from this same module (T-1103) and must set its own value (`"staging"`);
+    its deploy job must then name `environment: staging` (T-1104), or the
+    provider condition rejects the token. The production root keeps the
+    `production` default.
   EOT
 }
 

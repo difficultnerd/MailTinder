@@ -18,6 +18,11 @@
 #             https://<name>-<project-number>.<region>.run.app. The scheduler's
 #             OIDC audience and the API's MT_UNSUB_URL carry the same URLs.
 #   caller    UNSUB_TASKS_CALLER / WORKER_SCHEDULER_CALLER
+#   oauth     GOOGLE_OAUTH_CLIENT_ID on `unsub` (the Gmail identity flow's
+#             client id; an input with no default so a blank one fails the
+#             plan). `unsub` also reads UNSUB_BASE_URL - the base of the
+#             one-click links - which is set from the SAME deterministic URL as
+#             its UNSUB_AUDIENCE so the two cannot disagree.
 
 # A Cloud Run service's URL is deterministic: name, project number, region. The
 # runtime accounts need it as the audience they check (UNSUB_AUDIENCE /
@@ -56,7 +61,13 @@ locals {
 
   unsub_env = merge(local.base_env, {
     UNSUB_TASKS_CALLER = var.service_accounts["tasks_invoker"]
-    UNSUB_AUDIENCE     = local.unsub_url
+    # The service checks `UNSUB_AUDIENCE` and builds one-click links against
+    # `UNSUB_BASE_URL`; both are set from the SAME deterministic URL so the
+    # audience Cloud Tasks signs for and the base URL the service emits can
+    # never disagree (F2, M1).
+    UNSUB_AUDIENCE         = local.unsub_url
+    UNSUB_BASE_URL         = local.unsub_url
+    GOOGLE_OAUTH_CLIENT_ID = var.google_oauth_client_id
   })
 
   worker_env = merge(local.base_env, {

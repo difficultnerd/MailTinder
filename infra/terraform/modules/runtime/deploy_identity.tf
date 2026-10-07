@@ -96,7 +96,13 @@ resource "google_project_iam_member" "deployer_hosting_admin" {
 # `mt-api`/`mt-unsub`/`mt-worker`, and those identities hold KMS and Secret
 # Manager access (S4 2). The deployer therefore reaches KMS and secrets
 # *transitively*, through the image it deploys - the "no KMS" property holds for
-# its direct grants only, not for everything it can reach. The compensating
-# control is the GitHub `production` environment's required reviewer, which the
-# WIF condition pins as `assertion.environment` (T-1104), on top of branch
-# protection on `main`.
+# its direct grants only, not for everything it can reach.
+#
+# The compensating control is the GitHub `production` environment's required
+# reviewer (T-1104), on top of branch protection on `main`. That approval is a
+# GitHub-side control, not a GCP one: the WIF condition below only requires the
+# token to carry `assertion.environment == 'production'` (the job must name
+# `environment: production`), and GitHub withholds that claim until the
+# environment's required reviewer approves. GCP enforces the claim; the
+# reviewer makes the claim mean something. Approving a production deploy is a
+# decision to run a specific image as those identities.

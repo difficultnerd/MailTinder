@@ -94,12 +94,16 @@ What it holds, directly and transitively:
   deploys, even though it holds no KMS or secret role itself. The same applies
   to Firestore and to anything else a runtime account can reach (V13.2.2 is
   satisfied for direct grants only - say so).
-- The **compensating control** is the GitHub `production` environment's
-  required reviewer (James). The WIF condition pins it as
-  `assertion.environment`, so a deploy cannot impersonate the deployer without
-  the approval gate; branch protection on `main` is the second layer (S11 3,
-  T-1104). Approving a production deploy is a decision to run a specific image
-  as those identities - treat it as one.
+- The **compensating control** is the required reviewer configured on the
+  GitHub `production` environment (James). This is a GitHub-side control: the
+  WIF condition requires the token to carry `assertion.environment ==
+  'production'`, which GitHub only issues to a job that names `environment:
+  production` - and it withholds that claim until the environment's reviewer
+  approves. So GCP enforces the claim, and the reviewer is what makes the claim
+  meaningful; the two together mean a deploy cannot impersonate the deployer
+  without the approval gate. Branch protection on `main` is the second layer
+  (S11 3, T-1104). Approving a production deploy is a decision to run a
+  specific image as those identities - treat it as one.
 
 ## Checks
 
