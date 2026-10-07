@@ -5,8 +5,8 @@
 //! the Cloud Tasks caller are required, so a misconfigured service refuses
 //! every call rather than trusting the wrong caller.
 //!
-//! The one-click sender is registered below (T-702); the mailto sender arrives
-//! in T-703. Until T-703 a due mailto job ends `needs_attention` / `refused`.
+//! The one-click sender (T-702) and the mailto sender (T-703) are both
+//! registered below.
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
@@ -33,7 +33,9 @@ use obs::Sensitive;
 use ports::{HttpEgress, InviteMailer, MailProvider, Ports, SecretName, Secrets};
 use svc_common::internal_auth::InternalAuthConfig;
 use unsub::config::UnsubConfig;
+use unsub::mailto::MailtoSender;
 use unsub::runner::UnsubState;
+use unsub::sender::UnsubSender;
 use unsub::{router, ROUTE_TEMPLATES};
 use url::Url;
 
@@ -196,8 +198,11 @@ async fn run() -> Result<(), SetupError> {
 
     let state = UnsubState {
         ports,
-        // T-703 registers the mailto sender here.
-        senders: vec![Arc::new(unsub::one_click::OneClickSender)],
+        // T-702 (one-click) and T-703 (mailto) both register their sender here.
+        senders: vec![
+            Arc::new(unsub::one_click::OneClickSender) as Arc<dyn UnsubSender>,
+            Arc::new(MailtoSender) as Arc<dyn UnsubSender>,
+        ],
         auth: InternalAuthConfig {
             audience: config.audience,
             allowed_caller_email: config.tasks_caller,

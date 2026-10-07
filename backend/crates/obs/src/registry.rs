@@ -23,6 +23,8 @@ pub const ACTIONS: &[&str] = &[
     "invite_request_approve",
     "invite_request_decline",
     "experiments_consent",
+    "experiments_opt_in",
+    "experiments_opt_out",
     "kill_switch_change",
     "snapshot_save",
     "snapshot_delete",
@@ -79,6 +81,9 @@ pub const OUTCOMES: &[&str] = &[
     "mailbox_removed",
     "owner_mismatch",
     "rate_limited",
+    // Account deletion (T-803).
+    "started",
+    "deleted",
     // Sign-in and invite outcomes (T-502b, S7 3.4).
     "signed_in",
     "joined",
@@ -150,6 +155,8 @@ pub const OPS: &[&str] = &[
     "token_revoke",
     "sign_in_store_grant",
     "join_missing_grant",
+    // Unsubscribe token minting (T-703).
+    "unsub.mint",
 ];
 
 pub const AMR_VALUES: &[&str] = &[
