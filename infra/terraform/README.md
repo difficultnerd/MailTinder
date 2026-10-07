@@ -70,6 +70,37 @@ the plan and runs `apply`**, from his own machine, one project at a time
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
 
+## Deploy identity and its real blast radius (T-1102b)
+
+`mt-deployer` is the only credential GitHub Actions uses; there is no service
+account key. The Workload Identity provider admits a token only from
+`difficultnerd/MailTinder` on `refs/heads/main` **and** from the GitHub
+environment `production`, so a workflow outside that environment cannot
+impersonate the deployer at all.
+
+What it holds, directly and transitively:
+
+- **Directly**, the deployer holds no KMS, Secret Manager, Firestore, IAM-admin
+  or primitive role (V13.2.2). Every role it is granted is resource-scoped:
+  `roles/run.developer` on the three Cloud Run services,
+  `roles/iam.serviceAccountUser` (`actAs`) on the three runtime accounts,
+  `roles/artifactregistry.writer` on the one repository, and
+  `roles/firebasehosting.admin` on the project.
+- **Transitively**, that is not the whole story and the checklist must not claim
+  it is. `roles/run.developer` plus `actAs` on `mt-api`/`mt-unsub`/`mt-worker`
+  lets the deployer deploy an *arbitrary* image that then runs as one of those
+  runtime identities, and those identities **do** hold KMS and Secret Manager
+  access (S4 2). The deployer reaches KMS and secrets through the image it
+  deploys, even though it holds no KMS or secret role itself. The same applies
+  to Firestore and to anything else a runtime account can reach (V13.2.2 is
+  satisfied for direct grants only - say so).
+- The **compensating control** is the GitHub `production` environment's
+  required reviewer (James). The WIF condition pins it as
+  `assertion.environment`, so a deploy cannot impersonate the deployer without
+  the approval gate; branch protection on `main` is the second layer (S11 3,
+  T-1104). Approving a production deploy is a decision to run a specific image
+  as those identities - treat it as one.
+
 ## Checks
 
 CI runs the `terraform` job: `terraform fmt -check -recursive`, then inside
@@ -85,12 +116,24 @@ under `modules/` and `envs/`:
 - a resource-type guard rejects `google_service_account_key`,
   `google_secret_manager_secret_version`, `google_firestore_backup_schedule` and
   `google_project_iam_policy`;
-- a role allowlist rejects any `role = "roles/..."` that is not one of
-  `roles/cloudkms.cryptoKeyEncrypterDecrypter`, `roles/aiplatform.user`,
-  `roles/datastore.user`, `roles/secretmanager.secretAccessor` or
-  `roles/logging.bucketWriter` (the sink's writer). This is what covers
-  "no primitive role", "no `roles/iam.serviceAccountUser`" and "no logging role
+- a role allowlist rejects any granted role that is not one this work
+  authorises: `roles/cloudkms.cryptoKeyEncrypterDecrypter`,
+  `roles/aiplatform.user`, `roles/datastore.user`,
+  `roles/secretmanager.secretAccessor`, `roles/logging.bucketWriter`,
+  `roles/run.invoker`, `roles/run.developer`, `roles/cloudtasks.enqueuer`,
+  `roles/cloudtasks.taskDeleter`, `roles/artifactregistry.writer`,
+  `roles/firebasehosting.admin`, `roles/iam.workloadIdentityUser` and
+  `roles/iam.serviceAccountUser`. It reads both the scalar
+  `role = "roles/..."` form (every `google_*_iam_member`, `_binding` and
+  `_policy` resource) and the `roles = ["roles/..."]` list form, and **fails
+  closed on any role value that is not a plain quoted literal** (`role = var.x`,
+  `role = local.x`), so a role cannot be granted through a variable or a local
+  and stay unseen. This is what covers "no primitive role" and "no logging role
   for an app identity".
+- two narrower checks back the allowlist up: `roles/iam.serviceAccountTokenCreator`
+  is never allowed, and `roles/iam.serviceAccountUser` (`actAs`) is allowed only
+  on an individual service account, never on the project. Only `api_public` may
+  name `allUsers`/`allAuthenticatedUsers` (V13.2.1).
 
 Note the log bucket holds application stdout/stderr only. The Cloud Run platform
 request log (`run.googleapis.com%2Frequests`) records the request URL, its query

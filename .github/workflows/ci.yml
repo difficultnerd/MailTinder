@@ -136,9 +136,11 @@ jobs:
           # Role allowlist (ASVS V13.2.1, V13.2.3, V16.4.2). `terraform test`
           # only inspects the resources the module declares, so a role granted by
           # a new IAM resource anywhere else would slip past it. This scans every
-          # .tf file under modules/ and envs/ for a literal `role = "roles/..."`
-          # assignment and fails unless the role is one this task authorises. It
-          # catches primitive roles (owner/editor/viewer), the impersonation
+          # .tf file under modules/ and envs/ for the role values granted by
+          # `role = "roles/..."` (every google_*_iam_member, google_*_iam_binding
+          # and google_*_iam_policy resource) and by the `roles = ["roles/..."]`
+          # list form, and fails unless every role is one this task authorises.
+          # It catches primitive roles (owner/editor/viewer), the impersonation
           # roles roles/iam.serviceAccountUser and serviceAccountTokenCreator,
           # any roles/logging.* role other than the sink's bucketWriter, and any
           # other role a later change adds.
@@ -156,8 +158,59 @@ jobs:
             roles/firebasehosting.admin \
             roles/iam.workloadIdentityUser \
             roles/iam.serviceAccountUser | sort -u)
-          used_roles=$(grep -rhoE 'role[[:space:]]*=[[:space:]]*"roles/[A-Za-z0-9._]+"' \
-            --include='*.tf' modules envs | grep -oE 'roles/[A-Za-z0-9._]+' | sort -u)
+
+          # A role granted as an expression (`role = var.x`, `role = local.x`,
+          # `role = each.value`, ...) is not a literal the allowlist can read, so
+          # it could grant roles/owner with CI green. Fail closed: every
+          # `role`/`roles` assignment must be a plain quoted literal.
+          if bad=$(grep -rnE '^[[:space:]]*roles?[[:space:]]*=[[:space:]]*[^"[:space:]\[]' \
+              --include='*.tf' modules envs); then
+            echo "FAIL every role value must be a quoted literal (an expression is not allowlistable):"
+            printf '%s\n' "$bad"
+            fail=1
+          else
+            echo "OK   every scalar role value is a quoted literal"
+          fi
+
+          # The `roles = [...]` list form (an IAM binding grants several roles at
+          # once) is invisible to a line-oriented grep, so it is walked here:
+          # each literal element is emitted for the allowlist, and any element
+          # that is not a `roles/...` literal fails the guard.
+          if list_roles=$(awk '
+            BEGIN { inlist = 0; bad = 0 }
+            {
+              line = $0
+              sub(/[[:space:]]*#.*/, "", line)
+              if (!inlist) {
+                if (match(line, /roles?[[:space:]]*=[[:space:]]*\[/) == 0) next
+                line = substr(line, RSTART + RLENGTH)
+                inlist = 1
+              }
+              rest = line
+              while (length(rest) > 0) {
+                if (match(rest, /^[[:space:],]+/)) { rest = substr(rest, RLENGTH + 1); continue }
+                if (match(rest, /^"[^"]*"/)) {
+                  if (substr(rest, 2, RLENGTH - 2) ~ /^roles\//) print substr(rest, 2, RLENGTH - 2)
+                  else bad = 1
+                  rest = substr(rest, RLENGTH + 1); continue
+                }
+                if (match(rest, /^\]/)) { inlist = 0; rest = substr(rest, 2); continue }
+                bad = 1
+                rest = substr(rest, 2)
+              }
+            }
+            END { exit bad ? 1 : 0 }
+          ' $(find modules envs -name '*.tf')); then
+            echo "OK   every roles = [...] list holds literal roles"
+          else
+            echo "FAIL a roles = [...] list holds a non-literal role value"
+            fail=1
+          fi
+
+          used_roles=$(printf '%s\n%s\n' \
+            "$(grep -rhoE 'role[[:space:]]*=[[:space:]]*"roles/[A-Za-z0-9._]+"' \
+               --include='*.tf' modules envs | grep -oE 'roles/[A-Za-z0-9._]+')" \
+            "$list_roles" | grep -E '^roles/' | sort -u)
           unapproved=$(comm -23 <(printf '%s\n' "$used_roles") <(printf '%s\n' "$allowed_roles"))
           if [ -n "$unapproved" ]; then
             echo "FAIL unapproved IAM role(s) granted:"

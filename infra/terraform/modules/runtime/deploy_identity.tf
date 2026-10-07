@@ -85,7 +85,18 @@ resource "google_project_iam_member" "deployer_hosting_admin" {
   member  = "serviceAccount:${google_service_account.deployer.email}"
 }
 
-# The complete set of roles the deployer holds is the five resources above;
-# there is deliberately no `locals` list to keep in sync (nothing referenced
-# one), and nothing grants KMS, Secret Manager, Firestore or IAM administration
-# (V13.2.2). The run and actAs roles are per service, not per project.
+# The complete set of roles the deployer holds *directly* is the five resources
+# above; there is deliberately no `locals` list to keep in sync (nothing
+# referenced one), and none of them is a KMS, Secret Manager, Firestore or IAM
+# administration role (V13.2.2). The run and actAs roles are per service, not
+# per project.
+#
+# Blast radius, stated honestly: `roles/run.developer` plus `actAs` on the three
+# runtime accounts lets the deployer deploy an *arbitrary* image that runs as
+# `mt-api`/`mt-unsub`/`mt-worker`, and those identities hold KMS and Secret
+# Manager access (S4 2). The deployer therefore reaches KMS and secrets
+# *transitively*, through the image it deploys - the "no KMS" property holds for
+# its direct grants only, not for everything it can reach. The compensating
+# control is the GitHub `production` environment's required reviewer, which the
+# WIF condition pins as `assertion.environment` (T-1104), on top of branch
+# protection on `main`.
