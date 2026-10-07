@@ -85,9 +85,11 @@ Labels and categories the app creates stay with the user's mail. Trash moves are
 
 | Field allowed | Class |
 | --- | --- |
-| Request ID, pseudonymous user ID (HMAC of user ID under the log pseudonymisation key), route template, status code, latency, action type, outcome code, rate-limit hit, `amr` on sign-in events, provider, unsubscribe method | C1 |
+| Request ID, pseudonymous user ID (HMAC of user ID under the log pseudonymisation key), the target's pseudonymous user ID on a two-principal event, route template, status code, latency, action type, outcome code, rate-limit hit, `amr` on sign-in events, provider, unsubscribe method | C1 |
 
 Everything else is banned from logs, including tokens, cookies, message IDs, addresses, names, subjects, snippets, bodies, URLs and page content. Retention 90 days in a locked log bucket. Security events (S6 section 7) live here, not in Firestore. Enforced by a redacting wrapper type in Rust, the template's `optional/privacy` Semgrep rules (extended with these field names) and a log-scanning test over integration test output.
+
+A line carries the request ID and at least one pseudonymous user ID. A single-principal line carries one; a two-principal action carries the actor's and the target's pseudonymous IDs on the same line. An admin ending another user's session is therefore one `session_ended_by_admin` security event naming both principals (S6 section 7, S2 AU-07 AC6), not two correlated lines.
 
 ## Third parties that receive data
 
