@@ -143,6 +143,7 @@ pub const OPS: &[&str] = &[
     "drive.files.create",
     "egress.one_click",
     "egress.call",
+    "unsub.one_click",
     "tasks.create",
     "kms.decrypt",
     "kms.encrypt",

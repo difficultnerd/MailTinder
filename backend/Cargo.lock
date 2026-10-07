@@ -2777,6 +2777,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "unsub-testbed",
  "url",
  "uuid",
 ]
@@ -2784,6 +2785,17 @@ dependencies = [
 [[package]]
 name = "unsub-testbed"
 version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "url",
+]
 
 [[package]]
 name = "untrusted"
@@ -3072,13 +3084,25 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "worker"
 version = "0.1.0"
 dependencies = [
+ "adapters-gcp",
+ "async-trait",
+ "axum 0.7.9",
  "domain",
+ "egress",
  "obs",
  "ports",
+ "proptest",
+ "serde",
  "serde_json",
+ "svc-common",
  "testkit",
+ "thiserror",
  "time",
  "tokio",
+ "tower",
+ "tracing",
+ "unsub",
+ "url",
  "uuid",
 ]
 

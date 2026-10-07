@@ -315,13 +315,19 @@ async fn fake_oidc_each_token_scenario_produces_its_defect() {
     let claims = decode_id_token(&id);
     assert!(claims["exp"].as_i64().unwrap() <= t0().unix_timestamp() - 60);
 
-    // NotYetValid
+    // NotYetValid. The fake stamps `nbf` from its own wall clock at the moment
+    // the scenario is registered, so allow the one-second skew a boundary
+    // crossing can introduce rather than asserting exact equality.
     let h = start().await;
     register(&h);
     h.token_scenario(TokenScenario::NotYetValid);
     let (_, id) = happy_path(&h).await;
     let claims = decode_id_token(&id);
-    assert_eq!(claims["nbf"].as_i64().unwrap(), t0().unix_timestamp() + 600);
+    let nbf = claims["nbf"].as_i64().unwrap();
+    assert!(
+        (nbf - (t0().unix_timestamp() + 600)).abs() <= 1,
+        "nbf {nbf} is not within one second of now + 600"
+    );
 
     // MissingNonce
     let h = start().await;
