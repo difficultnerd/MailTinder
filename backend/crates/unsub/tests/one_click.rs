@@ -460,6 +460,8 @@ fn map_one_click_table() {
             },
         ),
         (
+            // The refusal variant, not a delete call.
+            // nosemgrep: mailtinder-no-permanent-delete
             Err(EgressError::PermanentDeleteRefused),
             SendResult::NeedsAttention {
                 reason: R::UnsubscribeFailed,

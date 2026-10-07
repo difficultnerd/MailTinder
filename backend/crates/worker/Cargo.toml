@@ -6,10 +6,38 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "worker"
+path = "src/main.rs"
+
 [dependencies]
 domain.workspace = true
 ports.workspace = true
 obs.workspace = true
+svc-common.workspace = true
+adapters-gcp.workspace = true
+egress.workspace = true
+axum = "0.7"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+url.workspace = true
+async-trait.workspace = true
+tracing = "0.1"
+
+[dev-dependencies]
+testkit.workspace = true
+egress = { workspace = true, features = ["test-policy"] }
+unsub.workspace = true
+tower = { version = "0.5", features = ["util"] }
+proptest.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

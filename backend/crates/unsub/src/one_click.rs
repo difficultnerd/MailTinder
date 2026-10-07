@@ -113,6 +113,8 @@ pub fn map_one_click(result: &Result<OneClickOutcome, EgressError>) -> SendResul
         },
         // Cannot happen on this path (no delete is ever attempted here); the
         // job still ends Needs Attention and the failure is logged.
+        // This arm only maps egress's refusal; no delete call is made here.
+        // nosemgrep: mailtinder-no-permanent-delete
         Err(EgressError::PermanentDeleteRefused) => SendResult::NeedsAttention {
             reason: NeedsAttentionReason::UnsubscribeFailed,
             code: JobOutcomeCode::Refused,
