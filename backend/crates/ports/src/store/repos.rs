@@ -29,6 +29,9 @@ pub trait MailboxRepo: Repo<MailboxId, MailboxRecord> {
         provider: Provider,
         subject: &ProviderSubjectId,
     ) -> Result<Option<Versioned<MailboxRecord>>, StoreError>;
+    /// Every mailbox, `linked_at` asc then `mailbox_id`, paged. Used by the
+    /// account-deletion sweep to find a mailbox whose user document is gone.
+    async fn list(&self, page: PageRequest) -> Result<Page<Versioned<MailboxRecord>>, StoreError>;
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError>;
 }
 
@@ -85,12 +88,13 @@ pub trait JobRepo: Repo<JobId, JobRecord> {
         user: &UserId,
         list: &ListKeyHash,
     ) -> Result<Vec<Versioned<JobRecord>>, StoreError>;
-    /// expires_at <= now, asc.
+    /// expires_at <= now, asc then `job_id`, paged so a caller can scan past
+    /// live records that share the oldest expiries (T-803 AU-06 AC1).
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<Versioned<JobRecord>>, StoreError>;
+        page: PageRequest,
+    ) -> Result<Page<Versioned<JobRecord>>, StoreError>;
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError>;
 }
 
@@ -103,11 +107,12 @@ pub trait NeedsAttentionRepo: Repo<NeedsAttentionId, NeedsAttentionRecord> {
         page: PageRequest,
     ) -> Result<Page<Versioned<NeedsAttentionRecord>>, StoreError>;
     async fn count_for_user(&self, user: &UserId) -> Result<u64, StoreError>;
+    /// expires_at <= now, asc then `item_id`, paged.
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<NeedsAttentionId>, StoreError>;
+        page: PageRequest,
+    ) -> Result<Page<NeedsAttentionId>, StoreError>;
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError>;
 }
 
@@ -115,11 +120,12 @@ pub trait NeedsAttentionRepo: Repo<NeedsAttentionId, NeedsAttentionRecord> {
 #[async_trait]
 pub trait SessionRepo: Repo<SessionHash, SessionRecord> {
     async fn by_user(&self, user: &UserId) -> Result<Vec<Versioned<SessionRecord>>, StoreError>;
+    /// expires_at <= now, asc then `session_hash`, paged.
     async fn expires_by(
         &self,
         now: OffsetDateTime,
-        limit: u32,
-    ) -> Result<Vec<SessionHash>, StoreError>;
+        page: PageRequest,
+    ) -> Result<Page<SessionHash>, StoreError>;
     async fn delete_all_for_user(&self, user: &UserId) -> Result<u64, StoreError>;
 }
 

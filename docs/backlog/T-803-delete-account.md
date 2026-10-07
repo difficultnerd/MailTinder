@@ -17,7 +17,7 @@
 | Create | `backend/crates/api/src/routes/account.rs` | Handler and DTO |
 | Create | `backend/crates/api/src/services/account_deletion.rs` | Ordered steps |
 | Create | `backend/crates/worker/src/sweeps/deleted_users.rs` | Orphan sweep for records whose user is gone |
-| Change | `backend/crates/worker/src/sweeps/mod.rs` | Call it from API-INT-2 (T-706) |
+| Change | `backend/crates/worker/src/sweeps/mod.rs` | The sweep entry point `run_sweeps` calls the deleted-user sweep; T-706 calls `run_sweeps` from API-INT-2 |
 | Change | `backend/crates/api/src/routes/mod.rs` | Mount; Firestore rate limit 3 per user per day |
 | Create | `backend/crates/api/tests/account_deletion.rs` | Service integration tests |
 | Create | `backend/crates/worker/tests/deleted_users_sweep.rs` | Sweep tests |
@@ -42,7 +42,7 @@ pub enum DeletionStep { AppFolderDeleted, JobsCancelled, TokensRevoked, KeyDestr
 pub async fn delete_account(app: &AppState, session: &AuthedSession) -> Result<(DeletionAccepted, Vec<DeletionStep>), ApiError>;
 
 // worker
-pub async fn sweep_deleted_users(store: &dyn ServerStore, limit: u32) -> Result<u64, StoreError>;
+pub async fn sweep_deleted_users(store: &dyn ServerStore, limit: u32, pseudo: &Pseudonymiser) -> Result<u64, StoreError>;
 ```
 
 ## Algorithm
@@ -65,7 +65,7 @@ In the request, in this order (AU-06 AC1, S7 5.10):
 
 Worker sweep (every run of API-INT-2):
 
-11. For jobs, needs_attention, mailboxes and sessions, find records whose `user_id` has no user document (bounded by `limit`), delete them, and return the count. Under the virtual clock, after a failed step 8 every record is gone by the next sweep, well within 24 hours (AU-06 AC1).
+11. For jobs, needs_attention, mailboxes and sessions, find records whose `user_id` has no user document (in pages of `limit`, so live records at the front of a scan cannot hide an orphan), delete every collection of each orphaned user including the `classifier_eval` records of the user's pseudonymous ID, and return the count. Under the virtual clock, after a failed step 8 every record is gone by the next sweep, well within 24 hours (AU-06 AC1). The sweep is reached through the worker's API-INT-2 entry point, `worker::sweeps::run_sweeps`; **T-706 owns the production caller** (its route calls `run_sweeps`), so the "within 24 hours" clause of AU-06 AC1 only holds in production once T-706's `api_int_2_calls_the_deleted_user_sweep` test passes. Until then the sweep is a library function proven by the tests in `backend/crates/worker/tests/deleted_users_sweep.rs`.
 
 Never touched: labels and categories already applied in the mailbox (AU-06 AC2), and `bakeoff_snapshots` (aggregate only, S5).
 
@@ -73,7 +73,7 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 
 | ID | Behaviour (one line) |
 | --- | --- |
-| AU-06 AC1 | App folder file, then jobs and tasks, then token revoke, then key destroyed; remaining records swept within 24 hours |
+| AU-06 AC1 | App folder file, then jobs and tasks, then token revoke, then key destroyed; remaining records swept within 24 hours (the "within 24 hours" clause is gated on T-706, see Done when) |
 | AU-06 AC2 | Labels already applied stay on the user's messages |
 | AU-06 AC3 | Without a fresh step-up nothing is deleted |
 | DEL-1 | After deletion no document references the user ID |
@@ -125,3 +125,4 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 - The tests above pass and every required check is green (S10 10.1).
 - Definition of done in S10 10.4.
 - A strong-tier review ticks the checklist above before merge (S13 section 1).
+- **AU-06 AC1's 24-hour clause is not done here.** This task ships the sweep and its tests; the production caller lands with T-706. T-803's AC coverage stays conditional on T-706's hard gate, `api_int_2_calls_the_deleted_user_sweep`, which must pass on the API-INT-2 route.
