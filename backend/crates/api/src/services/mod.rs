@@ -5,6 +5,7 @@
 pub mod account_deletion;
 pub mod achievements;
 pub mod categories;
+pub mod delivery_check;
 pub mod feed;
 pub mod history_catch_up;
 pub mod jobs;
