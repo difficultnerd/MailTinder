@@ -11,6 +11,7 @@ use api::sealed::{SealedTokens, TokenType};
 
 use api::services::categories::create;
 use api::services::feed::next_page;
+use api::services::reject::BlockPromptRef;
 use api::services::swipe::swipe;
 use api::services::user_state_store::UserStateStore;
 use api::session::extract::AuthedSession;
@@ -18,7 +19,7 @@ use api::session::store::SessionService;
 use api::{app_state, build_router, config::ApiConfig, state::AppState};
 use async_trait::async_trait;
 use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Method, Request, StatusCode};
 use domain::user_state::{AchievementRecord, MailboxPosition, StoredRule, Totals, UserState};
 use domain::AchievementId;
 use domain::{
@@ -87,6 +88,7 @@ struct World {
     mailbox: MailboxId,
     session: AuthedSession,
     cookie: String,
+    csrf: String,
     folder: Arc<ConflictFolder>,
 }
 
@@ -184,6 +186,7 @@ impl World {
             recent_auth_at: None,
             session_hash: record.record.session_hash,
         };
+        let csrf = record.record.csrf_token.clone();
         Ok(Self {
             app,
             fakes,
@@ -191,6 +194,7 @@ impl World {
             mailbox,
             session,
             cookie,
+            csrf,
             folder,
         })
     }
@@ -323,6 +327,8 @@ impl World {
                         probabilities: None,
                     },
                     classifier_id: HEADER_RULES_ID.into(),
+                    issued_at: self.fakes.clock.now(),
+                    bakeoff: None,
                 },
             )
             .await?;
@@ -345,6 +351,68 @@ impl World {
             self.request(&id, ActionDto::Reject, session).await?,
         )
         .await?)
+    }
+
+    /// The wrapped data key of the World's user.
+    async fn wrapped(&self) -> TestResult<ports::WrappedKey> {
+        Ok(self
+            .fakes
+            .store
+            .users()
+            .get(&self.user)
+            .await?
+            .ok_or("missing user")?
+            .record
+            .wrapped_data_key)
+    }
+
+    /// Seal the prompt reference a reject would have raised (PB-01 AC1).
+    async fn seal_prompt(
+        &self,
+        session: &AuthedSession,
+        sender_key: &str,
+        swipe_id: uuid::Uuid,
+    ) -> TestResult<String> {
+        let payload = BlockPromptRef {
+            sender_key: sender_key.to_owned(),
+            sender_display: format!("Name of {sender_key}"),
+            mailbox_id: self.mailbox.0,
+            swipe_id,
+        };
+        let expires_at = self.app.ports.clock.now() + Duration::hours(1);
+        Ok(
+            SealedTokens::new(self.app.ports.keys.clone(), self.app.ports.clock.clone())
+                .seal(
+                    TokenType::PromptRef,
+                    &self.user,
+                    &self.wrapped().await?,
+                    &session.session_record_id,
+                    expires_at,
+                    &payload,
+                )
+                .await?,
+        )
+    }
+
+    /// POST a `block_person` rule through the real route (API-RULE-2), so the
+    /// block achievement path runs exactly as production runs it.
+    async fn post_block(&self, prompt_ref: &str) -> TestResult<(StatusCode, Value)> {
+        let body = serde_json::to_vec(&json!({
+            "kind": "block_person",
+            "prompt_ref": prompt_ref,
+        }))?;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/rules")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ORIGIN, "https://mailtinder.test")
+            .header(header::COOKIE, self.cookie.as_str())
+            .header("x-csrf-token", self.csrf.as_str())
+            .body(Body::from(body))?;
+        let response = build_router(self.app.clone()).oneshot(request).await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
     }
 }
 
@@ -499,12 +567,31 @@ async fn gm_06_ac1_first_filing_category_on_create() -> TestResult {
 #[tokio::test]
 async fn gm_06_ac1_first_blocked_person_on_block_rule() -> TestResult {
     let w = World::new().await?;
-    let rule = w.rule(RuleKind::BlockPerson, true, Some(20));
-    api::services::rules::create_block(&w.app, &w.session, rule.clone()).await?;
-    api::services::rules::create_block(&w.app, &w.session, rule).await?;
+    let prompt = w
+        .seal_prompt(&w.session, "synthetic@example.com", w.fakes.rng.uuid_v4())
+        .await?;
+    // The unlock is created by the real POST /api/v1/rules route, not a bare
+    // service function: this is the product path T-608 wired up.
+    let (status, rule) = w.post_block(&prompt).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(rule["kind"], "block_person");
+    // A retry of the same prompt through the route reuses the rule and unlocks
+    // nothing twice.
+    let (again, retry) = w.post_block(&prompt).await?;
+    assert_eq!(again, StatusCode::CREATED);
+    assert_eq!(retry["rule_id"], rule["rule_id"]);
     let state = w.state().await?;
     assert_eq!(state.rules.len(), 1);
     assert!(has_unlock(&state, AchievementId::FirstBlockedPerson));
+    assert_eq!(
+        state
+            .achievements
+            .iter()
+            .filter(|a| a.achievement_id == AchievementId::FirstBlockedPerson.as_str())
+            .count(),
+        1,
+        "the achievement unlocks once"
+    );
     Ok(())
 }
 
