@@ -273,9 +273,12 @@ async fn owned_mailbox(
     Ok(record.record.mailbox_id)
 }
 
-/// Step 4: the classification token. Its clear type must be `classification`
-/// and, if it opens, it must name this mailbox and message; every other open
-/// failure just means no `classifier_eval` record is written (T-906a).
+/// Step 4: the classification token. Its clear type must be `classification`,
+/// else `400`; a token that opens must name this mailbox and message, else
+/// `400`. Any other open failure — an earlier session, expiry or tampering;
+/// AES-GCM cannot tell these apart — is not an error: the swipe proceeds and
+/// no `classifier_eval` record is written (S7 5.5). No model is called here
+/// (BAKE-5).
 async fn check_classification_token(
     sealer: &SealedTokens,
     session: &AuthedSession,
@@ -302,14 +305,17 @@ async fn check_classification_token(
                 Ok(())
             }
         }
+        // A well-formed token of another type is a client error (S7 5.5).
+        Err(TokenError::WrongType) => Err(ApiError::InvalidRequest {
+            fields: vec!["classification_token".to_owned()],
+        }),
         Err(TokenError::Unavailable) => Err(ApiError::ProviderUnavailable {
             mailbox_id: None,
             retry_after_s: None,
         }),
-        Err(TokenError::WrongType | TokenError::Malformed) => Err(ApiError::InvalidRequest {
-            fields: vec!["classification_token".to_owned()],
-        }),
-        // Expired, for another user or session, or tampered with: proceed.
+        // An earlier session, expiry or tampering: not an error. Proceed, and
+        // write no eval record (S7 5.5; the header rules below decide the
+        // action, so an unopenable token cannot drive it).
         Err(_) => Ok(()),
     }
 }

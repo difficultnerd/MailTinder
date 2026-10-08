@@ -12,6 +12,7 @@ pub struct ClassifierId(pub String);
 
 /// The input to a classifier. Built in memory by T-903 from the S4 5.5
 /// allowlist. Never stored, never logged. Debug prints `..`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClassifierInput {
     pub from_display: String,
     pub from_domain: String,
