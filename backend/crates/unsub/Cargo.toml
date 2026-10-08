@@ -29,6 +29,11 @@ url.workspace = true
 async-trait.workspace = true
 tracing = "0.1"
 
+# Reserved for the e2e harness's test configuration (scripts/e2e.sh builds
+# `--features unsub/testkit`); the service itself needs no test-only code today.
+[features]
+testkit = []
+
 [dev-dependencies]
 testkit.workspace = true
 egress = { workspace = true, features = ["test-policy"] }

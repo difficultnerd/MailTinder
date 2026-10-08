@@ -31,6 +31,11 @@ async-trait = "0.1"
 futures = "0.3"
 tokio.workspace = true
 
+# Compiles the test-only routes (`/internal/test/...`, S10 3.2). Never enabled
+# in a release build; `tests/release_routes.rs` proves they are absent.
+[features]
+testkit = []
+
 [dev-dependencies]
 testkit.workspace = true
 adapters-gcp.workspace = true

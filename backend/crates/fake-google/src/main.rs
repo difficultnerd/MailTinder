@@ -15,8 +15,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", handle.addr)?;
     out.flush()?;
+    // scripts/e2e.sh may ask for the port in a file instead of parsing stdout.
+    if let Some(path) = port_file_arg() {
+        std::fs::write(path, format!("{}\n", handle.addr.port()))?;
+    }
     // Keep serving until the process is killed.
     let _ = addr;
     std::future::pending::<()>().await;
     Ok(())
+}
+
+/// The value of an optional `--port-file <path>` argument.
+fn port_file_arg() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|arg| arg == "--port-file")
+        .and_then(|i| args.get(i + 1).cloned())
 }

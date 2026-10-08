@@ -82,7 +82,7 @@ pub fn build_router_with_routes(
     state: AppState,
     routes: impl FnOnce(Router<AppState>) -> Router<AppState>,
 ) -> Router {
-    routes(Router::new())
+    let app = routes(Router::new())
         .route("/api/v1/healthz", get(healthz))
         .route(
             "/api/v1/auth/:provider/start",
@@ -115,8 +115,12 @@ pub fn build_router_with_routes(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             request_id_layer,
-        ))
-        .with_state(state)
+        ));
+    // Test-only routes are merged after the layers so a synthetic call needs no
+    // session; never present without the `testkit` feature (S10 3.2).
+    #[cfg(feature = "testkit")]
+    let app = app.merge(crate::routes::testkit::router());
+    app.with_state(state)
 }
 
 /// Load the session cookie into the request extensions (S7 3.2).
