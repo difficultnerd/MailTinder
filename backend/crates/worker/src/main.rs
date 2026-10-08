@@ -253,6 +253,14 @@ mod unused {
         ) -> Result<String, MailError> {
             Err(refused())
         }
+        async fn get_text(
+            &self,
+            mb: &MailboxCtx,
+            id: &MessageId,
+            _max_chars: usize,
+        ) -> Result<String, MailError> {
+            self.get_preview(mb, id).await
+        }
         async fn set_labels(
             &self,
             _mb: &MailboxCtx,

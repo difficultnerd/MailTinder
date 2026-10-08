@@ -108,6 +108,7 @@ struct Env<'a> {
     session: &'a AuthedSession,
     tunables: &'a Tunables,
     expires_at: OffsetDateTime,
+    gate: crate::experiments::BakeoffGate,
 }
 
 /// The next page of cards across all the user's mailboxes (API-FEED-1).
@@ -192,6 +193,7 @@ pub async fn next_page(
         session,
         tunables: &tunables,
         expires_at,
+        gate: input_gate(app, &user).await,
     };
     let all: Vec<MessageMeta> = page_metas.into_iter().chain(returns).collect();
     let built: Vec<Option<Built>> = bounded(all.into_iter().map(|m| build_card(&env, m)))
@@ -924,14 +926,36 @@ fn filing_dtos(
     (suggestion, keep_prompt)
 }
 
+// T-901 has not landed in this worktree. Reuse the existing consent gate,
+// failing closed on missing records or store errors; model calls remain T-904/905.
+async fn input_gate(app: &AppState, user: &UserId) -> crate::experiments::BakeoffGate {
+    let Ok(Some(user)) = app.ports.store.users().get(user).await else {
+        return crate::experiments::BakeoffGate::default();
+    };
+    let Ok(Some(switches)) = app.ports.store.config().get_classifiers().await else {
+        return crate::experiments::BakeoffGate::default();
+    };
+    crate::experiments::bakeoff_gate(
+        &user.record,
+        (switches.record.gemini_enabled, switches.record.jev_enabled),
+    )
+}
+
 /// Step 11: one card. `None` drops the message silently (FD-04 AC1).
 async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, ApiError> {
     let Some(live) = env.live.get(&meta.mailbox.0) else {
         return Ok(None);
     };
     let provider = env.app.ports.mail(live.provider);
-    let preview = match provider.get_preview(&live.ctx, &meta.id).await {
-        Ok(text) => plain_text(&text, PREVIEW_MAX_CHARS),
+    let text = if env.gate.gemini || env.gate.jev {
+        provider
+            .get_text(&live.ctx, &meta.id, domain::redact::MODEL_TEXT_FETCH_CHARS)
+            .await
+    } else {
+        provider.get_preview(&live.ctx, &meta.id).await
+    };
+    let preview = match text {
+        Ok(text) => domain::text::sanitise_plain(&text, PREVIEW_MAX_CHARS),
         Err(MailError::NotFound) => return Ok(None),
         Err(_) => String::new(),
     };

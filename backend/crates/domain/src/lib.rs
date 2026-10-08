@@ -29,6 +29,7 @@ mod mailbox_status;
 pub mod mailto;
 mod message;
 mod needs_attention;
+pub mod redact;
 mod rules;
 mod sender;
 mod sender_stats;
