@@ -1,0 +1,4 @@
+[build]
+# The local check workers are memory constrained. Coverage links large test
+# binaries; serialize builds so concurrent linkers cannot exhaust worker RAM.
+jobs = 1
