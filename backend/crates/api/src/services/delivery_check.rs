@@ -1,4 +1,5 @@
 //! Feed-load delivery monitoring. The hook is pure; publication follows the state write.
+use crate::services::list_key::HmacKey;
 use crate::services::user_state_store::UserStateStore;
 use crate::{error::ApiError, state::AppState};
 use domain::delivery::{
@@ -6,6 +7,8 @@ use domain::delivery::{
 };
 use domain::user_state::UserState;
 use domain::{MailboxId, NeedsAttentionReason, UserId};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use time::{Date, Duration, OffsetDateTime};
@@ -109,19 +112,12 @@ pub async fn publish(
 ) -> Result<(), ApiError> {
     for item in ignored {
         // Stable across Feed loads and concurrent publishers, without persisting
-        // any list identifier in the server record.
-        let identity = serde_json::to_vec(&(
-            user,
-            item.mailbox_id,
-            &item.sender_key,
-            &item.list_id,
-            item.unsubscribed_at,
-        ))
-        .map_err(|_| ApiError::Internal)?;
-        let item_id = ports::store::NeedsAttentionId(Uuid::new_v5(
-            &Uuid::from_u128(0x76f66c72_574b_57f9_93f3_499ec0fe0707),
-            &identity,
-        ));
+        // any list identifier in the server record. The id is a keyed HMAC (the
+        // email lookup key, as the list-key hash uses) so that read access to
+        // `needs_attention/{id}` cannot be used to test guesses of the sender or
+        // List-Id; an unkeyed hash would allow exactly that (S5:33, T-707 edge
+        // cases: nothing about the list reaches the server store).
+        let item_id = item_id(app, user, item)?;
         svc_common::needs_attention::raise_item_with_id(
             &app.ports,
             item_id,
@@ -153,6 +149,34 @@ pub async fn publish(
     }
     Ok(())
 }
+
+/// The server-side key of `needs_attention/{id}` (S5). Derived with a keyed
+/// HMAC over the item's identity so the id is stable but not guessable from a
+/// readable store; the `needs-attention:` domain keeps it separate from the
+/// list-key HMAC that shares the email lookup key.
+fn item_id(
+    app: &AppState,
+    user: &UserId,
+    item: &IgnoredUnsubscribe,
+) -> Result<ports::store::NeedsAttentionId, ApiError> {
+    let key = HmacKey(app.config.email_lookup_key.clone());
+    let mut mac = Hmac::<Sha256>::new_from_slice(key.0.expose()).map_err(|_| ApiError::Internal)?;
+    mac.update(b"needs-attention:");
+    mac.update(user.0.as_bytes());
+    mac.update(b"\n");
+    mac.update(item.mailbox_id.0.as_bytes());
+    mac.update(b"\n");
+    mac.update(item.sender_key.as_bytes());
+    mac.update(b"\n");
+    mac.update(item.list_id.as_deref().unwrap_or_default().as_bytes());
+    mac.update(b"\n");
+    mac.update(&item.unsubscribed_at.unix_timestamp_nanos().to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Ok(ports::store::NeedsAttentionId(Uuid::from_bytes(bytes)))
+}
+
 fn metric(outcome: &'static str) {
     obs::metric_event(&obs::MetricEvent {
         event_type: "delivery_check_outcome",
