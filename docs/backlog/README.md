@@ -83,6 +83,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-405](T-405-drive-app-folder-store.md) | Drive app folder store | M4 | sonnet | T-205b, T-302, T-306, T-401 |
 | [T-406](T-406-dkim-header-coverage-check.md) | DKIM header coverage check | M4 | strong | T-401, T-404 |
 | [T-500](T-500-api-skeleton-router-errors-headers-rate-limits.md) | api service skeleton: router, errors, headers, rate limits | M5 | sonnet | T-202a, T-202b, T-307 |
+| [T-500b](T-500b-api-binary-wiring-and-e2e-config.md) | api binary: production wiring and the end-to-end test configuration | M5 | strong | T-500, T-701, T-205a, T-205b, T-206, T-301 |
 | [T-501](T-501-sessions-cookie-and-csrf.md) | Sessions, cookie and CSRF | M5 | strong | T-201b, T-202a, T-301, T-302, T-500 |
 | [T-502a](T-502a-google-identity-adapter.md) | Google identity adapter (OAuth code flow, ID token validation, refresh, revoke) | M5 | strong | T-201a, T-206, T-305, T-306 |
 | [T-502b](T-502b-google-sign-in-and-invite-redemption.md) | Google sign-in and invite redemption (API-AUTH-1, API-AUTH-2) | M5 | strong | T-107, T-206, T-501, T-502a, T-503 |
@@ -141,7 +142,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1008b](T-1008b-swipe-feedback-effects.md) | Swipe feedback: animations, sounds, haptics, combo and confetti | M10 | sonnet | T-1006a, T-1008a |
 | [T-1009](T-1009-blitz-mode.md) | Blitz mode | M10 | sonnet | T-1008a |
 | [T-1010](T-1010-on-device-category-name.md) | On-device category name proposal | M10 | sonnet | T-1003 |
-| [T-1101a](T-1101a-e2e-harness-and-required-check.md) | End-to-end harness, first journey and the `e2e` required check | M11 | sonnet | M6, M7, T-205a, T-205b, T-206, T-708, T-1001a, T-1002b |
+| [T-1101a](T-1101a-e2e-harness-and-required-check.md) | End-to-end harness, first journey and the `e2e` required check | M11 | sonnet | M6, M7, T-205a, T-205b, T-206, T-500b, T-708, T-1001a, T-1002b |
 | [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end journeys: sessions, mixed Feed, reject, unsubscribe and filing | M11 | sonnet | T-1003, T-1006a, T-1101a |
 | [T-1101c](T-1101c-e2e-journeys-and-leak-scans.md) | End-to-end journeys: Needs Attention, disconnect, delete account; leak, storage and CSP scans | M11 | sonnet | T-006, T-1005, T-1101b |
 | [T-1102a](T-1102a-terraform-prod-foundation.md) | Terraform, production foundation: service accounts, IAM, KMS, Firestore, secrets, logs | M11 | strong | needs S11 |
