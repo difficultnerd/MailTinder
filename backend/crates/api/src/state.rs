@@ -18,4 +18,6 @@ pub struct AppState {
     pub tokens: Arc<TokenService>,
     /// Sends the invite email from the admin's own mailbox (T-505).
     pub invite_mailer: Arc<dyn InviteMailer>,
+    /// National holiday defaults, injectable for delivery checks.
+    pub business_calendar: Arc<domain::delivery::BusinessCalendar>,
 }

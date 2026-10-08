@@ -179,6 +179,13 @@ pub struct PendingDeliveryCheck {
     pub list_id: Option<String>,
     pub mailbox_id: MailboxId,
     pub unsubscribed_at: OffsetDateTime,
+    #[serde(default)]
+    pub mail_seen: bool,
+    #[serde(default)]
+    pub confirm_counted: bool,
+    /// Durable outbox payload, cleared only after the encrypted item is stored.
+    #[serde(default)]
+    pub pending_ignored_display: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
