@@ -66,6 +66,37 @@ jobs:
       - run: flutter analyze --fatal-infos
       - run: flutter test
 
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          install_components: cloud-firestore-emulator,beta
+      - run: cargo test --locked -p api --test release_routes
+        working-directory: backend
+      - run: scripts/e2e.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: e2e-logs
+          path: target/e2e-logs/
+
   language-policy:
     runs-on: ubuntu-latest
     steps:
@@ -90,11 +121,12 @@ jobs:
   # jobs sharing one name would make it ambiguous which run gates a merge.
   ci-integrity:
     runs-on: ubuntu-latest
-    needs: [rust, dart, language-policy, ac-coverage]
+    needs: [rust, dart, e2e, language-policy, ac-coverage]
     if: always()
     env:
       R_RUST: ${{ needs.rust.result }}
       R_DART: ${{ needs.dart.result }}
+      R_E2E: ${{ needs.e2e.result }}
       R_LANG: ${{ needs.language-policy.result }}
       R_AC: ${{ needs.ac-coverage.result }}
     steps:
@@ -111,6 +143,7 @@ jobs:
           }
           report rust            "$R_RUST"
           report dart            "$R_DART"
+          report e2e             "$R_E2E"
           report language-policy "$R_LANG"
           report ac-coverage     "$R_AC"
           exit $fail

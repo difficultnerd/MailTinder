@@ -32,6 +32,11 @@ pub fn tokens_equal(a: &[u8], b: &[u8]) -> bool {
 /// Reject an unsafe request whose `Origin` is absent or not the app origin, or
 /// whose `X-CSRF-Token` does not match the session's token.
 pub async fn csrf_layer(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // Only API writes are CSRF protected. Unmatched internal paths remain 404
+    // in release builds; test controls are composed outside these layers.
+    if !req.uri().path().starts_with("/api/v1/") {
+        return next.run(req).await;
+    }
     if !matches!(
         req.method(),
         &Method::POST | &Method::PUT | &Method::PATCH | &Method::DELETE

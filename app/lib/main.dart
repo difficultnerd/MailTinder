@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:http/http.dart' as http;
 
 import 'api/http_api_client.dart';
@@ -9,6 +10,10 @@ import 'state/sign_in_model.dart';
 import 'state/step_up_controller.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (kE2eBuild) {
+    SemanticsBinding.instance.ensureSemantics();
+  }
   // API base URL: override with --dart-define=API_ORIGIN=http://host:port,
   // otherwise default to the same origin the app is served from.
   const apiOrigin = String.fromEnvironment('API_ORIGIN');

@@ -11,6 +11,8 @@ pub mod sealed;
 pub mod services;
 pub mod session;
 pub mod state;
+#[cfg(feature = "testkit")]
+pub mod test_runtime;
 pub mod text;
 pub mod tokens;
 
@@ -78,7 +80,7 @@ pub fn build_router_with_routes(
     state: AppState,
     routes: impl FnOnce(Router<AppState>) -> Router<AppState>,
 ) -> Router {
-    routes(Router::new())
+    let application = routes(Router::new())
         .route("/api/v1/healthz", get(healthz))
         .route(
             "/api/v1/auth/:provider/start",
@@ -112,7 +114,10 @@ pub fn build_router_with_routes(
             state.clone(),
             request_id_layer,
         ))
-        .with_state(state)
+        .with_state(state.clone());
+    #[cfg(feature = "testkit")]
+    let application = application.merge(crate::test_runtime::control_router(state));
+    application
 }
 
 /// Load the session cookie into the request extensions (S7 3.2).

@@ -1,0 +1,7 @@
+Starting ChromeDriver 154.0.8037.97 (b510e9d7cd3a2fbd78d0ddc42234103206c5f78d-refs/branch-heads/8037@{#1673}) on port 56775
+Remote connections are allowed by an allowlist (127.0.0.1).
+Please see https://chromedriver.chromium.org/security-considerations for suggestions on keeping ChromeDriver safe.
+[1791447873.683][WARNING]: Unable to read /proc/sys/net/ipv6/bindv6only.
+[1791447873.683][SEVERE]: bind() failed: Address already in use (98)
+Unable to determine if bind to IPv4 port was successful.
+ChromeDriver was started successfully on port 56775.

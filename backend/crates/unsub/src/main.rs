@@ -54,6 +54,37 @@ const GOOGLEAPIS_ROOT: &str = "https://www.googleapis.com";
 /// The Cloud Tasks queue for unsubscribe jobs.
 const QUEUE_ID: &str = "unsubscribe";
 
+#[cfg(feature = "testkit")]
+async fn run_test_stack() -> Result<(), SetupError> {
+    let state = api::test_runtime::stack_state().map_err(|_| SetupError::Adapter)?;
+    obs::init("unsub", Arc::new(obs::StdoutSink), Arc::new(SystemClock))
+        .map_err(|_| SetupError::Obs)?;
+    obs::register_http_routes(ROUTE_TEMPLATES);
+    let addr: std::net::SocketAddr = env("UNSUB_ADDR")?
+        .parse()
+        .map_err(|_| SetupError::Invalid("UNSUB_ADDR"))?;
+    if !addr.ip().is_loopback() {
+        return Err(SetupError::Invalid("UNSUB_ADDR"));
+    }
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|_| SetupError::Adapter)?;
+    let state = UnsubState {
+        ports: (*state.ports).clone(),
+        senders: vec![
+            Arc::new(unsub::one_click::OneClickSender),
+            Arc::new(MailtoSender),
+        ],
+        auth: InternalAuthConfig {
+            audience: "synthetic-unsub".into(),
+            allowed_caller_email: "tasks@example.com".into(),
+        },
+    };
+    axum::serve(listener, router(state))
+        .await
+        .map_err(|_| SetupError::Adapter)
+}
+
 /// A start-up failure. Nothing is printed through the print macros; the
 /// process logs one line through `tracing` and exits non-zero.
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +114,10 @@ async fn main() -> ExitCode {
 
 #[allow(clippy::too_many_lines)]
 async fn run() -> Result<(), SetupError> {
+    #[cfg(feature = "testkit")]
+    if std::env::var("MT_E2E").as_deref() == Ok("true") {
+        return run_test_stack().await;
+    }
     let config = UnsubConfig::from_env().map_err(SetupError::Config)?;
     let clock = production_clock();
     let rng = production_rng();
