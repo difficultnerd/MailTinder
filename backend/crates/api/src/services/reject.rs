@@ -205,8 +205,7 @@ pub async fn execute(
     .await;
 
     match outcome {
-        Ok(Persisted::Applied(result)) => Ok(result),
-        Ok(Persisted::Lost(result)) => {
+        Ok(Persisted::Applied(result) | Persisted::Lost(result)) => {
             // The losing side of a concurrent request with the same
             // `Idempotency-Key`: answer from the response the winner recorded,
             // exactly as the sequential retry path does, and never apply the
@@ -568,9 +567,33 @@ struct Writes {
 /// with the same `Idempotency-Key` already applied this reject.
 async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<bool, ApiError> {
     let sid = w.sid;
+    let stored: serde_json::Value =
+        serde_json::from_str(&w.stored_json).map_err(|_| ApiError::Internal)?;
     store
-        .update_once(user, sid, move |s: &mut UserState| apply(s, &w))
-        .await
+        .update(user, move |s: &mut UserState| {
+            if s.recent_swipes.iter().any(|r| r.swipe_id == sid) {
+                return Ok(false);
+            }
+            apply(s, &w);
+            let unlocks = crate::services::achievements::record_unlocks(s, w.session, w.now);
+            let dtos: Vec<_> = unlocks
+                .into_iter()
+                .map(|r| crate::routes::swipes::AchievementDto {
+                    achievement_id: r.achievement_id,
+                    unlocked_at: r.unlocked_at,
+                })
+                .collect();
+            let mut response = stored.clone();
+            response["result"]["achievements_unlocked"] =
+                serde_json::to_value(dtos).map_err(|_| ApiError::Internal)?;
+            s.recent_swipes.push(RecentSwipe {
+                swipe_id: sid,
+                at: w.now,
+                result_json: serde_json::to_string(&response).map_err(|_| ApiError::Internal)?,
+            });
+            Ok(true)
+        })
+        .await?
 }
 
 /// The state change of one reject.
@@ -617,9 +640,4 @@ fn apply(s: &mut UserState, w: &Writes) {
     }
     s.totals.triaged = s.totals.triaged.saturating_add(1);
     s.totals.cleared = s.totals.cleared.saturating_add(1);
-    s.recent_swipes.push(RecentSwipe {
-        swipe_id: w.sid,
-        at: w.now,
-        result_json: w.stored_json.clone(),
-    });
 }

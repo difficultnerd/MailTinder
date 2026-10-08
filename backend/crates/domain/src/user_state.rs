@@ -207,6 +207,9 @@ pub struct Totals {
     /// `reject_list` and `block_person` rules created
     pub senders_silenced: u64,
     pub years_cleared: u64,
+    /// Completed backlog years, deduplicated across progress requests (T-802).
+    #[serde(default)]
+    pub levels_cleared: Vec<i32>,
     pub categories_created: u64,
     pub people_blocked: u64,
     /// reset when `round_session` changes
