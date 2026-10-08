@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 450 lines of code plus tests | M6, M7, T-205a, T-205b, T-206, T-708, T-1001a, T-1002b |
+| M11 | sonnet | about 450 lines of code plus tests | M6, M7, T-205a, T-205b, T-206, T-500b, T-708, T-1001a, T-1002b |
 
 **Read only these spec sections:** S10 sections 3.2 (Integration row), 3.3, 4.2 (control API sentence), 10.1 and 10.3 (`docs/specs/S10-test-strategy.md`); S7 section 3.4 (invite token in the URL fragment) (`docs/specs/S7-api-contract.md`); S2 AU-03 AC1; the "Backlog seeds for S12" section of `docs/planning-roadmap.md` (the `e2e` required check, T6). Nothing else is needed.
 
