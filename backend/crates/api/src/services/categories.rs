@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use domain::user_state::{AchievementRecord, Category, UserState};
+use domain::user_state::{Category, UserState};
 use domain::{CategoryId, MailboxId, MailboxStatus, MessageMeta, Provider, UserId};
 use ports::store::{aad_fields, MailboxRecord, Versioned};
 use ports::{Aad, MailError, MailboxCtx, MessagePage, MessageQuery, PageToken, WrappedKey};
@@ -85,8 +85,7 @@ pub async fn resolve_or_create_category(
     id: Option<Uuid>,
     name: Option<&str>,
     swipe_id: Uuid,
-    session: Uuid,
-) -> Result<(Category, Vec<AchievementRecord>), ApiError> {
+) -> Result<Category, ApiError> {
     if id.is_some() == name.is_some() {
         return Err(ApiError::InvalidRequest {
             fields: vec!["category_id".to_owned()],
@@ -99,7 +98,6 @@ pub async fn resolve_or_create_category(
             .state
             .category(&CategoryId(id))
             .cloned()
-            .map(|category| (category, Vec::new()))
             .ok_or(ApiError::InvalidRequest {
                 fields: vec!["category_id".to_owned()],
             });
@@ -109,7 +107,7 @@ pub async fn resolve_or_create_category(
     })?;
     let name = validate_category_name(raw)?;
     if let Some(existing) = loaded.state.category_by_name(&name) {
-        return Ok((existing.clone(), Vec::new()));
+        return Ok(existing.clone());
     }
     let created = Category {
         category_id: CategoryId(Uuid::new_v5(
@@ -120,24 +118,8 @@ pub async fn resolve_or_create_category(
         labels: BTreeMap::new(),
         created_at: app.ports.clock.now(),
     };
-    let store_copy = created.clone();
-    let unlocks = store
-        .update(user, move |s: &mut UserState| {
-            if s.category(&store_copy.category_id).is_none()
-                && s.category_by_name(&store_copy.name).is_none()
-            {
-                s.totals.categories_created = s.totals.categories_created.saturating_add(1);
-                s.categories.push(store_copy.clone());
-                return crate::services::achievements::record_unlocks(
-                    s,
-                    session,
-                    store_copy.created_at,
-                );
-            }
-            Vec::new()
-        })
-        .await?;
-    Ok((created, unlocks))
+    // The swipe commits this category, its counter and unlock atomically.
+    Ok(created)
 }
 
 /// The provider label ID for `category` in `ctx`'s mailbox, created lazily and
@@ -174,6 +156,15 @@ pub async fn ensure_label_for(
     let category_id = category.category_id;
     let mailbox = ctx.mailbox.0;
     let saved = label.clone();
+    if store
+        .load(user)
+        .await?
+        .state
+        .category(&category_id)
+        .is_none()
+    {
+        return Ok(label);
+    }
     store
         .update(user, move |s: &mut UserState| {
             if let Some(c) = s

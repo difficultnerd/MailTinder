@@ -42,17 +42,16 @@ pub async fn stats(app: &AppState, session: &AuthedSession) -> Result<StatsDto, 
     let achievements = state
         .achievements
         .iter()
-        .map(|record| {
+        .filter_map(|record| {
             let id = AchievementId::ALL
                 .into_iter()
-                .find(|id| id.as_str() == record.achievement_id)
-                .ok_or(ApiError::Internal)?;
-            Ok(AchievementDto {
+                .find(|id| id.as_str() == record.achievement_id)?;
+            Some(AchievementDto {
                 achievement_id: id.as_str(),
                 unlocked_at: record.unlocked_at,
             })
         })
-        .collect::<Result<Vec<_>, ApiError>>()?;
+        .collect();
     Ok(StatsDto {
         emails_triaged: state.totals.triaged,
         senders_unsubscribed: state.totals.senders_unsubscribed,

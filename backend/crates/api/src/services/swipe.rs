@@ -121,7 +121,7 @@ pub async fn swipe(
     let meta = fresh_message(app, &mailbox, &ctx, &req.message_id).await?;
 
     // Step 6: the plan.
-    let resolved_category = match req.action {
+    let mut category = match req.action {
         ActionDto::File => Some(
             resolve_or_create_category(
                 app,
@@ -129,16 +129,12 @@ pub async fn swipe(
                 req.category_id,
                 req.new_category_name.as_deref(),
                 sid,
-                session.session_record_id.0,
             )
             .await?,
         ),
         ActionDto::Keep | ActionDto::Skip | ActionDto::Reject => None,
     };
-    let (category, category_unlocks) = resolved_category
-        .map_or((None, Vec::new()), |(category, unlocks)| {
-            (Some(category), unlocks)
-        });
+
     let action = swipe_action(req.action, category.as_ref());
     let header_rules = HeaderRules::classify(&meta.facts, &meta.sender);
     let badge = header_guard(&meta.facts, &header_rules, Some(&header_rules)).classification;
@@ -171,20 +167,14 @@ pub async fn swipe(
     } else {
         None
     };
-    if let Some(cat) = category.as_ref() {
-        apply_file(app, &user, &ctx, &meta, cat).await?;
+    if let Some(cat) = category.as_mut() {
+        let label = apply_file(app, &user, &ctx, &meta, cat).await?;
+        cat.labels.insert(meta.mailbox.0, label);
     }
 
     // Steps 10 and 11: one state write, then the sealed undo token.
     let undo = undo_payload(&plan, &meta, action, now, sid);
-    let mut result = build_result(&plan, category.as_ref(), &seal, &undo).await?;
-    result.achievements_unlocked = category_unlocks
-        .into_iter()
-        .map(|r| crate::routes::swipes::AchievementDto {
-            achievement_id: r.achievement_id,
-            unlocked_at: r.unlocked_at,
-        })
-        .collect();
+    let result = build_result(&plan, category.as_ref(), &seal, &undo).await?;
     let effects = Effects {
         sid,
         session: session.session_record_id.0,
@@ -198,6 +188,7 @@ pub async fn swipe(
         skip_key: skip_key(&meta.mailbox, &meta.id),
         skip_queue,
         stored_json: stored_json(&result, &undo)?,
+        category,
     };
     persist(&store, &user, effects).await?;
     // The losing side of a concurrent request with the same `Idempotency-Key`:
@@ -255,7 +246,7 @@ pub(crate) async fn wrapped_key(app: &AppState, user: &UserId) -> Result<Wrapped
 
 /// Step 3: the mailbox must belong to the user, else `404` (never `403`, so
 /// IDs cannot be probed).
-async fn owned_mailbox(
+pub(crate) async fn owned_mailbox(
     app: &AppState,
     user: &UserId,
     mailbox_id: Uuid,
@@ -359,17 +350,17 @@ async fn apply_file(
     ctx: &MailboxCtx,
     meta: &MessageMeta,
     category: &Category,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
     let label = ensure_label_for(app, user, ctx, category).await?;
     let provider = provider_of(app, &meta.mailbox).await?;
-    let add = domain::LabelSet::from_ids([label]);
+    let add = domain::LabelSet::from_ids([label.clone()]);
     let remove = domain::LabelSet::from_ids([INBOX_LABEL.to_owned()]);
     app.ports
         .mail(provider)
         .set_labels(ctx, &meta.id, &add, &remove)
         .await
         .map_err(|e| crate::services::categories::provider_error(meta.mailbox, &e))?;
-    Ok(())
+    Ok(label)
 }
 
 /// Step 8: how many cards later a skipped card comes back, or `None` when the
@@ -523,6 +514,7 @@ struct Effects {
     skip_key: String,
     skip_queue: Option<u32>,
     stored_json: String,
+    category: Option<Category>,
 }
 
 /// Step 10: one `UserStateStore::update`. The closure is pure: it only copies
@@ -534,10 +526,7 @@ async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bo
     let stored: StoredSwipe =
         serde_json::from_str(&e.stored_json).map_err(|_| ApiError::Internal)?;
     store
-        .update(user, move |s: &mut UserState| {
-            if s.recent_swipes.iter().any(|r| r.swipe_id == sid) {
-                return Ok(false);
-            }
+        .update_once_result(user, sid, move |s: &mut UserState| {
             if s.skips.session_record_id != Some(e.session) {
                 s.skips = SkipState {
                     session_record_id: Some(e.session),
@@ -579,6 +568,17 @@ async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bo
                 });
             }
             let mut response = stored.clone();
+            if let Some(category) = &e.category {
+                if let Some(existing) = s.category_by_name(&category.name) {
+                    if let Some(dto) = response.result.filed_category.as_mut() {
+                        dto.category_id = existing.category_id.0;
+                        dto.name.clone_from(&existing.name);
+                    }
+                } else if s.category(&category.category_id).is_none() {
+                    s.categories.push(category.clone());
+                    s.totals.categories_created = s.totals.categories_created.saturating_add(1);
+                }
+            }
             response.result.achievements_unlocked.extend(
                 crate::services::achievements::record_unlocks(s, e.session, e.now)
                     .into_iter()
@@ -593,9 +593,9 @@ async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bo
                 at: e.now,
                 result_json,
             });
-            Ok(true)
+            Ok(())
         })
-        .await?
+        .await
 }
 
 /// Map a seal failure: a down key service is `503`, anything else `Internal`.

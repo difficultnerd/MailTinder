@@ -570,10 +570,7 @@ async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<boo
     let stored: serde_json::Value =
         serde_json::from_str(&w.stored_json).map_err(|_| ApiError::Internal)?;
     store
-        .update(user, move |s: &mut UserState| {
-            if s.recent_swipes.iter().any(|r| r.swipe_id == sid) {
-                return Ok(false);
-            }
+        .update_once_result(user, sid, move |s: &mut UserState| {
             apply(s, &w);
             let unlocks = crate::services::achievements::record_unlocks(s, w.session, w.now);
             let dtos: Vec<_> = unlocks
@@ -591,9 +588,9 @@ async fn persist(store: &UserStateStore, user: &UserId, w: Writes) -> Result<boo
                 at: w.now,
                 result_json: serde_json::to_string(&response).map_err(|_| ApiError::Internal)?,
             });
-            Ok(true)
+            Ok(())
         })
-        .await?
+        .await
 }
 
 /// The state change of one reject.

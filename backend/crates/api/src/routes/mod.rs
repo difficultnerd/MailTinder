@@ -11,6 +11,7 @@ pub mod invites;
 pub mod mailboxes;
 pub mod needs_attention;
 pub mod progress;
+pub mod rules;
 pub mod session;
 pub mod stats;
 pub mod swipes;
@@ -44,6 +45,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/progress", get(progress::get_progress))
         .route("/api/v1/history", get(history::list))
         .route("/api/v1/stats", get(stats::get_stats))
+        .route("/api/v1/rules", post(rules::create))
         .route("/api/v1/needs-attention", get(needs_attention::list))
         .route(
             "/api/v1/needs-attention/:item_id/resolve",

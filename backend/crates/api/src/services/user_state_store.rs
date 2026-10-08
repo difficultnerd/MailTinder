@@ -177,14 +177,36 @@ impl UserStateStore {
     where
         F: Fn(&mut UserState) + Send,
     {
-        self.update(user, move |s: &mut UserState| {
-            if s.recent_swipes.iter().any(|r| r.swipe_id == swipe_id) {
-                return false;
-            }
+        self.update_once_result(user, swipe_id, move |s| {
             f(s);
-            true
+            Ok(())
         })
         .await
+    }
+
+    /// Apply a fallible swipe closure once, discarding mutations on failure.
+    ///
+    /// # Errors
+    /// As `update`, or the error returned by the closure.
+    pub async fn update_once_result<F>(
+        &self,
+        user: &UserId,
+        swipe_id: Uuid,
+        f: F,
+    ) -> Result<bool, ApiError>
+    where
+        F: Fn(&mut UserState) -> Result<(), ApiError> + Send,
+    {
+        self.update(user, move |s: &mut UserState| {
+            if s.recent_swipes.iter().any(|r| r.swipe_id == swipe_id) {
+                return Ok(false);
+            }
+            let mut candidate = s.clone();
+            f(&mut candidate)?;
+            *s = candidate;
+            Ok(true)
+        })
+        .await?
     }
 
     /// The file exists but cannot be read; it is never overwritten.

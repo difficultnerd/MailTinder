@@ -499,12 +499,59 @@ async fn gm_06_ac1_first_filing_category_on_create() -> TestResult {
 #[tokio::test]
 async fn gm_06_ac1_first_blocked_person_on_block_rule() -> TestResult {
     let w = World::new().await?;
-    let rule = w.rule(RuleKind::BlockPerson, true, Some(20));
-    api::services::rules::create_block(&w.app, &w.session, rule.clone()).await?;
-    api::services::rules::create_block(&w.app, &w.session, rule).await?;
+    let threshold = domain::Tunables::default().personal_block_threshold;
+    let mut prompt = None;
+    for _ in 0..threshold {
+        let message = w.message(800, false, w.fakes.clock.now())?;
+        let result = swipe(
+            &w.app,
+            &w.session,
+            w.fakes.rng.uuid_v4(),
+            w.request(&message, ActionDto::Reject, &w.session).await?,
+        )
+        .await?;
+        prompt = result.prompts.into_iter().next();
+    }
+    let prompt = prompt.ok_or("real rejects did not generate a block prompt")?;
+    let record = w
+        .fakes
+        .store
+        .sessions()
+        .get(&w.session.session_hash)
+        .await?
+        .ok_or("missing session")?;
+    let router = build_router(w.app.clone());
+    for _ in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/rules")
+                    .header("cookie", &w.cookie)
+                    .header("origin", "https://mailtinder.test")
+                    .header("x-csrf-token", &record.record.csrf_token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&json!({
+                        "kind": "block_person", "prompt_ref": prompt.prompt_ref,
+                    }))?))?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
     let state = w.state().await?;
     assert_eq!(state.rules.len(), 1);
+    assert_eq!(state.totals.people_blocked, 1);
+    assert_eq!(state.totals.senders_silenced, 1);
     assert!(has_unlock(&state, AchievementId::FirstBlockedPerson));
+    assert_eq!(
+        state
+            .achievements
+            .iter()
+            .filter(|a| a.achievement_id == AchievementId::FirstBlockedPerson.as_str())
+            .count(),
+        1
+    );
     Ok(())
 }
 
@@ -761,6 +808,7 @@ async fn gm_06_ac3_filing_swipe_returns_category_unlock_on_retry() -> TestResult
     let w = World::new().await?;
     let message = w.message(500, false, w.fakes.clock.now())?;
     let key = w.fakes.rng.uuid_v4();
+    let writes = w.folder.writes.load(Ordering::SeqCst);
     let result = swipe(
         &w.app,
         &w.session,
@@ -772,6 +820,7 @@ async fn gm_06_ac3_filing_swipe_returns_category_unlock_on_retry() -> TestResult
         .achievements_unlocked
         .iter()
         .any(|a| a.achievement_id == AchievementId::FirstFilingCategory.as_str()));
+    assert_eq!(w.folder.writes.load(Ordering::SeqCst), writes + 1);
     let retry = swipe(
         &w.app,
         &w.session,
@@ -803,5 +852,101 @@ fn gm_06_ac1_legacy_totals_default_levels_cleared() -> TestResult {
         .remove("levels_cleared");
     let totals: Totals = serde_json::from_value(value)?;
     assert_eq!(totals.levels_cleared, Vec::<i32>::new());
+    Ok(())
+}
+
+#[tokio::test]
+async fn st_02_ac3_unknown_achievement_does_not_break_stats() -> TestResult {
+    let w = World::new().await?;
+    let records = vec![
+        AchievementRecord {
+            achievement_id: "future-achievement".into(),
+            unlocked_at: w.fakes.clock.now(),
+        },
+        AchievementRecord {
+            achievement_id: AchievementId::FirstUnsubscribe.as_str().into(),
+            unlocked_at: w.fakes.clock.now(),
+        },
+    ];
+    w.seed(UserState {
+        achievements: records.clone(),
+        ..UserState::default()
+    })
+    .await?;
+    let (status, value) = w.get(Some(&w.cookie)).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        value["achievements"]
+            .as_array()
+            .ok_or("missing achievements")?
+            .len(),
+        1
+    );
+    assert_eq!(
+        value["achievements"][0]["achievement_id"],
+        AchievementId::FirstUnsubscribe.as_str()
+    );
+    assert_eq!(w.state().await?.achievements, records);
+    Ok(())
+}
+
+#[tokio::test]
+async fn gm_06_ac3_failed_filing_does_not_consume_category_unlock() -> TestResult {
+    let w = World::new().await?;
+    let message = w.message(900, false, w.fakes.clock.now())?;
+    let key = w.fakes.rng.uuid_v4();
+    w.fakes
+        .mailbox
+        .fail_next(testkit::MailOp::SetLabels, MailError::Transient);
+    let request = w.request(&message, ActionDto::File, &w.session).await?;
+    assert!(swipe(&w.app, &w.session, key, request).await.is_err());
+    let state = w.state().await?;
+    assert_eq!(state.categories.len(), 0);
+    assert_eq!(state.achievements.len(), 0);
+    assert_eq!(state.totals.categories_created, 0);
+    assert_eq!(state.recent_swipes.len(), 0);
+    let request = w.request(&message, ActionDto::File, &w.session).await?;
+    let result = swipe(&w.app, &w.session, key, request).await?;
+    assert_swipe_unlock(&result, AchievementId::FirstFilingCategory);
+    assert_eq!(w.state().await?.totals.categories_created, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn gm_06_ac1_block_route_rejects_forged_prompt_and_missing_csrf() -> TestResult {
+    let w = World::new().await?;
+    let record = w
+        .fakes
+        .store
+        .sessions()
+        .get(&w.session.session_hash)
+        .await?
+        .ok_or("missing session")?;
+    for with_csrf in [false, true] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/rules")
+            .header("cookie", &w.cookie)
+            .header("origin", "https://mailtinder.test")
+            .header("content-type", "application/json");
+        if with_csrf {
+            request = request.header("x-csrf-token", &record.record.csrf_token);
+        }
+        let response = build_router(w.app.clone())
+            .oneshot(request.body(Body::from(serde_json::to_vec(
+                &json!({"kind": "block_person", "prompt_ref": "forged"}),
+            )?))?)
+            .await?;
+        assert_eq!(
+            response.status(),
+            if with_csrf {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::FORBIDDEN
+            }
+        );
+    }
+    assert_eq!(w.state().await?.rules.len(), 0);
+    assert_eq!(w.state().await?.achievements.len(), 0);
     Ok(())
 }
