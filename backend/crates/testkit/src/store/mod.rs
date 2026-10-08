@@ -71,6 +71,7 @@ impl Default for InMemoryServerStore {
             needs_attention: NeedsAttentionImpl {
                 table: Table::new(),
                 fail_next: Arc::clone(&fail_next),
+                fail_put: AtomicU32::new(0),
             },
             sessions: SessionsImpl {
                 table: Table::new(),
@@ -167,6 +168,11 @@ impl InMemoryServerStore {
             .race_put
             .lock()
             .unwrap_or_else(|_| panic!("store poisoned")) = Some(record);
+    }
+
+    /// Fail only the next Needs Attention write, leaving Feed reads working.
+    pub fn fail_next_needs_attention_put(&self) {
+        self.needs_attention.fail_put.store(1, Ordering::SeqCst);
     }
 }
 
@@ -729,6 +735,7 @@ impl JobRepo for JobsImpl {
 struct NeedsAttentionImpl {
     table: Table<NeedsAttentionId, NeedsAttentionRecord>,
     fail_next: Arc<AtomicU32>,
+    fail_put: AtomicU32,
 }
 impl NeedsAttentionImpl {
     fn arm_check(&self) -> Result<(), StoreError> {
@@ -762,6 +769,9 @@ impl Repo<NeedsAttentionId, NeedsAttentionRecord> for NeedsAttentionImpl {
         pre: Precondition,
     ) -> Result<Version, StoreError> {
         self.arm_check()?;
+        if self.fail_put.swap(0, Ordering::SeqCst) != 0 {
+            return Err(StoreError::Unavailable);
+        }
         self.table.put(r, &pre)
     }
     async fn delete(&self, k: &NeedsAttentionId, pre: Precondition) -> Result<(), StoreError> {

@@ -15,6 +15,7 @@
 
 pub mod address;
 mod class;
+pub mod delivery;
 mod error;
 pub mod feed;
 pub mod filing;
