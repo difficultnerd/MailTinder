@@ -51,7 +51,7 @@ pub struct UndoPayload {
 
 /// The idempotency record for one swipe: the response, and the payload to
 /// re-seal if the client retries.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct StoredSwipe {
     result: SwipeResultDto,
     undo: UndoPayload,
@@ -75,6 +75,7 @@ pub fn swipe_id(user: &UserId, idempotency_key: Uuid) -> Uuid {
 /// moved, `MailboxNeedsSignIn` when a mailbox grant is gone, `ProviderError` or
 /// `ProviderUnavailable` from a provider, `RateLimited` for a reject over the
 /// daily job limit, `Internal` for a store failure.
+#[allow(clippy::too_many_lines)]
 pub async fn swipe(
     app: &AppState,
     session: &AuthedSession,
@@ -120,7 +121,7 @@ pub async fn swipe(
     let meta = fresh_message(app, &mailbox, &ctx, &req.message_id).await?;
 
     // Step 6: the plan.
-    let category = match req.action {
+    let resolved_category = match req.action {
         ActionDto::File => Some(
             resolve_or_create_category(
                 app,
@@ -128,11 +129,16 @@ pub async fn swipe(
                 req.category_id,
                 req.new_category_name.as_deref(),
                 sid,
+                session.session_record_id.0,
             )
             .await?,
         ),
         ActionDto::Keep | ActionDto::Skip | ActionDto::Reject => None,
     };
+    let (category, category_unlocks) = resolved_category
+        .map_or((None, Vec::new()), |(category, unlocks)| {
+            (Some(category), unlocks)
+        });
     let action = swipe_action(req.action, category.as_ref());
     let header_rules = HeaderRules::classify(&meta.facts, &meta.sender);
     let badge = header_guard(&meta.facts, &header_rules, Some(&header_rules)).classification;
@@ -171,7 +177,14 @@ pub async fn swipe(
 
     // Steps 10 and 11: one state write, then the sealed undo token.
     let undo = undo_payload(&plan, &meta, action, now, sid);
-    let result = build_result(&plan, category.as_ref(), &seal, &undo).await?;
+    let mut result = build_result(&plan, category.as_ref(), &seal, &undo).await?;
+    result.achievements_unlocked = category_unlocks
+        .into_iter()
+        .map(|r| crate::routes::swipes::AchievementDto {
+            achievement_id: r.achievement_id,
+            unlocked_at: r.unlocked_at,
+        })
+        .collect();
     let effects = Effects {
         sid,
         session: session.session_record_id.0,
@@ -186,10 +199,7 @@ pub async fn swipe(
         skip_queue,
         stored_json: stored_json(&result, &undo)?,
     };
-    let applied = persist(&store, &user, effects).await?;
-    if applied {
-        return Ok(result);
-    }
+    persist(&store, &user, effects).await?;
     // The losing side of a concurrent request with the same `Idempotency-Key`:
     // answer from the response the winner recorded, exactly as the sequential
     // retry path does, and never apply the effects twice (ASVS V2.3.4).
@@ -527,8 +537,13 @@ struct Effects {
 /// already applied this swipe, so nothing here was applied.
 async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bool, ApiError> {
     let sid = e.sid;
+    let stored: StoredSwipe =
+        serde_json::from_str(&e.stored_json).map_err(|_| ApiError::Internal)?;
     store
-        .update_once(user, sid, move |s: &mut UserState| {
+        .update(user, move |s: &mut UserState| {
+            if s.recent_swipes.iter().any(|r| r.swipe_id == sid) {
+                return Ok(false);
+            }
             if s.skips.session_record_id != Some(e.session) {
                 s.skips = SkipState {
                     session_record_id: Some(e.session),
@@ -569,13 +584,24 @@ async fn persist(store: &UserStateStore, user: &UserId, e: Effects) -> Result<bo
                     after_cards,
                 });
             }
+            let mut response = stored.clone();
+            response.result.achievements_unlocked.extend(
+                crate::services::achievements::record_unlocks(s, e.session, e.now)
+                    .into_iter()
+                    .map(|r| crate::routes::swipes::AchievementDto {
+                        achievement_id: r.achievement_id,
+                        unlocked_at: r.unlocked_at,
+                    }),
+            );
+            let result_json = serde_json::to_string(&response).map_err(|_| ApiError::Internal)?;
             s.recent_swipes.push(RecentSwipe {
                 swipe_id: e.sid,
                 at: e.now,
-                result_json: e.stored_json.clone(),
+                result_json,
             });
+            Ok(true)
         })
-        .await
+        .await?
 }
 
 /// Map a seal failure: a down key service is `503`, anything else `Internal`.

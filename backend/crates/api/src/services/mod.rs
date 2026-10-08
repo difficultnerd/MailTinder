@@ -3,6 +3,7 @@
 //! One module per cross-route concern; a route file stays thin (T-601a).
 
 pub mod account_deletion;
+pub mod achievements;
 pub mod categories;
 pub mod delivery_check;
 pub mod feed;
