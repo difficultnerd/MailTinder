@@ -274,6 +274,8 @@ impl World {
             message_id: message_id.to_owned(),
             header_rules: classification(class),
             classifier_id: HEADER_RULES_ID.to_owned(),
+            issued_at: self.app.ports.clock.now(),
+            bakeoff: None,
         };
         Ok(self
             .sealer()
