@@ -46,6 +46,7 @@ tools/.venv-semgrep/
 *.tfstate.*
 crash.log
 *.tfplan
+# Terraform provider caches (114MB each) must never be committed.
 # Terraform
 *.tfvars
 !*.tfvars.example
