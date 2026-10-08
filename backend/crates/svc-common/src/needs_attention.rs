@@ -34,6 +34,15 @@ pub struct NewItem<'a> {
 /// Validate the link, seal the fields, and write the item with
 /// `Precondition::MustNotExist`. Returns the item ID.
 pub async fn raise_item(ports: &Ports, item: NewItem<'_>) -> Result<NeedsAttentionId, SvcError> {
+    raise_item_with_id(ports, NeedsAttentionId(ports.rng.uuid_v4()), item).await
+}
+
+/// Publish an outbox item idempotently using a stable, caller-owned ID.
+pub async fn raise_item_with_id(
+    ports: &Ports,
+    item_id: NeedsAttentionId,
+    item: NewItem<'_>,
+) -> Result<NeedsAttentionId, SvcError> {
     // A non-https link is a programming error, not data to store (S7 5.8).
     let link = match item.link {
         None => None,
@@ -47,7 +56,6 @@ pub async fn raise_item(ports: &Ports, item: NewItem<'_>) -> Result<NeedsAttenti
         .await
         .map_err(|_| SvcError::Store)?
         .ok_or(SvcError::NotFound)?;
-    let item_id = NeedsAttentionId(ports.rng.uuid_v4());
     let scope = item_id.0.to_string();
 
     let sender_display = seal(
@@ -85,12 +93,30 @@ pub async fn raise_item(ports: &Ports, item: NewItem<'_>) -> Result<NeedsAttenti
         created_at: now,
         expires_at: now + NEEDS_ATTENTION_TTL,
     };
-    ports
+    match ports
         .store
         .needs_attention()
         .put(&record, Precondition::MustNotExist)
         .await
-        .map_err(|_| SvcError::Store)?;
+    {
+        Ok(_) => {}
+        Err(ports::StoreError::AlreadyExists) => {
+            let existing = ports
+                .store
+                .needs_attention()
+                .get(&item_id)
+                .await
+                .map_err(|_| SvcError::Store)?
+                .ok_or(SvcError::Store)?;
+            if existing.record.user_id != *item.user
+                || existing.record.mailbox_id != *item.mailbox
+                || existing.record.reason_code != item.reason
+            {
+                return Err(SvcError::Store);
+            }
+        }
+        Err(_) => return Err(SvcError::Store),
+    }
     Ok(item_id)
 }
 
