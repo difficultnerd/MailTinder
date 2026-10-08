@@ -323,6 +323,7 @@ fn arb_totals() -> impl Strategy<Value = Totals> {
             unsubscribes_queued: v[4],
             senders_silenced: v[5],
             years_cleared: v[6],
+            levels_cleared: Vec::new(),
             categories_created: v[7],
             people_blocked: v[8],
             round_unsubscribes: v[9],

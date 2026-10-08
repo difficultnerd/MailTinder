@@ -1,7 +1,7 @@
 //! API-PROG-1 progress: the inbox meter and the backlog level (T-603).
 //!
-//! A read: the user's state file is loaded and never written, the store is
-//! only read, and nothing is logged but the request itself. Counting costs one
+//! Completed backlog years are recorded once; incomplete levels are read-only.
+//! Nothing is logged but the request itself. Counting costs one
 //! folder-total call per mailbox plus one date-range count per mailbox per
 //! year examined (GM-01 AC2, GM-04 AC1).
 
@@ -107,9 +107,26 @@ pub async fn progress(app: &AppState, session: &AuthedSession) -> Result<Progres
                     Some(LevelDto { year, remaining }),
                 ));
             }
-            LevelProgress::Complete { next, .. } => {
+            LevelProgress::Complete { cleared, next } => {
                 if empty_years >= LEVEL_LOOKBACK_YEARS {
                     return Ok(finish(inbox_count, errors, None));
+                }
+                if errors.is_empty() && !loaded.state.totals.levels_cleared.contains(&cleared) {
+                    let now = app.ports.clock.now();
+                    store
+                        .update(&user, |state| {
+                            if !state.totals.levels_cleared.contains(&cleared) {
+                                state.totals.levels_cleared.push(cleared);
+                                state.totals.years_cleared =
+                                    state.totals.levels_cleared.len() as u64;
+                                crate::services::achievements::record_unlocks(
+                                    state,
+                                    session.session_record_id.0,
+                                    now,
+                                );
+                            }
+                        })
+                        .await?;
                 }
                 empty_years += 1;
                 year = next;
