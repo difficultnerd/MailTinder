@@ -53,6 +53,63 @@ use uuid::Uuid;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn exp_2_feed_fetches_once_with_gate_and_keeps_preview_cap() -> TestResult {
+    for (consent, enabled) in [(false, true), (true, false), (true, true)] {
+        let world = World::new().await?;
+        let mut user = world
+            .fakes
+            .store
+            .users()
+            .get(&world.user)
+            .await?
+            .ok_or("missing user")?
+            .record;
+        if consent {
+            user.experiments_consent_version =
+                Some(api::experiments::CURRENT_CONSENT_VERSION.to_owned());
+            user.experiments_opted_in_at = Some(world.fakes.clock.now());
+        }
+        world
+            .fakes
+            .store
+            .users()
+            .put(&user, Precondition::MustExist)
+            .await?;
+        world
+            .fakes
+            .store
+            .config()
+            .put_classifiers(
+                &ports::ClassifiersConfig {
+                    gemini_enabled: enabled,
+                    jev_enabled: enabled,
+                    updated_at: world.fakes.clock.now(),
+                },
+                Precondition::MustNotExist,
+            )
+            .await?;
+        let corpus = testkit::corpus::load()?;
+        let mut message = corpus.cases.first().ok_or("empty corpus")?.seed_message();
+        message.internal_date = at(100);
+        message.preview_text = "word e\u{301} 界 ".repeat(600);
+        let expected = domain::text::sanitise_plain(&message.preview_text, 300);
+        world.fakes.mailbox.seed(&world.primary, message);
+        let page = world
+            .page(&world.session(99, false), None, 1, false)
+            .await?;
+        assert_eq!(page.cards.len(), 1);
+        assert_eq!(page.cards[0].preview, expected);
+        let open = consent && enabled;
+        assert_eq!(world.fakes.mailbox.calls(MailOp::GetText), u64::from(open));
+        assert_eq!(
+            world.fakes.mailbox.calls(MailOp::GetPreview),
+            u64::from(!open)
+        );
+    }
+    Ok(())
+}
+
 const ORIGIN: &str = "https://mailtinder.test";
 const EMAIL_KEY: &[u8] = b"fake-email-key";
 const BASE: i64 = 1_790_000_000;

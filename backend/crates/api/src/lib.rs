@@ -1,6 +1,7 @@
 //! The `MailTinder` API service.
 
 pub mod auth;
+pub mod classify;
 pub mod config;
 pub mod error;
 pub mod experiments;

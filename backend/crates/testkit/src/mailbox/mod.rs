@@ -47,6 +47,7 @@ pub enum MailOp {
     ListInbox,
     GetMeta,
     GetPreview,
+    GetText,
     SetLabels,
     Trash,
     ReportSpam,
@@ -283,7 +284,23 @@ impl MailProvider for FakeMailbox {
     }
 
     async fn get_preview(&self, mb: &MailboxCtx, id: &MessageId) -> Result<String, MailError> {
-        self.check(MailOp::GetPreview, mb.access_token.expose())?;
+        self.get_text(mb, id, domain::text::PREVIEW_MAX_CHARS).await
+    }
+
+    async fn get_text(
+        &self,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        max_chars: usize,
+    ) -> Result<String, MailError> {
+        self.check(
+            if max_chars == domain::text::PREVIEW_MAX_CHARS {
+                MailOp::GetPreview
+            } else {
+                MailOp::GetText
+            },
+            mb.access_token.expose(),
+        )?;
         let map = self
             .mailboxes
             .lock()
@@ -294,7 +311,7 @@ impl MailProvider for FakeMailbox {
         state
             .messages
             .get(id)
-            .map(|m| m.seed.preview_text.clone())
+            .map(|m| domain::text::sanitise_plain(&m.seed.preview_text, max_chars))
             .ok_or(MailError::NotFound)
     }
 
