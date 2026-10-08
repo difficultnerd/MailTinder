@@ -7,6 +7,10 @@
 //! request (S7 5.7).
 //!
 //! Nothing here is logged: no sender address, List-Id or message ID (S5, C2).
+//!
+//! A confirmed block is one of the places achievements unlock (T-802, GM-06
+//! AC1): `create_block` records them inside the same update, so a retry that
+//! finds the existing rule unlocks nothing new.
 
 use std::sync::Arc;
 
@@ -21,6 +25,7 @@ use uuid::Uuid;
 use crate::error::ApiError;
 use crate::routes::rules::{RuleDto, RuleMatchDto, NS_RULE_FROM_PROMPT};
 use crate::sealed::{SealedTokens, TokenError, TokenType};
+use crate::services::achievements::record_unlocks;
 use crate::services::categories::provider_error;
 use crate::services::reject::BlockPromptRef;
 use crate::services::swipe::wrapped_key;
@@ -54,7 +59,8 @@ pub async fn list(
 
 /// API-RULE-2 `block_person` (PB-01 AC2): build a block rule from a sealed
 /// prompt reference. The sender comes from the prompt, never the client; the
-/// rule ID is deterministic, so a retry finds the same rule.
+/// rule ID is deterministic, so a retry finds the same rule. The new rule also
+/// unlocks the block achievements in the same update (T-802, GM-06 AC1).
 ///
 /// # Errors
 ///
@@ -90,6 +96,7 @@ pub async fn create_block(
     let store = UserStateStore::new(Arc::new(app.clone()));
     let find = sender.clone();
     let swipe_id = prompt.swipe_id;
+    let session_id = s.session_record_id.0;
     let rule = store
         .update(&s.user, move |st: &mut UserState| -> StoredRule {
             // A retry of the same prompt finds the same rule (API-RULE-2).
@@ -114,6 +121,11 @@ pub async fn create_block(
             st.rules.push(stored.clone());
             st.totals.people_blocked = st.totals.people_blocked.saturating_add(1);
             st.totals.senders_silenced = st.totals.senders_silenced.saturating_add(1);
+            // A new block moves the counts the achievements read, so unlock
+            // here, inside the retryable update (T-802, GM-06 AC1). The retry
+            // and replay paths above return before this, so nothing unlocks
+            // twice.
+            let _ = record_unlocks(st, session_id, now);
             let _ = st.push_history(entry.clone());
             stored.clone()
         })
