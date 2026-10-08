@@ -26,6 +26,11 @@ allow = [
     # Mozilla CA root bundle (webpki-roots) ships under CDLA-Permissive-2.0;
     # it is a permissive data license for certificate roots.
     "CDLA-Permissive-2.0",
+    # The WebDriver client used only by the dev-only `e2e` harness crate
+    # (fantoccini) depends on the `webdriver` crate, which is MPL-2.0 (a
+    # file-level copyleft: no obligation reaches our binaries, and the crate is
+    # never a dependency of a shipped service).
+    "MPL-2.0",
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"

@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/gmail/messages", post(seed_message))
         .route("/gmail/seed-corpus", post(seed_corpus))
         .route("/gmail/messages/{email}/{id}", get(read_labels))
+        .route("/gmail/labels/{email}", get(read_label_names))
         .route("/gmail/sent/{email}", get(read_sent))
         .route("/fail", post(add_fail))
         .route("/gmail/labels-create-race", post(arm_label_race))
@@ -193,6 +194,25 @@ async fn read_labels(
     Ok(Json(
         json!({ "labelIds": m.labels.iter().cloned().collect::<Vec<_>>() }),
     ))
+}
+
+/// The mailbox's user labels as id/name pairs, so a journey can turn the label
+/// IDs on a message (e.g. `Label_1`) back into the label name (SW-04 AC2).
+async fn read_label_names(
+    State(st): State<AppState>,
+    Path(email): Path<String>,
+) -> Result<Json<Value>, Json<Value>> {
+    let st = st.0.lock().unwrap();
+    let mb = st
+        .mailboxes
+        .get(&email)
+        .ok_or_else(|| Json(json!({ "error": "mailbox not found" })))?;
+    let labels: Vec<Value> = mb
+        .labels
+        .values()
+        .map(|l| json!({ "id": l.id, "name": l.name }))
+        .collect();
+    Ok(Json(json!({ "labels": labels })))
 }
 
 async fn read_sent(
