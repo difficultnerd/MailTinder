@@ -288,6 +288,8 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         limits,
         tokens: Arc::new(crate::tokens::TokenService::new()),
         invite_mailer,
+        classifiers: classify::ClassifierSet::default(),
+        bakeoff_gate: classify::BakeoffGate::default(),
         business_calendar: Arc::new(crate::services::delivery_check::national_calendar()),
     }
 }
