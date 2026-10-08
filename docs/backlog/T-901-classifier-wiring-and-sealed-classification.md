@@ -111,7 +111,7 @@ Feed (T-602c step 11): replace the direct header-rules call with `classify_page`
 
 Swipe (T-604):
 
-1. Open the token as `TokenType::Classification`. Failure, or a payload naming another mailbox or message: `400 invalid_request` (CL-03 AC4; see trap 2).
+1. Open the token as `TokenType::Classification`. A well-formed token of another type, or a payload naming another mailbox or message: `400 invalid_request`. Any other open failure (an earlier session, expiry or tampering) is not an error: the swipe proceeds and no `classifier_eval` record is written (S7 5.5; see trap 2).
 2. Re-read the message from the provider (already done by T-604), run `HeaderRules::classify` and `header_guard` on the fresh headers; that result, not the token, decides the action.
 3. Make no model call. Keep the opened payload for T-906a.
 
@@ -127,7 +127,7 @@ Swipe (T-604):
 | BAKE-2 | One request per model per card, in parallel, identical input, concurrency within the cap |
 | BAKE-3 | Card class, badge and reason equal header rules whatever the models say |
 | BAKE-4 | Each failure scenario leaves the card unchanged and records the right error code |
-| BAKE-5 | The sealed token carries both predictions; tampered, expired or other-user tokens are refused; no model call at swipe |
+| BAKE-5 | The sealed token carries both predictions; a token that opens but names another message is refused, while an unopenable token (expiry, earlier session, tampering) lets the swipe proceed with no eval record; no model call at swipe |
 
 ## Tests that must pass
 
@@ -135,7 +135,7 @@ Swipe (T-604):
 - `cl_01_ac3_badge_from_header_rules_only` (service integration)
 - `cl_03_ac1_both_models_called_in_parallel` (service integration with paused tokio time: each fake delays 1 s; the page completes at 1 s, not 2 s)
 - `cl_03_ac2_timeout_recorded_card_unaffected` (service integration: fake delays 10 s; Feed completes at 2 s virtual time; `error_code = timeout`)
-- `cl_03_ac4_swipe_rejects_tampered_or_other_user_token` (service integration)
+- `cl_03_ac4_open_failure_swipe_proceeds` (service integration: a tampered token, or one sealed to an earlier session, lets the swipe proceed with no eval record)
 - `cl_03_ac4_swipe_reapplies_guard` (service integration: token says `list`, fresh headers say `bulk_no_header`; no job queued)
 - `bake_2_both_models_called_per_card` (service integration: 20 cards, 20 calls each, the two `ClassifierInput` logs equal element by element)
 - `bake_2_concurrency_never_exceeds_cap` (service integration: 50 cards, `max_in_flight() <= 8` per model)
@@ -143,14 +143,14 @@ Swipe (T-604):
 - `bake_4_failure_isolated` (service integration, table: `Timeout`, `Http(429)`, `Http(500)`, `Http(503)`, `Unavailable`, `InvalidOutput`, out-of-range score, NaN confidence; each for Gemini alone, Jev alone and both; card unchanged, right `error_code`)
 - `bake_5_sealed_token_carries_both` (service integration: open the token in the test and find both predictions)
 - `bake_5_no_model_call_at_swipe` (service integration: fake call counts unchanged by the swipe)
-- `bake_5_expired_token_refused` (service integration, clock past 12 hours)
+- `bake_5_expired_token_swipe_proceeds` (service integration, clock past 12 hours)
 - `classifier_contract_header_rules_and_fake` (contract: `testkit::contract::classifier` passes for a `HeaderRules` adapter and `FakeClassifier`)
 - `age_bucket_boundaries` (unit: 6 d 23 h, 7 d, 90 d, 365 d, 5 y)
 
 ## Edge cases and traps
 
 1. S10 9.1 says a slow model must not delay the Feed page, yet the predictions must be inside the token the page returns. Read it as "not beyond the 2-second timeout": the page waits at most `MODEL_TIMEOUT` for models. Prefetching in the app hides it (CR-01 1.7).
-2. S7 5.5 says a token "from an earlier session is not an error", but a token sealed to an earlier session record cannot be told apart from a tampered one (S6 5). Refuse every token that fails to open with `400`; the app drops in-memory cards on `401`, so stale tokens do not reach the server in practice. This is reported as a spec contradiction.
+2. S7 5.5 says an unopenable token "from an earlier session is not an error", and AES-GCM cannot tell an earlier session from a tampered token (S6 5), so all unopenable cases behave the same: only a well-formed token of the wrong type, or one that opens but names another mailbox or message, is refused with `400`; every other open failure lets the swipe proceed and writes no `classifier_eval` record (S7 5.5, T-604). The action comes from header rules re-run on freshly read headers, so an unopenable token cannot drive it.
 3. Use `tokio::time` (pausable) for timeouts and latency, and `Clock` for `issued_at`. Never `std::time::Instant` or `SystemTime`.
 4. Do not call a model when its gate flag is false, not even to warm up.
 5. Model output must never appear in the card DTO, logs or errors, even for admins.
