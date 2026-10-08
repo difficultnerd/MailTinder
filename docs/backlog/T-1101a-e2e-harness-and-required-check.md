@@ -25,7 +25,6 @@ One command, `scripts/e2e.sh`, brings up the whole local stack (fake-google, uns
 | Change | `app/lib/main.dart` | When `kE2eBuild`, call `SemanticsBinding.instance.ensureSemantics()` |
 | Change | `.github/workflows/ci.yml` | New `e2e` job |
 | Change | `tools/apply_branch_protection.sh` | Add `"e2e"` to `contexts` |
-| Change | `CLAUDE.md` | One line: journeys run with `scripts/e2e.sh` (CI job `e2e`, about 10 minutes) |
 
 ## Types and signatures
 
@@ -106,6 +105,7 @@ impl TestControl {
 
 - Journeys 2 to 6 (T-1101b); journeys 7 to 9, leak scans, storage and CSP checks (T-1101c).
 - Bake-off e2e (JEV-1, EXP-1 against fake-vertex and fake-jev): follow-up after T-906.
+- Editing `CLAUDE.md` (protected file; the owner adds the one-line `scripts/e2e.sh` pointer after merge).
 
 ## Done when
 
