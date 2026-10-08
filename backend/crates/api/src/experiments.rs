@@ -29,6 +29,14 @@ pub struct BakeoffGate {
     pub jev: bool,
 }
 
+impl BakeoffGate {
+    /// True when at least one model is due to run.
+    #[must_use]
+    pub fn is_open(self) -> bool {
+        self.gemini || self.jev
+    }
+}
+
 /// True when the user consented to the *current* consent text: the stored
 /// version equals [`CURRENT_CONSENT_VERSION`] and `opted_in_at` is set. An old
 /// version counts as opted out (S7 5.13); so does a record with neither field.

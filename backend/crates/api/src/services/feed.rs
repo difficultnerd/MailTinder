@@ -14,8 +14,8 @@ use domain::user_state::{
     UserState,
 };
 use domain::{
-    header_guard, next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId,
-    MessageMeta, Provider, RuleKind, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
+    next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId, MessageMeta,
+    Provider, RuleKind, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
 };
 use futures::stream::{self, StreamExt};
 use ports::store::{aad_fields, MailboxRecord, Precondition, Versioned};
@@ -23,10 +23,11 @@ use ports::{Aad, MailError, MailboxCtx, MessagePage, MessageQuery, WrappedKey};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::classify::{classify_page, BakeoffGate, CardToClassify, ClassifiedCard};
 use crate::error::ApiError;
 use crate::routes::feed::{
-    BossDto, CardDto, CategoryRefDto, ClassificationPayload, CursorPayload, FeedPage, FeedRequest,
-    MailboxErrorDto, Phase, SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
+    BossDto, CardDto, CategoryRefDto, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto, Phase,
+    SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
 use crate::services::delivery_check::{self, DeliveryHookInput, IgnoredUnsubscribe, ListMail};
@@ -196,11 +197,7 @@ pub async fn next_page(
         gate: input_gate(app, &user).await,
     };
     let all: Vec<MessageMeta> = page_metas.into_iter().chain(returns).collect();
-    let built: Vec<Option<Built>> = bounded(all.into_iter().map(|m| build_card(&env, m)))
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    let built: Vec<Built> = built.into_iter().flatten().collect();
+    let built = build_cards(&env, all).await?;
 
     // Steps 13 and 14: one state write, then the cursor.
     let collected = collect_job_outcomes(app, &user, &loaded.state).await?;
@@ -926,8 +923,10 @@ fn filing_dtos(
     (suggestion, keep_prompt)
 }
 
-// T-901 has not landed in this worktree. Reuse the existing consent gate,
-// failing closed on missing records or store errors; model calls remain T-904/905.
+/// The per-request bake-off gate: T-902 consent AND the T-906b switch, failing
+/// closed on missing records or store errors. Any gate injected on the state
+/// (integration tests drive the pipeline that way) opens it too; production
+/// leaves that field closed.
 async fn input_gate(app: &AppState, user: &UserId) -> crate::experiments::BakeoffGate {
     let Ok(Some(user)) = app.ports.store.users().get(user).await else {
         return crate::experiments::BakeoffGate::default();
@@ -941,37 +940,114 @@ async fn input_gate(app: &AppState, user: &UserId) -> crate::experiments::Bakeof
     )
 }
 
-/// Step 11: one card. `None` drops the message silently (FD-04 AC1).
-async fn build_card(env: &Env<'_>, meta: MessageMeta) -> Result<Option<Built>, ApiError> {
-    let Some(live) = env.live.get(&meta.mailbox.0) else {
-        return Ok(None);
-    };
+/// The effective gate for this request: consent and the model switches, plus
+/// the gate injected on the state (tests). The injected field is `Default`
+/// (closed) in production, so it never widens the real gate there.
+fn effective_gate(env: &Env<'_>) -> BakeoffGate {
+    BakeoffGate {
+        gemini: env.gate.gemini || env.app.bakeoff_gate.gemini,
+        jev: env.gate.jev || env.app.bakeoff_gate.jev,
+    }
+}
+
+/// One card's fetched text. `text` is what the models see (the full fetch when
+/// the gate is open); `preview` is the truncated, sanitised card preview.
+struct Prepared {
+    meta: MessageMeta,
+    text: String,
+    preview: String,
+}
+
+/// Step 11: fetch each card's text, run one classification pass for the page
+/// (T-901), then build the cards.
+async fn build_cards(env: &Env<'_>, all: Vec<MessageMeta>) -> Result<Vec<Built>, ApiError> {
+    let gate = effective_gate(env);
+    let prepared: Vec<Option<Prepared>> =
+        bounded(all.into_iter().map(|m| prepare(env, m, gate))).await;
+    let prepared: Vec<Prepared> = prepared.into_iter().flatten().collect();
+    // One pipeline for every card on the page (CL-01 AC1).
+    let to_classify: Vec<CardToClassify<'_>> = prepared
+        .iter()
+        .map(|p| CardToClassify {
+            meta: &p.meta,
+            stripped_text: &p.text,
+            provider: env
+                .live
+                .get(&p.meta.mailbox.0)
+                .map_or(Provider::Gmail, |l| l.provider),
+        })
+        .collect();
+    let classified = classify_page(
+        &env.app.classifiers,
+        gate,
+        env.app.ports.clock.now(),
+        &to_classify,
+    )
+    .await;
+    drop(to_classify);
+    let built: Vec<Option<Built>> = bounded(
+        prepared
+            .into_iter()
+            .zip(classified)
+            .map(|(prepared, classified)| build_card(env, prepared, classified)),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(built.into_iter().flatten().collect())
+}
+
+/// Step 11, first half: the text for one card. `None` drops the message
+/// silently (FD-04 AC1).
+async fn prepare(env: &Env<'_>, meta: MessageMeta, gate: BakeoffGate) -> Option<Prepared> {
+    let live = env.live.get(&meta.mailbox.0)?;
     let provider = env.app.ports.mail(live.provider);
-    let text = if env.gate.gemini || env.gate.jev {
+    let text = if gate.is_open() {
         provider
             .get_text(&live.ctx, &meta.id, domain::redact::MODEL_TEXT_FETCH_CHARS)
             .await
     } else {
         provider.get_preview(&live.ctx, &meta.id).await
     };
-    let preview = match text {
-        Ok(text) => domain::text::sanitise_plain(&text, PREVIEW_MAX_CHARS),
-        Err(MailError::NotFound) => return Ok(None),
-        Err(_) => String::new(),
+    match text {
+        Ok(text) => {
+            let preview = domain::text::sanitise_plain(&text, PREVIEW_MAX_CHARS);
+            Some(Prepared {
+                meta,
+                text,
+                preview,
+            })
+        }
+        Err(MailError::NotFound) => None,
+        Err(_) => Some(Prepared {
+            meta,
+            text: String::new(),
+            preview: String::new(),
+        }),
+    }
+}
+
+/// Step 11, second half: one card from its classification. The badge is the
+/// guarded header-rules answer; model output only travels inside the token.
+async fn build_card(
+    env: &Env<'_>,
+    prepared: Prepared,
+    classified: ClassifiedCard,
+) -> Result<Option<Built>, ApiError> {
+    let Prepared { meta, preview, .. } = prepared;
+    let ClassifiedCard {
+        badge: shown,
+        payload,
+    } = classified;
+    let Some(live) = env.live.get(&meta.mailbox.0) else {
+        return Ok(None);
     };
-    let header_rules = HeaderRules::classify(&meta.facts, &meta.sender);
-    let shown = header_guard(&meta.facts, &header_rules, Some(&header_rules)).classification;
+    let provider = env.app.ports.mail(live.provider);
     let (method, one_click) = match HeaderRules::unsubscribe_route(&meta.facts) {
         UnsubscribeRoute::OneClick(_) => ("one_click", true),
         UnsubscribeRoute::Mailto(_) => ("mailto", false),
         UnsubscribeRoute::ManualLink(_) => ("manual", false),
         UnsubscribeRoute::None => ("none", false),
-    };
-    let payload = ClassificationPayload {
-        mailbox_id: meta.mailbox.0,
-        message_id: meta.id.as_str().to_owned(),
-        header_rules,
-        classifier_id: HEADER_RULES_ID.to_owned(),
     };
     let classification_token = env
         .sealer
