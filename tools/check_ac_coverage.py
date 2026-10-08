@@ -328,6 +328,16 @@ def main(argv: list[str] | None = None) -> int:
             continue
         enforced_ids.append(line)
 
+    if not enforced_ids:
+        # An empty manifest would silently disable this gate (S13 47), so it is
+        # an input error, not a pass.
+        print(
+            "Error: tools/ac_coverage_enforced.txt enforces no tasks; "
+            "the AC manifest must not be empty",
+            file=sys.stderr,
+        )
+        return 2
+
     failures: list[str] = []
 
     # Check each enforced task
