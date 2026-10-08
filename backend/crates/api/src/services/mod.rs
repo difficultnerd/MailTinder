@@ -14,6 +14,7 @@ pub mod mailbox_link;
 pub mod progress;
 pub mod reject;
 pub mod rule_actions;
+pub mod rules;
 pub mod swipe;
 pub mod undo;
 pub mod user_state_store;
