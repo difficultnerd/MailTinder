@@ -47,6 +47,18 @@ jsonwebtoken = "9"
 html5ever = "0.27"
 unicode-segmentation = "1"
 
+# Keep local tests and the separate llvm-cov build within the worker disk budget.
+# Coverage instrumentation does not require debug information or incremental caches.
+[profile.dev]
+debug = 0
+incremental = false
+
+# The check belt builds every integration-test binary, including coverage runs.
+# Keep that profile bounded too, without changing release artifacts.
+[profile.test]
+debug = 0
+incremental = false
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

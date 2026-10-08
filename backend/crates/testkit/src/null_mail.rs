@@ -35,6 +35,14 @@ impl MailProvider for NullMailProvider {
     async fn get_preview(&self, _mb: &MailboxCtx, _id: &MessageId) -> Result<String, MailError> {
         Err(MailError::Invalid("no_mailbox_fake".to_owned()))
     }
+    async fn get_text(
+        &self,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        _max_chars: usize,
+    ) -> Result<String, MailError> {
+        self.get_preview(mb, id).await
+    }
     async fn set_labels(
         &self,
         _mb: &MailboxCtx,

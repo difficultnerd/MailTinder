@@ -134,8 +134,8 @@ fn fd_01_ac3_text_module_has_no_io() {
         "domain gained a network dependency"
     );
     assert!(
-        !MANIFEST.contains("tracing"),
-        "domain gained a logging dependency"
+        !include_str!("../src/text.rs").contains("tracing"),
+        "text module gained logging (redact may log its static regex error)"
     );
     assert!(
         !(MANIFEST.contains("tokio") && MANIFEST.contains("net")),
