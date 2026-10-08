@@ -167,6 +167,15 @@ impl MailProvider for GmailProvider {
     }
 
     async fn get_preview(&self, mb: &MailboxCtx, id: &MessageId) -> Result<String, MailError> {
+        self.get_text(mb, id, PREVIEW_MAX_CHARS).await
+    }
+
+    async fn get_text(
+        &self,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        max_chars: usize,
+    ) -> Result<String, MailError> {
         let query: Vec<(&str, String)> = vec![
             ("format", "full".to_owned()),
             (
@@ -188,9 +197,9 @@ impl MailProvider for GmailProvider {
         let used = &decoded[..decoded.len().min(PREVIEW_MAX_BYTES)];
         let text = String::from_utf8_lossy(used);
         let preview = if part.mime_type.eq_ignore_ascii_case("text/html") {
-            html_to_text(&text, PREVIEW_MAX_CHARS)
+            html_to_text(&text, max_chars)
         } else {
-            sanitise_plain(&text, PREVIEW_MAX_CHARS)
+            sanitise_plain(&text, max_chars)
         };
         Ok(preview)
     }
