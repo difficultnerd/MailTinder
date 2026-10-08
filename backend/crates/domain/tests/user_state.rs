@@ -365,6 +365,9 @@ fn arb_state() -> impl Strategy<Value = UserState> {
                         list_id,
                         mailbox_id: MailboxId(m),
                         unsubscribed_at,
+                        mail_seen: false,
+                        confirm_counted: false,
+                        pending_ignored_display: None,
                     }
                 }),
             0..3,

@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::error::ApiError;
 use crate::http::json::{json_ok, ApiJson};
+use crate::http::request_id::RequestId;
 use crate::session::extract::AuthedSession;
 use crate::state::AppState;
 
@@ -195,6 +196,7 @@ pub async fn list(
 pub async fn create(
     State(app): State<AppState>,
     session: AuthedSession,
+    request_id: RequestId,
     ApiJson(body): ApiJson<CreateRuleDto>,
 ) -> Result<Response, ApiError> {
     let rule = match body.validate()? {
@@ -212,6 +214,7 @@ pub async fn create(
                 mailbox_id,
                 &message_id,
                 category_id,
+                Some(request_id.0),
             )
             .await?
         }
@@ -229,10 +232,12 @@ pub async fn patch(
     State(app): State<AppState>,
     session: AuthedSession,
     Path(raw): Path<String>,
+    request_id: RequestId,
     ApiJson(body): ApiJson<PatchRuleDto>,
 ) -> Result<Response, ApiError> {
     let id = rule_id(&raw)?;
-    let rule = crate::services::rules::patch(&app, &session, id, body.enabled).await?;
+    let rule =
+        crate::services::rules::patch(&app, &session, id, body.enabled, Some(request_id.0)).await?;
     Ok(json_ok(StatusCode::OK, &rule))
 }
 
@@ -246,9 +251,10 @@ pub async fn delete(
     State(app): State<AppState>,
     session: AuthedSession,
     Path(raw): Path<String>,
+    request_id: RequestId,
 ) -> Result<StatusCode, ApiError> {
     let id = rule_id(&raw)?;
-    crate::services::rules::delete(&app, &session, id).await?;
+    crate::services::rules::delete(&app, &session, id, Some(request_id.0)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

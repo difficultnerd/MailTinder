@@ -15,6 +15,7 @@
 
 pub mod address;
 mod class;
+pub mod delivery;
 mod error;
 pub mod feed;
 pub mod filing;
@@ -28,6 +29,7 @@ mod mailbox_status;
 pub mod mailto;
 mod message;
 mod needs_attention;
+pub mod redact;
 mod rules;
 mod sender;
 mod sender_stats;

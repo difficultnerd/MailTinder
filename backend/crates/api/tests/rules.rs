@@ -247,7 +247,7 @@ impl World {
     }
 
     /// Seed one inbox message (the fake keeps the labels verbatim).
-    fn seed(&self, sender: &str, offset_s: i64) -> domain::MessageId {
+    fn seed(&self, sender: &str, facts: HeaderFacts, offset_s: i64) -> domain::MessageId {
         self.fakes.mailbox.seed(
             &self.primary,
             SeedMessage {
@@ -255,7 +255,7 @@ impl World {
                 from_address: format!("{sender}@example.com"),
                 subject: format!("Subject at {offset_s}"),
                 raw_headers: vec![],
-                facts: HeaderFacts::default(),
+                facts,
                 preview_text: format!("Preview at {offset_s}"),
                 internal_date: at(offset_s),
                 labels: vec!["INBOX".to_owned()],
@@ -297,15 +297,24 @@ impl World {
         sender: &str,
     ) -> Result<RuleDto, Box<dyn std::error::Error>> {
         let category = create_category(&self.app, session, "Bills").await?;
-        let message = self.seed(sender, 10);
+        let message = self.seed(sender, authed_facts(), 10);
         Ok(create_file(
             &self.app,
             session,
             self.primary.0,
             message.as_str(),
             category.category_id,
+            None,
         )
         .await?)
+    }
+}
+
+/// A message whose From is DKIM-aligned or provider-authenticated (S6 T16).
+fn authed_facts() -> HeaderFacts {
+    HeaderFacts {
+        from_authenticated: true,
+        ..HeaderFacts::default()
     }
 }
 
@@ -386,12 +395,44 @@ async fn pb_01_ac2_retry_after_disable_creates_one_rule() -> TestResult {
     let prompt_ref = w.seal_prompt(&session, "alice@example.com", swipe).await?;
 
     let first = create_block(&w.app, &session, &prompt_ref).await?;
-    patch(&w.app, &session, first.rule_id, false).await?;
+    patch(&w.app, &session, first.rule_id, false, None).await?;
     let second = create_block(&w.app, &session, &prompt_ref).await?;
     assert_eq!(first.rule_id, second.rule_id);
     let state = w.state().await?;
     assert_eq!(state.rules.len(), 1, "a disabled rule is not duplicated");
     assert_eq!(state.totals.people_blocked, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pb_01_ac2_replay_after_delete_does_not_recreate_rule() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let swipe = Uuid::from_u128(0xabe);
+    let prompt_ref = w.seal_prompt(&session, "alice@example.com", swipe).await?;
+
+    let created = create_block(&w.app, &session, &prompt_ref).await?;
+    delete(&w.app, &session, created.rule_id, None).await?;
+    let before = w.state().await?;
+    assert!(before.rules.is_empty(), "the user deleted the rule");
+
+    // The confirmation was consumed, so replaying the same prompt while its
+    // token is still valid must not restore the deleted rule nor count again.
+    let replay = create_block(&w.app, &session, &prompt_ref).await?;
+    assert_eq!(replay.rule_id, created.rule_id);
+    assert_eq!(replay.kind, "block_person");
+    let after = w.state().await?;
+    assert!(after.rules.is_empty(), "the deleted rule stays deleted");
+    assert_eq!(after.totals.people_blocked, before.totals.people_blocked);
+    assert_eq!(
+        after.totals.senders_silenced,
+        before.totals.senders_silenced
+    );
+    assert_eq!(
+        after.history.len(),
+        before.history.len(),
+        "no second History entry"
+    );
     Ok(())
 }
 
@@ -449,7 +490,7 @@ async fn fl_04_ac2_file_rule_from_message() -> TestResult {
     let w = World::new().await?;
     let session = w.session(1);
     let category = create_category(&w.app, &session, "Bills").await?;
-    let message = w.seed("carol", 10);
+    let message = w.seed("carol", authed_facts(), 10);
 
     // An unknown category is `404`.
     assert!(matches!(
@@ -460,6 +501,7 @@ async fn fl_04_ac2_file_rule_from_message() -> TestResult {
                 w.primary.0,
                 message.as_str(),
                 Uuid::from_u128(0xdead),
+                None,
             )
             .await
         ),
@@ -472,6 +514,7 @@ async fn fl_04_ac2_file_rule_from_message() -> TestResult {
         w.primary.0,
         message.as_str(),
         category.category_id,
+        None,
     )
     .await?;
     assert_eq!(rule.kind, "file");
@@ -486,10 +529,49 @@ async fn fl_04_ac2_file_rule_from_message() -> TestResult {
         w.primary.0,
         message.as_str(),
         category.category_id,
+        None,
     )
     .await?;
     assert_eq!(rule.rule_id, again.rule_id);
     assert_eq!(w.state().await?.rules.len(), 1);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// S6 T16: a filing rule is refused when the sender is not authenticated, so a
+// forged From can never poison a rule that later matches genuine mail
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn fl_04_ac2_unauthenticated_sender_creates_no_rule() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let category = create_category(&w.app, &session, "Bills").await?;
+    // A forged display name: not authenticated and classed suspect.
+    let forged = HeaderFacts {
+        display_name_spoof: true,
+        ..HeaderFacts::default()
+    };
+    let message = w.seed("carol", forged, 10);
+
+    assert!(matches!(
+        err_of(
+            create_file(
+                &w.app,
+                &session,
+                w.primary.0,
+                message.as_str(),
+                category.category_id,
+                None,
+            )
+            .await
+        ),
+        ApiError::InvalidRequest { .. }
+    ));
+    assert!(
+        w.state().await?.rules.is_empty(),
+        "an unauthenticated sender never creates a rule"
+    );
     Ok(())
 }
 
@@ -506,7 +588,7 @@ async fn sr_01_ac4_disabled_rule_not_applied() -> TestResult {
     // Before T-609 there is no Feed matcher to exercise, so the contract is
     // that `enabled: false` is stored and returned: `SortRule::matches` never
     // matches a disabled rule.
-    let off = patch(&w.app, &session, rule.rule_id, false).await?;
+    let off = patch(&w.app, &session, rule.rule_id, false, None).await?;
     assert!(!off.enabled);
     let stored = w
         .state()
@@ -525,9 +607,9 @@ async fn st_01_ac2_switch_off_rule() -> TestResult {
     let rule = w.file_rule(&session, "alice").await?;
     assert!(rule.enabled);
 
-    let off = patch(&w.app, &session, rule.rule_id, false).await?;
+    let off = patch(&w.app, &session, rule.rule_id, false, None).await?;
     assert!(!off.enabled);
-    let on = patch(&w.app, &session, rule.rule_id, true).await?;
+    let on = patch(&w.app, &session, rule.rule_id, true, None).await?;
     assert!(on.enabled);
     Ok(())
 }
@@ -640,17 +722,84 @@ async fn asvs_v8_2_2_other_users_rule_not_found() -> TestResult {
     let other_session = w.session_for(other, 2);
 
     assert!(matches!(
-        err_of(patch(&w.app, &other_session, rule.rule_id, false).await),
+        err_of(patch(&w.app, &other_session, rule.rule_id, false, None).await),
         ApiError::NotFound
     ));
     assert!(matches!(
-        err_of(delete(&w.app, &other_session, rule.rule_id).await),
+        err_of(delete(&w.app, &other_session, rule.rule_id, None).await),
         ApiError::NotFound
     ));
     assert!(list(&w.app, &other_session, None).await?.is_empty());
     // The owner can still delete their own rule.
-    delete(&w.app, &session, rule.rule_id).await?;
+    delete(&w.app, &session, rule.rule_id, None).await?;
     assert!(list(&w.app, &session, None).await?.is_empty());
     assert_eq!(w.state_of(&other).await?.rules.len(), 0);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ASVS V16.3.2: a refused cross-user access is logged with the pseudonymous
+// actor, the request ID and the route verb, and never the object's ID
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn asvs_v16_3_2_foreign_rule_and_mailbox_refusals_logged() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let rule = w.file_rule(&session, "alice").await?;
+    let message = w.seed("alice", authed_facts(), 20);
+    let (other, other_mailbox) = w.other_user().await?;
+    let other_session = w.session_for(other, 2);
+    let request_id = Uuid::from_u128(0xf00d);
+
+    let clock = obs::arc(obs::FixedClock(w.app.ports.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    // Another user's rule: `PATCH`, `DELETE` and another user's mailbox: `POST`.
+    assert!(matches!(
+        err_of(
+            patch(
+                &w.app,
+                &other_session,
+                rule.rule_id,
+                false,
+                Some(request_id)
+            )
+            .await
+        ),
+        ApiError::NotFound
+    ));
+    assert!(matches!(
+        err_of(delete(&w.app, &other_session, rule.rule_id, Some(request_id)).await),
+        ApiError::NotFound
+    ));
+    assert!(matches!(
+        err_of(
+            create_file(
+                &w.app,
+                &other_session,
+                w.primary.0,
+                message.as_str(),
+                Uuid::nil(),
+                Some(request_id),
+            )
+            .await
+        ),
+        ApiError::NotFound
+    ));
+
+    let text = capture.text();
+    assert!(
+        text.contains("authz_failure"),
+        "every refusal is logged: {text}"
+    );
+    assert!(
+        text.contains(&request_id.to_string()),
+        "the event carries the request ID: {text}"
+    );
+    assert!(
+        !text.contains(&rule.rule_id.to_string()) && !text.contains(&other_mailbox.0.to_string()),
+        "the event carries no object ID: {text}"
+    );
     Ok(())
 }

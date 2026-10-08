@@ -15,6 +15,7 @@ use domain::{
     CategoryId, MailboxId, MessageId, RuleId, RuleKind, SenderKey, SortRule, Tunables, UserId,
 };
 use ports::MailError;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::ApiError;
@@ -88,13 +89,27 @@ pub async fn create_block(
     };
     let store = UserStateStore::new(Arc::new(app.clone()));
     let find = sender.clone();
+    let swipe_id = prompt.swipe_id;
     let rule = store
         .update(&s.user, move |st: &mut UserState| -> StoredRule {
+            // A retry of the same prompt finds the same rule (API-RULE-2).
             if let Some(same) = st.rules.iter().find(|r| r.rule.rule_id == rule_id) {
                 return same.clone();
             }
+            // A different prompt for the same sender reuses the enabled rule.
             if let Some(existing) = block_rule_for(st, &find) {
                 return existing;
+            }
+            // The confirmation was already consumed: History keeps the creation
+            // record (`entry_id` is the rule ID) after the rule is deleted
+            // (API-RULE-4), so a replay of the same prompt must not recreate an
+            // explicitly deleted rule or touch the counters again (S6 T22).
+            if let Some(at) = consumed_confirmation(st, rule_id) {
+                return StoredRule {
+                    rule: SortRule::block_person_for(&find, rule_id, at, Some(swipe_id)),
+                    times_applied: 0,
+                    yearly_rate: None,
+                };
             }
             st.rules.push(stored.clone());
             st.totals.people_blocked = st.totals.people_blocked.saturating_add(1);
@@ -107,31 +122,35 @@ pub async fn create_block(
 }
 
 /// API-RULE-2 `file` (FL-04 AC2): build a filing rule from a message re-read
-/// from the provider. The sender comes from that fresh read, never the client.
-/// The rule acts from the next Feed load (T-609).
+/// from the provider. The sender comes from that fresh read, never the client,
+/// and only an authenticated sender may back a rule (S6 T16). The rule acts
+/// from the next Feed load (T-609).
 ///
 /// # Errors
 ///
 /// `NotFound` when the mailbox is not the user's or the category is unknown;
-/// `InvalidRequest` for a malformed message ID; `MessageChanged` when the
-/// message is gone; provider and state file errors.
+/// `InvalidRequest` for a malformed message ID or a sender that is not
+/// DKIM-aligned or provider-authenticated; `MessageChanged` when the message is
+/// gone; provider and state file errors.
 pub async fn create_file(
     app: &AppState,
     s: &AuthedSession,
     mailbox_id: Uuid,
     message_id: &str,
     category_id: Uuid,
+    request_id: Option<Uuid>,
 ) -> Result<RuleDto, ApiError> {
     let user = s.user;
     let mailbox = MailboxId(mailbox_id);
-    let record = app
-        .ports
-        .store
-        .mailboxes()
-        .get(&mailbox)
-        .await?
-        .filter(|r| r.record.user_id == user)
-        .ok_or(ApiError::NotFound)?;
+    let Some(record) = app.ports.store.mailboxes().get(&mailbox).await? else {
+        return Err(ApiError::NotFound);
+    };
+    if record.record.user_id != user {
+        // Another user's mailbox: a flat `404` outward (V8.2.2), an attributed
+        // `authz_failure` in the log (V16.3.2).
+        crate::http::security::authz_failure(app, &user, request_id, Some("POST"));
+        return Err(ApiError::NotFound);
+    }
     let store = UserStateStore::new(Arc::new(app.clone()));
     let loaded = store.load(&user).await?;
     if loaded.state.category(&CategoryId(category_id)).is_none() {
@@ -152,6 +171,14 @@ pub async fn create_file(
         Err(e) => return Err(provider_error(mailbox, &e)),
     };
     let sender = meta.sender.clone();
+    // S6 T16: a filing rule's sender key comes only from a DKIM-aligned or
+    // provider-authenticated message; suspect mail never creates a rule, so a
+    // forged From cannot poison a rule that later matches genuine mail.
+    if !meta.facts.from_authenticated {
+        return Err(ApiError::InvalidRequest {
+            fields: vec!["message_id".to_owned()],
+        });
+    }
     let now = app.ports.clock.now();
     let category = CategoryId(category_id);
     let stored = StoredRule {
@@ -187,11 +214,17 @@ pub async fn patch(
     s: &AuthedSession,
     rule_id: Uuid,
     enabled: bool,
+    request_id: Option<Uuid>,
 ) -> Result<RuleDto, ApiError> {
     let store = UserStateStore::new(Arc::new(app.clone()));
     let id = RuleId(rule_id);
     let existing = store.load(&s.user).await?.state.rule(&id).cloned();
     if existing.is_none() {
+        // The rule is not in the caller's own state: it is another user's or it
+        // does not exist. The two cannot be told apart without reading another
+        // user's data, so every refusal is logged (V16.3.2) and the response is
+        // a flat `404` (V8.2.2).
+        crate::http::security::authz_failure(app, &s.user, request_id, Some("PATCH"));
         return Err(ApiError::NotFound);
     }
     let rule = store
@@ -211,10 +244,18 @@ pub async fn patch(
 /// # Errors
 ///
 /// `NotFound` for an unknown ID, and the state file errors.
-pub async fn delete(app: &AppState, s: &AuthedSession, rule_id: Uuid) -> Result<(), ApiError> {
+pub async fn delete(
+    app: &AppState,
+    s: &AuthedSession,
+    rule_id: Uuid,
+    request_id: Option<Uuid>,
+) -> Result<(), ApiError> {
     let store = UserStateStore::new(Arc::new(app.clone()));
     let id = RuleId(rule_id);
     if store.load(&s.user).await?.state.rule(&id).is_none() {
+        // Another user's rule and a missing rule look the same here; log the
+        // refusal without reading other users' state (V16.3.2, V8.2.2).
+        crate::http::security::authz_failure(app, &s.user, request_id, Some("DELETE"));
         return Err(ApiError::NotFound);
     }
     store
@@ -296,6 +337,21 @@ fn block_rule_for(st: &UserState, sender: &SenderKey) -> Option<StoredRule> {
                 && r.rule.matcher.sender == *sender
         })
         .cloned()
+}
+
+/// When the block confirmation that produced `rule_id` was recorded, if
+/// History still carries it. History outlives the rule (API-RULE-4), so this is
+/// the confirmation-consumption record, independent of rule existence and long
+/// past prompt token expiry.
+fn consumed_confirmation(st: &UserState, rule_id: RuleId) -> Option<OffsetDateTime> {
+    st.history
+        .iter()
+        .find(|h| {
+            h.entry_id == rule_id.0
+                && h.rule_id == Some(rule_id)
+                && h.action == HistoryAction::Blocked
+        })
+        .map(|h| h.at)
 }
 
 /// The domain `RuleKind` for an API-RULE-1 `kind` filter value. The route
