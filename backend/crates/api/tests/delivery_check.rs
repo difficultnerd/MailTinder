@@ -197,6 +197,7 @@ fn check(mailbox: MailboxId) -> PendingDeliveryCheck {
         unsubscribed_at: SENT,
         mail_seen: false,
         confirm_counted: false,
+        pending_ignored_display: None,
     }
 }
 #[tokio::test]
@@ -432,12 +433,90 @@ async fn delivery_sent_and_batched_outcomes_create_one_check() -> TestResult {
 }
 
 #[tokio::test]
+async fn un_06_ac1_failed_item_seal_retries_without_mail() -> TestResult {
+    let w = World::new(true).await?;
+    w.seed(SENT + Duration::days(10));
+    w.fakes.keys.fail_field(aad_fields::NA_SENDER_DISPLAY, 1);
+    assert!(w.page_at(SENT + Duration::days(11)).await.is_err());
+    assert_eq!(w.items().await?, 0);
+    assert_eq!(w.state().await?.pending_delivery_checks.len(), 1);
+    // The rule already trashed the only late mail; retry cannot rediscover it.
+    w.page_at(SENT + Duration::days(12)).await?;
+    w.page_at(SENT + Duration::days(15)).await?;
+    assert_eq!(w.items().await?, 1);
+    assert_eq!(w.state().await?.pending_delivery_checks.len(), 0);
+    assert_eq!(w.state().await?.totals.unsubscribes_confirmed, 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn delivery_late_fetched_grace_mail_blocks_confirmation() -> TestResult {
     let w = World::new(false).await?;
     w.seed(SENT + Duration::days(2));
     w.page_at(SENT + Duration::days(20)).await?;
     assert_eq!(w.state().await?.totals.unsubscribes_confirmed, 0);
     assert_eq!(w.items().await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn un_06_ac1_failed_item_write_retries_after_lifetime() -> TestResult {
+    let w = World::new(true).await?;
+    w.seed(SENT + Duration::days(10));
+    w.fakes.store.fail_next_needs_attention_put();
+    assert!(w.page_at(SENT + Duration::days(11)).await.is_err());
+    assert_eq!(w.items().await?, 0);
+    let state = w.state().await?;
+    assert_eq!(state.pending_delivery_checks.len(), 1);
+    assert_eq!(
+        state.pending_delivery_checks[0]
+            .pending_ignored_display
+            .as_deref(),
+        Some("Synthetic list")
+    );
+    w.page_at(SENT + Duration::days(31)).await?;
+    w.page_at(SENT + Duration::days(32)).await?;
+    assert_eq!(w.items().await?, 1);
+    assert_eq!(w.state().await?.pending_delivery_checks.len(), 0);
+    assert_eq!(w.state().await?.totals.unsubscribes_confirmed, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn un_06_ac1_failed_acknowledgement_does_not_duplicate_item() -> TestResult {
+    let w = World::new(true).await?;
+    let mail = [ListMail {
+        sender_key: "list@example.com".into(),
+        list_id: Some("weekly.example.com".into()),
+        mailbox_id: w.mailbox,
+        received_at: SENT + Duration::days(10),
+        sender_display: "Synthetic list".into(),
+    }];
+    let ignored = w
+        .store()
+        .update(&w.user, |state| {
+            apply_delivery_checks(
+                state,
+                &w.app.business_calendar,
+                SENT + Duration::days(11),
+                &DeliveryHookInput { list_mail: &mail },
+            )
+        })
+        .await?;
+    w.fakes
+        .app_folder
+        .fail_op(testkit::app_folder::FolderOp::Write, 1);
+    assert!(
+        api::services::delivery_check::publish(&w.app, &w.user, &ignored, 0)
+            .await
+            .is_err()
+    );
+    assert_eq!(w.items().await?, 1);
+    assert_eq!(w.state().await?.pending_delivery_checks.len(), 1);
+    // A crash or failed acknowledgement replays the same durable outbox item.
+    w.page_at(SENT + Duration::days(12)).await?;
+    assert_eq!(w.items().await?, 1);
+    assert_eq!(w.state().await?.pending_delivery_checks.len(), 0);
     Ok(())
 }
 

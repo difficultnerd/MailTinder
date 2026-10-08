@@ -329,6 +329,7 @@ async fn persist(
                                 unsubscribed_at: *unsubscribed_at,
                                 mail_seen: false,
                                 confirm_counted: false,
+                                pending_ignored_display: None,
                             });
                         }
                     }

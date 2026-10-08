@@ -183,6 +183,9 @@ pub struct PendingDeliveryCheck {
     pub mail_seen: bool,
     #[serde(default)]
     pub confirm_counted: bool,
+    /// Durable outbox payload, cleared only after the encrypted item is stored.
+    #[serde(default)]
+    pub pending_ignored_display: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

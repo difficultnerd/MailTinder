@@ -99,6 +99,7 @@ fn st_02_ac1_evaluate_boundaries() -> TestResult {
         unsubscribed_at: sent,
         mail_seen: false,
         confirm_counted: false,
+        pending_ignored_display: None,
     };
     assert_eq!(
         evaluate(&check, sent + Duration::days(14) - Duration::seconds(1)),
@@ -131,13 +132,16 @@ fn delivery_old_state_defaults() -> TestResult {
         unsubscribed_at: datetime!(2026-10-05 09:00 +10),
         mail_seen: true,
         confirm_counted: true,
+        pending_ignored_display: Some("Synthetic".into()),
     };
     let mut value = serde_json::to_value(check)?;
     let obj = value.as_object_mut().ok_or("object")?;
     obj.remove("mail_seen");
     obj.remove("confirm_counted");
+    obj.remove("pending_ignored_display");
     let old: PendingDeliveryCheck = serde_json::from_value(value)?;
     assert!(!old.mail_seen);
     assert!(!old.confirm_counted);
+    assert!(old.pending_ignored_display.is_none());
     Ok(())
 }
