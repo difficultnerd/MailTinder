@@ -674,17 +674,18 @@ async fn cl_03_ac4_token_for_other_message_refused() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn bake_5_expired_token_refused_at_swipe() -> TestResult {
+#[tokio::test(start_paused = true)]
+async fn cl_03_ac4_expired_token_swipe_proceeds() -> TestResult {
     let w = World::new().await?;
     let session = w.session(1);
     let id = w.seed(&w.primary, "alice", 10);
     let mut req = w.request(&session, &id, ActionDto::Keep, None).await?;
     req.classification_token = w.classification_token(&session, id.as_str(), 60).await?;
-    // The token expires before the swipe is sent: refused (CL-03 AC4).
+    // The token expires before the swipe is sent: the swipe still proceeds
+    // (S7 5.5; an unopenable token writes no eval record).
     w.fakes.clock.advance(Duration::seconds(120));
-    let err = err_of(w.swipe(&session, 1, req).await);
-    assert!(matches!(err, ApiError::InvalidRequest { .. }));
+    let result = w.swipe(&session, 1, req).await?;
+    assert_eq!(result.outcome, SwipeOutcome::Kept);
     Ok(())
 }
 

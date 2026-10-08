@@ -42,5 +42,12 @@ __pycache__/
 tools/.bin/
 tools/.venv-semgrep/
 
-# Terraform provider caches (114MB each) must never be committed.
+# Terraform provider cache and state (never commit these).
+# A single Google provider binary is ~114 MB and GitHub hard-rejects
+# anything over 100 MB — the T-607b push died on exactly that.
 .terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfplan

@@ -17,20 +17,24 @@
 
 pub mod input;
 pub mod payload;
+pub mod prompt;
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use domain::redact::approx_tokens;
 use domain::{header_guard, Classification, HeaderRules, MessageMeta, Provider, HEADER_RULES_ID};
 use futures::stream::{self, StreamExt};
-use ports::{
-    Classifier, ClassifierError, ClassifierId, ClassifierInput, ModelPrediction, TextTokensBucket,
-};
+use ports::{Classifier, ClassifierError, ClassifierId, ClassifierInput, ModelPrediction};
 use time::OffsetDateTime;
 
 use crate::routes::feed::ClassificationPayload;
 
-pub use input::{build_input, INPUT_VERSION, QUESTION_VERSION};
+/// The per-request bake-off gate: consent (T-902) AND the model's switch
+/// (T-906b), computed per request. Reusing T-902's type keeps one gate shape
+/// (its doc comment says T-901 imports it rather than defining a second type).
+pub use crate::experiments::BakeoffGate;
+pub use input::build_input;
 pub use payload::{age_bucket, eval_header_facts, prediction_err, prediction_ok, BakeoffPayload};
 
 /// `[TUNABLE]` the per-model call timeout (S4 5.7, CR-01 T-new-3).
@@ -46,22 +50,6 @@ pub const PRICE_VERSION: &str = "1";
 pub struct ClassifierSet {
     pub gemini: Option<Arc<dyn Classifier>>,
     pub jev: Option<Arc<dyn Classifier>>,
-}
-
-/// The per-request bake-off gate: consent (T-902) AND the model's switch
-/// (T-906b), computed per request. Closed by default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct BakeoffGate {
-    pub gemini: bool,
-    pub jev: bool,
-}
-
-impl BakeoffGate {
-    /// True when at least one model is due to run.
-    #[must_use]
-    pub fn is_open(self) -> bool {
-        self.gemini || self.jev
-    }
 }
 
 /// One card handed to the pipeline.
@@ -118,11 +106,17 @@ pub async fn classify_page(
     }
 
     // Step 3: one shared input per card, so both models see byte-identical
-    // input (BAKE-2).
-    let inputs: Vec<Arc<ClassifierInput>> = cards
+    // input (BAKE-2). T-903's `build_input` also returns the coarse buckets
+    // for the sealed eval payload.
+    let built: Vec<(Arc<ClassifierInput>, domain::redact::InputFacts)> = cards
         .iter()
-        .map(|c| Arc::new(build_input(c.meta, c.stripped_text)))
+        .map(|c| {
+            let (value, facts) = build_input(c.meta, c.stripped_text);
+            (Arc::new(value), facts)
+        })
         .collect();
+    let inputs: Vec<Arc<ClassifierInput>> =
+        built.iter().map(|(value, _)| Arc::clone(value)).collect();
 
     // Step 4: the two model streams run at the same time.
     let (gemini, jev) = tokio::join!(
@@ -135,33 +129,42 @@ pub async fn classify_page(
         .iter()
         .zip(prepared)
         .enumerate()
-        .map(|(i, (c, (rules, badge)))| ClassifiedCard {
-            badge,
-            payload: ClassificationPayload {
-                mailbox_id: c.meta.mailbox.0,
-                message_id: c.meta.id.as_str().to_owned(),
-                header_rules: rules,
-                classifier_id: HEADER_RULES_ID.to_owned(),
-                issued_at: now,
-                bakeoff: Some(BakeoffPayload {
-                    gemini: gemini[i].clone(),
-                    jev: jev[i].clone(),
-                    header_facts: eval_header_facts(&c.meta.facts),
-                    provider: c.provider,
-                    age_bucket: age_bucket(c.meta.internal_date, now),
-                    text_tokens_bucket: TextTokensBucket::Under100,
-                    lang_is_english: false,
-                    input_version: inputs[i].input_version.to_owned(),
-                    question_version: QUESTION_VERSION.to_owned(),
-                    price_version: PRICE_VERSION.to_owned(),
-                }),
-            },
+        .map(|(i, (c, (rules, badge)))| {
+            let (value, facts) = &built[i];
+            ClassifiedCard {
+                badge,
+                payload: ClassificationPayload {
+                    mailbox_id: c.meta.mailbox.0,
+                    message_id: c.meta.id.as_str().to_owned(),
+                    header_rules: rules,
+                    classifier_id: HEADER_RULES_ID.to_owned(),
+                    issued_at: now,
+                    bakeoff: Some(BakeoffPayload {
+                        gemini: gemini[i].clone(),
+                        jev: jev[i].clone(),
+                        header_facts: eval_header_facts(&c.meta.facts),
+                        provider: c.provider,
+                        age_bucket: age_bucket(c.meta.internal_date, now),
+                        text_tokens_bucket: facts.text_tokens_bucket,
+                        lang_is_english: facts.lang_is_english,
+                        input_version: value.input_version.to_owned(),
+                        question_version: prompt::QUESTION_VERSION.to_owned(),
+                        price_version: PRICE_VERSION.to_owned(),
+                    }),
+                },
+            }
         })
         .collect()
 }
 
 /// Runs one model over every card, bounded by [`MODEL_CONCURRENCY`]. A closed
 /// gate or a missing model yields `None` for every card.
+///
+/// The whole run shares **one** deadline of [`MODEL_TIMEOUT`] from the start,
+/// not one timeout per wave: with the concurrency cap a large page (up to the
+/// Feed cap) can otherwise wait `ceil(cards / MODEL_CONCURRENCY)` timeouts and
+/// tie up worker capacity (trap 1; S4 5.7). A card not reached before the
+/// deadline is recorded as a timeout and no model is called for it.
 async fn run_model(
     model: Option<&Arc<dyn Classifier>>,
     open: bool,
@@ -171,11 +174,12 @@ async fn run_model(
         return vec![None; inputs.len()];
     };
     let id = model.id();
+    let deadline = tokio::time::Instant::now() + MODEL_TIMEOUT;
     let results: Vec<(usize, ModelPrediction)> = stream::iter(inputs.iter().cloned().enumerate())
         .map(|(i, input)| {
             let model = Arc::clone(model);
             let id = id.clone();
-            async move { (i, call(model.as_ref(), &id, &input).await) }
+            async move { (i, call(model.as_ref(), &id, &input, deadline).await) }
         })
         .buffer_unordered(MODEL_CONCURRENCY)
         .collect()
@@ -187,23 +191,34 @@ async fn run_model(
     out
 }
 
-/// One model call: pausable clock, timeout, validation and error mapping.
+/// One model call: pausable clock, the page deadline, validation and error
+/// mapping. Past the deadline the model is not called at all.
 async fn call(
     model: &dyn Classifier,
     id: &ClassifierId,
     input: &ClassifierInput,
+    deadline: tokio::time::Instant,
 ) -> ModelPrediction {
     let start = tokio::time::Instant::now();
-    let outcome = tokio::time::timeout(MODEL_TIMEOUT, model.classify(input)).await;
-    let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    if start >= deadline {
+        return prediction_err(id, &ClassifierError::Timeout, elapsed_ms(start));
+    }
+    let outcome = tokio::time::timeout_at(deadline, model.classify(input)).await;
+    let latency_ms = elapsed_ms(start);
     match outcome {
         Ok(Ok(classification)) if valid(&classification) => {
-            prediction_ok(id, &classification, latency_ms, None)
+            let tokens = approx_tokens(&prompt::render_model_text(input));
+            prediction_ok(id, &classification, latency_ms, Some(tokens))
         }
         Ok(Ok(_)) => prediction_err(id, &ClassifierError::InvalidOutput, latency_ms),
         Ok(Err(e)) => prediction_err(id, &e, latency_ms),
         Err(_) => prediction_err(id, &ClassifierError::Timeout, latency_ms),
     }
+}
+
+/// Elapsed milliseconds since `start`, saturating at `u32::MAX`.
+fn elapsed_ms(start: tokio::time::Instant) -> u32 {
+    u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX)
 }
 
 /// A model answer is used only when its score, confidence and probabilities are

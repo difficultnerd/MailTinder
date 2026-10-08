@@ -92,6 +92,14 @@ pub trait MailProvider: Send + Sync {
     ) -> Result<MessagePage, MailError>;
     async fn get_meta(&self, mb: &MailboxCtx, id: &MessageId) -> Result<MessageMeta, MailError>;
     async fn get_preview(&self, mb: &MailboxCtx, id: &MessageId) -> Result<String, MailError>;
+    /// Plain stripped text, cut to `max_chars` grapheme clusters.
+    /// `get_preview(mb, id) == get_text(mb, id, 300)`.
+    async fn get_text(
+        &self,
+        mb: &MailboxCtx,
+        id: &MessageId,
+        max_chars: usize,
+    ) -> Result<String, MailError>;
     async fn set_labels(
         &self,
         mb: &MailboxCtx,

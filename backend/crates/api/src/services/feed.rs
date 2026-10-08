@@ -8,10 +8,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use domain::feed::{card_visible, feed_order, is_boss};
-use domain::user_state::{MailboxPosition, SkipReturn, SkipState, UserState};
+use domain::filing::{self, FilingInput};
+use domain::user_state::{
+    HistoryEntry, HistoryOutcome, MailboxPosition, PendingDeliveryCheck, SkipReturn, SkipState,
+    UserState,
+};
 use domain::{
     next_status, HeaderRules, MailboxEvent, MailboxId, MailboxStatus, MessageId, MessageMeta,
-    Provider, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
+    Provider, RuleKind, Tunables, UnsubscribeRoute, UserId, HEADER_RULES_ID,
 };
 use futures::stream::{self, StreamExt};
 use ports::store::{aad_fields, MailboxRecord, Precondition, Versioned};
@@ -19,13 +23,18 @@ use ports::{Aad, MailError, MailboxCtx, MessagePage, MessageQuery, WrappedKey};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::classify::{classify_page, CardToClassify, ClassifiedCard};
+use crate::classify::{classify_page, BakeoffGate, CardToClassify, ClassifiedCard};
 use crate::error::ApiError;
 use crate::routes::feed::{
-    BossDto, CardDto, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto, Phase, FEED_LIMIT_MAX,
-    SEALED_TTL_HOURS,
+    BossDto, CardDto, CategoryRefDto, CursorPayload, FeedPage, FeedRequest, MailboxErrorDto, Phase,
+    SuggestionDto, FEED_LIMIT_MAX, SEALED_TTL_HOURS,
 };
 use crate::sealed::{http_status_for, SealedTokens, TokenError, TokenType};
+use crate::services::delivery_check::{self, DeliveryHookInput, IgnoredUnsubscribe, ListMail};
+use crate::services::history_catch_up::{
+    collect_job_outcomes, delete_collected, CollectedOutcomes,
+};
+pub use crate::services::rule_actions::apply_rules;
 use crate::services::user_state_store::UserStateStore;
 use crate::session::extract::AuthedSession;
 use crate::state::AppState;
@@ -39,6 +48,8 @@ const NAME_MAX: usize = 256;
 const ADDRESS_MAX: usize = 320;
 const SUBJECT_MAX: usize = 998;
 const REASON_MAX: usize = 200;
+/// `CategoryRef.name` maxLength (S7 5.4).
+const CATEGORY_NAME_MAX: usize = 100;
 /// The provider's largest page (`MailProvider::list_messages`).
 const PROVIDER_PAGE_MAX: u32 = 100;
 
@@ -49,22 +60,8 @@ pub struct RuleApplication {
     pub acted_on: BTreeSet<(Uuid, String)>,
     /// How many actions were applied.
     pub applied: u32,
-}
-
-/// Hook for T-609: applies enabled sort rules to the freshly fetched mail and
-/// returns what it acted on. This task ships a no-op.
-///
-/// # Errors
-///
-/// None yet; T-609 returns the store and provider errors.
-#[allow(clippy::unused_async)]
-pub async fn apply_rules(
-    _app: &AppState,
-    _session: &AuthedSession,
-    _state: &UserState,
-    _metas: &[MessageMeta],
-) -> Result<RuleApplication, ApiError> {
-    Ok(RuleApplication::default())
+    /// Successful provider changes, appended by the Feed's single state update.
+    pub entries: Vec<HistoryEntry>,
 }
 
 /// A connected mailbox with a usable token for this request.
@@ -97,6 +94,7 @@ struct Built {
     card: CardDto,
     sender_key: String,
     display: String,
+    delivery_mail: ListMail,
 }
 
 /// Everything card building reads.
@@ -111,6 +109,7 @@ struct Env<'a> {
     session: &'a AuthedSession,
     tunables: &'a Tunables,
     expires_at: OffsetDateTime,
+    gate: crate::experiments::BakeoffGate,
 }
 
 /// The next page of cards across all the user's mailboxes (API-FEED-1).
@@ -126,11 +125,7 @@ pub async fn next_page(
     session: &AuthedSession,
     req: FeedRequest,
 ) -> Result<FeedPage, ApiError> {
-    if req.limit == 0 || req.limit > FEED_LIMIT_MAX {
-        return Err(ApiError::InvalidRequest {
-            fields: vec!["/limit".to_owned()],
-        });
-    }
+    validate_limit(req.limit)?;
     let user = session.user;
     let store = UserStateStore::new(Arc::new(app.clone()));
     // Without the primary mailbox the state file is out of reach, so no page
@@ -199,20 +194,29 @@ pub async fn next_page(
         session,
         tunables: &tunables,
         expires_at,
+        gate: input_gate(app, &user).await,
     };
     let all: Vec<MessageMeta> = page_metas.into_iter().chain(returns).collect();
     let built = build_cards(&env, all).await?;
 
     // Steps 13 and 14: one state write, then the cursor.
-    persist(
+    let collected = collect_job_outcomes(app, &user, &loaded.state).await?;
+    let list_mail = delivery_mail(&user, &taken, &rules, &loaded.state, &built);
+    let (ignored, confirmed) = persist(
         &store,
         &user,
         start_positions,
         skips.clone(),
         &built,
         app.ports.clock.now(),
+        &rules,
+        &collected,
+        &app.business_calendar,
+        &list_mail,
     )
     .await?;
+    delivery_check::publish(app, &user, &ignored, confirmed).await?;
+    delete_collected(app, &user, &collected).await;
     let next_cursor = if phase == Phase::Backlog && nothing_fetched && errors.is_empty() {
         None
     } else {
@@ -235,6 +239,16 @@ pub async fn next_page(
             .collect(),
         rule_actions_applied: rules.applied,
     })
+}
+
+fn validate_limit(limit: u32) -> Result<(), ApiError> {
+    if limit == 0 || limit > FEED_LIMIT_MAX {
+        Err(ApiError::InvalidRequest {
+            fields: vec!["/limit".to_owned()],
+        })
+    } else {
+        Ok(())
+    }
 }
 
 async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
@@ -262,6 +276,7 @@ fn fresh_skips(stored: &SkipState, session: Uuid) -> SkipState {
 
 /// Step 13: one state write. The closure is pure: it only copies in values
 /// computed before the call, so a retry after an `ETag` conflict is safe.
+#[allow(clippy::too_many_arguments)]
 async fn persist(
     store: &UserStateStore,
     user: &UserId,
@@ -269,13 +284,56 @@ async fn persist(
     skips: SkipState,
     built: &[Built],
     at: OffsetDateTime,
-) -> Result<(), ApiError> {
+    rules: &RuleApplication,
+    collected: &CollectedOutcomes,
+    calendar: &domain::delivery::BusinessCalendar,
+    list_mail: &[ListMail],
+) -> Result<(Vec<IgnoredUnsubscribe>, u64), ApiError> {
     let seen: Vec<(String, String)> = built
         .iter()
         .map(|b| (b.sender_key.clone(), b.display.clone()))
         .collect();
     store
         .update(user, move |s: &mut UserState| {
+            for entry in &rules.entries {
+                if s.push_history(entry.clone()) {
+                    s.totals.cleared = s.totals.cleared.saturating_add(1);
+                    if let Some(rule) = s
+                        .rules
+                        .iter_mut()
+                        .find(|r| Some(r.rule.rule_id) == entry.rule_id)
+                    {
+                        rule.times_applied = rule.times_applied.saturating_add(1);
+                    }
+                }
+            }
+            for entry in &collected.entries {
+                let newly_pushed = s.push_history(entry.clone());
+                s.pending_unsubscribes.remove(&entry.entry_id);
+                if newly_pushed && entry.outcome == HistoryOutcome::Sent {
+                    s.totals.senders_unsubscribed = s.totals.senders_unsubscribed.saturating_add(1);
+                    if let Some((_, pending, unsubscribed_at)) = collected
+                        .sent
+                        .iter()
+                        .find(|(id, _, _)| id.0 == entry.entry_id)
+                    {
+                        if !s.pending_delivery_checks.iter().any(|check| {
+                            check.sender_key == pending.sender_key
+                                && check.list_id == pending.list_id
+                        }) {
+                            s.pending_delivery_checks.push(PendingDeliveryCheck {
+                                sender_key: pending.sender_key.clone(),
+                                list_id: pending.list_id.clone(),
+                                mailbox_id: pending.mailbox_id,
+                                unsubscribed_at: *unsubscribed_at,
+                                mail_seen: false,
+                                confirm_counted: false,
+                                pending_ignored_display: None,
+                            });
+                        }
+                    }
+                }
+            }
             for (id, position) in &positions {
                 s.positions.insert(*id, position.clone());
             }
@@ -286,8 +344,56 @@ async fn persist(
                 stats.display.clone_from(display);
                 stats.last_seen = Some(at);
             }
+            let before = s.totals.unsubscribes_confirmed;
+            let ignored = delivery_check::apply_delivery_checks(
+                s,
+                calendar,
+                at,
+                &DeliveryHookInput { list_mail },
+            );
+            (ignored, s.totals.unsubscribes_confirmed - before)
         })
         .await
+}
+
+/// Successful reject-list trash actions plus cards actually about to be shown.
+fn delivery_mail(
+    user: &UserId,
+    taken: &[MessageMeta],
+    applied: &RuleApplication,
+    state: &UserState,
+    built: &[Built],
+) -> Vec<ListMail> {
+    let mut mail: Vec<ListMail> = built.iter().map(|b| b.delivery_mail.clone()).collect();
+    let rules: Vec<_> = state.rules.iter().map(|r| r.rule.clone()).collect();
+    for meta in taken {
+        let Some(rule) = domain::first_match(&rules, meta) else {
+            continue;
+        };
+        if rule.kind != RuleKind::RejectList {
+            continue;
+        }
+        let mut name = Vec::new();
+        name.extend_from_slice(user.0.as_bytes());
+        name.extend_from_slice(meta.mailbox.0.as_bytes());
+        name.extend_from_slice(meta.id.as_str().as_bytes());
+        name.extend_from_slice(rule.rule_id.0.as_bytes());
+        let entry_id = Uuid::new_v5(&crate::services::rule_actions::NS_RULE_ACTION, &name);
+        if applied
+            .entries
+            .iter()
+            .any(|entry| entry.entry_id == entry_id)
+        {
+            mail.push(ListMail {
+                sender_key: meta.sender.as_str().to_owned(),
+                list_id: meta.facts.list_id.clone(),
+                mailbox_id: meta.mailbox,
+                received_at: meta.internal_date,
+                sender_display: plain_text(&meta.from_display, NAME_MAX),
+            });
+        }
+    }
+    mail
 }
 
 /// Step 14: the sealed cursor for the next page.
@@ -770,36 +876,120 @@ fn seal_error(e: TokenError) -> ApiError {
     }
 }
 
-/// Step 11: previews, then one classification pass for the page, then the cards.
+/// T-607b: the filing suggestion and the keep prompt for one card. Pure and in
+/// memory (FL-01 AC3), and a suggestion never files anything (FL-03 AC2).
+fn filing_dtos(
+    env: &Env<'_>,
+    sender_key: &str,
+    sender_domain: &str,
+    class: domain::MessageClass,
+) -> (SuggestionDto, Option<CategoryRefDto>) {
+    let input = FilingInput {
+        sender_key,
+        sender_domain,
+        class,
+        categories: &env.state.categories,
+        sender_stats: &env.state.sender_stats,
+    };
+    let has_file_rule = env.state.rules.iter().any(|stored| {
+        stored.rule.enabled
+            && stored.rule.kind == RuleKind::File
+            && stored.rule.matcher.sender.as_str() == sender_key
+    });
+    let suggestion = filing::suggest(&input);
+    let suggestion = SuggestionDto {
+        category_id: suggestion.category.map(|category| category.0),
+        name: suggestion
+            .name
+            .as_deref()
+            .map(|name| plain_text(name, CATEGORY_NAME_MAX)),
+        alternates: suggestion
+            .alternates
+            .iter()
+            .map(|(category, name)| CategoryRefDto {
+                category_id: category.0,
+                name: plain_text(name, CATEGORY_NAME_MAX),
+            })
+            .collect(),
+        confidence: suggestion.confidence.as_str(),
+    };
+    let keep_prompt =
+        filing::keep_prompt(&input, has_file_rule, env.tunables).map(|(category, name)| {
+            CategoryRefDto {
+                category_id: category.0,
+                name: plain_text(&name, CATEGORY_NAME_MAX),
+            }
+        });
+    (suggestion, keep_prompt)
+}
+
+/// The per-request bake-off gate: T-902 consent AND the T-906b switch, failing
+/// closed on missing records or store errors. Any gate injected on the state
+/// (integration tests drive the pipeline that way) opens it too; production
+/// leaves that field closed.
+async fn input_gate(app: &AppState, user: &UserId) -> crate::experiments::BakeoffGate {
+    let Ok(Some(user)) = app.ports.store.users().get(user).await else {
+        return crate::experiments::BakeoffGate::default();
+    };
+    let Ok(Some(switches)) = app.ports.store.config().get_classifiers().await else {
+        return crate::experiments::BakeoffGate::default();
+    };
+    crate::experiments::bakeoff_gate(
+        &user.record,
+        (switches.record.gemini_enabled, switches.record.jev_enabled),
+    )
+}
+
+/// The effective gate for this request: consent and the model switches, plus
+/// the gate injected on the state (tests). The injected field is `Default`
+/// (closed) in production, so it never widens the real gate there.
+fn effective_gate(env: &Env<'_>) -> BakeoffGate {
+    BakeoffGate {
+        gemini: env.gate.gemini || env.app.bakeoff_gate.gemini,
+        jev: env.gate.jev || env.app.bakeoff_gate.jev,
+    }
+}
+
+/// One card's fetched text. `text` is what the models see (the full fetch when
+/// the gate is open); `preview` is the truncated, sanitised card preview.
+struct Prepared {
+    meta: MessageMeta,
+    text: String,
+    preview: String,
+}
+
+/// Step 11: fetch each card's text, run one classification pass for the page
+/// (T-901), then build the cards.
 async fn build_cards(env: &Env<'_>, all: Vec<MessageMeta>) -> Result<Vec<Built>, ApiError> {
-    let previews: Vec<Option<(MessageMeta, String)>> =
-        bounded(all.into_iter().map(|m| fetch_preview(env, m))).await;
-    let previews: Vec<(MessageMeta, String)> = previews.into_iter().flatten().collect();
-    // One pipeline for every card on the page (T-901).
-    let to_classify: Vec<CardToClassify<'_>> = previews
+    let gate = effective_gate(env);
+    let prepared: Vec<Option<Prepared>> =
+        bounded(all.into_iter().map(|m| prepare(env, m, gate))).await;
+    let prepared: Vec<Prepared> = prepared.into_iter().flatten().collect();
+    // One pipeline for every card on the page (CL-01 AC1).
+    let to_classify: Vec<CardToClassify<'_>> = prepared
         .iter()
-        .map(|(meta, preview)| CardToClassify {
-            meta,
-            stripped_text: preview,
+        .map(|p| CardToClassify {
+            meta: &p.meta,
+            stripped_text: &p.text,
             provider: env
                 .live
-                .get(&meta.mailbox.0)
+                .get(&p.meta.mailbox.0)
                 .map_or(Provider::Gmail, |l| l.provider),
         })
         .collect();
     let classified = classify_page(
         &env.app.classifiers,
-        env.app.bakeoff_gate,
+        gate,
         env.app.ports.clock.now(),
         &to_classify,
     )
     .await;
     drop(to_classify);
     let built: Vec<Option<Built>> = bounded(
-        previews
+        prepared
             .into_iter()
             .zip(classified)
-            .map(|((meta, preview), classified)| build_card(env, meta, preview, classified)),
+            .map(|(prepared, classified)| build_card(env, prepared, classified)),
     )
     .await
     .into_iter()
@@ -807,15 +997,33 @@ async fn build_cards(env: &Env<'_>, all: Vec<MessageMeta>) -> Result<Vec<Built>,
     Ok(built.into_iter().flatten().collect())
 }
 
-/// Step 11, first half: the preview for one card. `None` drops the message
+/// Step 11, first half: the text for one card. `None` drops the message
 /// silently (FD-04 AC1).
-async fn fetch_preview(env: &Env<'_>, meta: MessageMeta) -> Option<(MessageMeta, String)> {
+async fn prepare(env: &Env<'_>, meta: MessageMeta, gate: BakeoffGate) -> Option<Prepared> {
     let live = env.live.get(&meta.mailbox.0)?;
     let provider = env.app.ports.mail(live.provider);
-    match provider.get_preview(&live.ctx, &meta.id).await {
-        Ok(text) => Some((meta, plain_text(&text, PREVIEW_MAX_CHARS))),
+    let text = if gate.is_open() {
+        provider
+            .get_text(&live.ctx, &meta.id, domain::redact::MODEL_TEXT_FETCH_CHARS)
+            .await
+    } else {
+        provider.get_preview(&live.ctx, &meta.id).await
+    };
+    match text {
+        Ok(text) => {
+            let preview = domain::text::sanitise_plain(&text, PREVIEW_MAX_CHARS);
+            Some(Prepared {
+                meta,
+                text,
+                preview,
+            })
+        }
         Err(MailError::NotFound) => None,
-        Err(_) => Some((meta, String::new())),
+        Err(_) => Some(Prepared {
+            meta,
+            text: String::new(),
+            preview: String::new(),
+        }),
     }
 }
 
@@ -823,18 +1031,18 @@ async fn fetch_preview(env: &Env<'_>, meta: MessageMeta) -> Option<(MessageMeta,
 /// guarded header-rules answer; model output only travels inside the token.
 async fn build_card(
     env: &Env<'_>,
-    meta: MessageMeta,
-    preview: String,
+    prepared: Prepared,
     classified: ClassifiedCard,
 ) -> Result<Option<Built>, ApiError> {
-    let Some(live) = env.live.get(&meta.mailbox.0) else {
-        return Ok(None);
-    };
-    let provider = env.app.ports.mail(live.provider);
+    let Prepared { meta, preview, .. } = prepared;
     let ClassifiedCard {
         badge: shown,
         payload,
     } = classified;
+    let Some(live) = env.live.get(&meta.mailbox.0) else {
+        return Ok(None);
+    };
+    let provider = env.app.ports.mail(live.provider);
     let (method, one_click) = match HeaderRules::unsubscribe_route(&meta.facts) {
         UnsubscribeRoute::OneClick(_) => ("one_click", true),
         UnsubscribeRoute::Mailto(_) => ("mailto", false),
@@ -869,6 +1077,11 @@ async fn build_card(
         None
     };
     let sender_name = plain_text(&meta.from_display, NAME_MAX);
+    // T-607b: the filing suggestion and the keep prompt (FL-01, FL-03, FL-04,
+    // SW-04). `filing_dtos` stays pure and in memory (FL-01 AC3) and never
+    // files anything (FL-03 AC2).
+    let (suggestion, keep_prompt) =
+        filing_dtos(env, &sender_key, meta.sender.domain(), shown.class);
     let card = CardDto {
         mailbox_id: meta.mailbox.0,
         message_id: meta.id.as_str().to_owned(),
@@ -882,17 +1095,25 @@ async fn build_card(
         class: shown.class.as_str(),
         unsubscribe_method: method,
         has_one_click: one_click && shown.class == domain::MessageClass::List,
-        suggestion: None,
-        keep_prompt: None,
+        suggestion: Some(suggestion),
+        keep_prompt,
         skip_count: skip_count(env.skips, &meta),
         boss,
         provider_web_url: provider.web_url(&live.address, &meta.id),
         classification_token,
         classifier_id: env.session.is_admin.then(|| HEADER_RULES_ID.to_owned()),
     };
+    let delivery_mail = ListMail {
+        sender_key: sender_key.clone(),
+        list_id: meta.facts.list_id.clone(),
+        mailbox_id: meta.mailbox,
+        received_at: meta.internal_date,
+        sender_display: sender_name.clone(),
+    };
     Ok(Some(Built {
         card,
         sender_key,
         display: sender_name,
+        delivery_mail,
     }))
 }

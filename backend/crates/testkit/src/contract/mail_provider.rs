@@ -59,6 +59,49 @@ fn seed(from: &str, subject: &str, date_secs: i64, labels: &[&str]) -> SeedMessa
     }
 }
 
+/// Verify the text-fetch extension preserves the preview contract.
+///
+/// # Errors
+/// Returns the contract case name if either fetch fails or the text differs.
+pub async fn get_text_matches_preview_at_300(t: &MailTarget) -> Result<(), String> {
+    let mut message = seed("text", "text-contract", 100, &["INBOX"]);
+    message.preview_text = "word e\u{301} 界 ".repeat(600);
+    let id = t.seeder.seed(&message).await?;
+    let preview = t
+        .provider
+        .get_preview(&t.ctx, &id)
+        .await
+        .map_err(|_| "get_text_matches_preview_at_300 preview")?;
+    let text = t
+        .provider
+        .get_text(&t.ctx, &id, 300)
+        .await
+        .map_err(|_| "get_text_matches_preview_at_300 text")?;
+    if preview != text {
+        return Err("get_text_matches_preview_at_300 mismatch".to_owned());
+    }
+    let longer = t
+        .provider
+        .get_text(&t.ctx, &id, 4000)
+        .await
+        .map_err(|_| "get_text_matches_preview_at_300 longer")?;
+    if longer.chars().count() <= text.chars().count()
+        || domain::text::sanitise_plain(&longer, 300) != preview
+    {
+        return Err("get_text_matches_preview_at_300 extended text missing".to_owned());
+    }
+    if !t
+        .provider
+        .get_text(&t.ctx, &id, 0)
+        .await
+        .map_err(|_| "get_text_matches_preview_at_300 zero")?
+        .is_empty()
+    {
+        return Err("get_text_matches_preview_at_300 zero cap".to_owned());
+    }
+    Ok(())
+}
+
 /// Each call to `make` returns a fresh, empty mailbox.
 ///
 /// # Errors
@@ -70,6 +113,8 @@ where
     Fut: std::future::Future<Output = MailTarget>,
 {
     if groups.read {
+        let t = make().await;
+        get_text_matches_preview_at_300(&t).await?;
         // Three messages with distinct dates come back newest first.
         {
             let t = make().await;

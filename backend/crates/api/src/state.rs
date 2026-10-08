@@ -20,6 +20,9 @@ pub struct AppState {
     pub invite_mailer: Arc<dyn InviteMailer>,
     /// The bake-off models (T-901); empty until T-904 and T-905 wire them.
     pub classifiers: crate::classify::ClassifierSet,
-    /// Stand-in for the per-request gate (T-902 consent AND T-906b switch); closed.
+    /// The per-request bake-off gate; a stand-in for T-902 consent AND the
+    /// T-906b switch, closed here and opened only by integration tests.
     pub bakeoff_gate: crate::classify::BakeoffGate,
+    /// National holiday defaults, injectable for delivery checks.
+    pub business_calendar: Arc<domain::delivery::BusinessCalendar>,
 }

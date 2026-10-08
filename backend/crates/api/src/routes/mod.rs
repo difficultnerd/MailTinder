@@ -5,6 +5,7 @@ pub mod admin_users;
 pub mod categories;
 pub mod experiments;
 pub mod feed;
+pub mod history;
 pub mod invite_requests;
 pub mod invites;
 pub mod mailboxes;
@@ -40,6 +41,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/swipes", post(swipes::create))
         .route("/api/v1/swipes/undo", post(swipes::undo))
         .route("/api/v1/progress", get(progress::get_progress))
+        .route("/api/v1/history", get(history::list))
         .route("/api/v1/needs-attention", get(needs_attention::list))
         .route(
             "/api/v1/needs-attention/:item_id/resolve",

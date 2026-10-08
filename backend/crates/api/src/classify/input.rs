@@ -1,41 +1,49 @@
-//! Building the model input (T-901 stub; T-903 replaces the body).
-
+//! The complete model input allowlist; no generic header pass-through.
+use domain::redact::{
+    from_domain, is_english, redact, text_tokens_bucket, truncate_words, word_count, InputFacts,
+    INPUT_VERSION,
+};
 use domain::MessageMeta;
 use ports::ClassifierInput;
 
-/// The input format version. T-903 bumps it.
-pub const INPUT_VERSION: &str = "0";
-/// The question version. T-903 replaces it with its own constant.
-pub const QUESTION_VERSION: &str = "0";
-
-/// Until T-903 lands: subject and text are empty strings, `input_version` "0".
-pub fn build_input(meta: &MessageMeta, _stripped_text: &str) -> ClassifierInput {
-    let facts = &meta.facts;
-    let from_domain = meta
-        .from_address
-        .rsplit_once('@')
-        .map(|(_, d)| d.trim_matches('>').to_lowercase())
-        .unwrap_or_default();
-    ClassifierInput {
-        from_display: String::new(),
-        from_domain,
-        list_id: facts.list_id.clone(),
-        has_list_unsubscribe: facts.list_unsubscribe_present,
-        has_list_unsubscribe_post: facts
+#[must_use]
+pub fn build_input(meta: &MessageMeta, stripped_text: &str) -> (ClassifierInput, InputFacts) {
+    let text = redact(stripped_text);
+    let facts = InputFacts {
+        text_tokens_bucket: text_tokens_bucket(word_count(&text)),
+        lang_is_english: is_english(&text),
+    };
+    let input = ClassifierInput {
+        from_display: redact(&meta.from_display).chars().take(100).collect(),
+        from_domain: from_domain(&meta.from_address),
+        list_id: meta
+            .facts
+            .list_id
+            .as_deref()
+            .map(|id| redact(id).chars().take(200).collect()),
+        has_list_unsubscribe: meta.facts.list_unsubscribe_present,
+        has_list_unsubscribe_post: meta
+            .facts
             .list_unsubscribe
             .as_ref()
-            .is_some_and(|o| o.one_click_https.is_some()),
-        precedence: facts.precedence_bulk.then(|| "bulk".to_owned()),
-        auto_submitted: facts.auto_submitted.then(|| "auto-generated".to_owned()),
-        esp_header_names: facts.esp_hint.iter().cloned().collect(),
-        auth_summary: if facts.from_authenticated {
-            "pass"
-        } else {
-            "none"
-        }
-        .to_owned(),
-        subject: String::new(),
-        text: String::new(),
+            .is_some_and(|options| options.one_click_https.is_some()),
+        precedence: meta.facts.precedence_bulk.then(|| "bulk".to_owned()),
+        auto_submitted: meta
+            .facts
+            .auto_submitted
+            .then(|| "auto-generated".to_owned()),
+        esp_header_names: meta.facts.esp_hint.iter().cloned().collect(),
+        auth_summary: format!(
+            "from_authenticated={}",
+            if meta.facts.from_authenticated {
+                "pass"
+            } else {
+                "fail"
+            }
+        ),
+        subject: redact(&meta.subject).chars().take(300).collect(),
+        text: truncate_words(&text),
         input_version: INPUT_VERSION,
-    }
+    };
+    (input, facts)
 }

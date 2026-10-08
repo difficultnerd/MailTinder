@@ -309,16 +309,7 @@ pub enum AgeBucket {
     Over5y,
 }
 
-/// A text-token bucket for the bake-off.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TextTokensBucket {
-    #[serde(rename = "<100")]
-    Under100,
-    #[serde(rename = "100-300")]
-    T100To300,
-    #[serde(rename = ">300")]
-    Over300,
-}
+pub use domain::redact::TextTokensBucket;
 
 /// A model error code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -19,9 +19,8 @@ use std::time::Duration;
 
 use api::classify::{
     age_bucket, classify_page, BakeoffGate, CardToClassify, ClassifiedCard, ClassifierSet,
-    MODEL_CONCURRENCY,
+    MODEL_CONCURRENCY, MODEL_TIMEOUT,
 };
-use api::error::ApiError;
 use api::routes::feed::{ClassificationPayload, FeedRequest};
 use api::routes::swipes::{ActionDto, SwipeRequest};
 use api::sealed::{SealedTokens, TokenType};
@@ -244,20 +243,16 @@ async fn bake_2_both_models_called_per_card() -> TestResult {
     );
     let metas: Vec<MessageMeta> = (0..20).map(|n| meta(n, list_facts())).collect();
     run(&set, OPEN, &metas).await;
-    let key =
-        |i: &ports::ClassifierInput| (i.from_domain.clone(), i.list_id.clone(), i.subject.clone());
     assert_eq!(g.calls().len(), 20);
     assert_eq!(j.calls().len(), 20);
     // Same inputs, element by element (completion order is not significant).
+    // T-903 fills the subject from the card, so it is a distinct per-card key.
     let mut gc = g.calls();
     let mut jc = j.calls();
-    gc.sort_by_key(|i| format!("{}{}", i.from_domain, i.auth_summary));
-    jc.sort_by_key(|i| format!("{}{}", i.from_domain, i.auth_summary));
+    gc.sort_by(|a, b| a.subject.cmp(&b.subject));
+    jc.sort_by(|a, b| a.subject.cmp(&b.subject));
     for (a, b) in gc.iter().zip(jc.iter()) {
         assert_eq!(a, b);
-        assert_eq!(key(a), key(b));
-        // No subject or text before T-903.
-        assert!(a.subject.is_empty() && a.text.is_empty());
     }
     Ok(())
 }
@@ -272,11 +267,21 @@ async fn bake_2_concurrency_never_exceeds_cap() -> TestResult {
     };
     let (g, j, set) = pair(slow(), slow());
     let metas: Vec<MessageMeta> = (0..50).map(|n| meta(n, list_facts())).collect();
-    run(&set, OPEN, &metas).await;
-    assert_eq!(g.call_count(), 50);
+    let start = tokio::time::Instant::now();
+    let out = run(&set, OPEN, &metas).await;
+    // The cap holds for both models, and the page as a whole is bounded by the
+    // one model timeout (trap 1), not one timeout per wave.
     assert!(g.max_in_flight() <= MODEL_CONCURRENCY);
     assert!(j.max_in_flight() <= MODEL_CONCURRENCY);
     assert!(g.max_in_flight() > 1);
+    assert!(start.elapsed() <= MODEL_TIMEOUT);
+    // Cards not reached before the deadline are recorded as timeouts, and every
+    // card still carries a prediction for each model.
+    assert!(out.iter().all(|c| c
+        .payload
+        .bakeoff
+        .as_ref()
+        .is_some_and(|b| b.gemini.is_some() && b.jev.is_some())));
     Ok(())
 }
 
@@ -649,57 +654,54 @@ async fn bake_5_no_model_call_at_swipe() -> TestResult {
 }
 
 #[tokio::test(start_paused = true)]
-async fn bake_5_expired_token_refused() -> TestResult {
+async fn bake_5_expired_token_swipe_proceeds() -> TestResult {
     let w = World::new().await?;
     let session = w.session(1);
     let id = w.seed("news", list_facts(), 10);
     let token = w
         .seal(&session, id.as_str(), MessageClass::List, 60)
         .await?;
-    // The token expires before the swipe is sent.
+    // The token expires before the swipe is sent: not an error, the swipe
+    // proceeds and no eval record is written (S7 5.5).
     w.fakes.clock.advance(time::Duration::seconds(120));
-    let err = swipe(
+    let result = swipe(
         &w.app,
         &session,
         Uuid::from_u128(1),
         w.request(id.as_str(), ActionDto::Keep, token),
     )
-    .await
-    .err()
-    .ok_or("must be refused")?;
-    assert!(matches!(err, ApiError::InvalidRequest { .. }));
+    .await?;
+    assert_eq!(result.outcome, SwipeOutcome::Kept);
     Ok(())
 }
 
 #[tokio::test(start_paused = true)]
-async fn cl_03_ac4_swipe_rejects_tampered_or_other_user_token() -> TestResult {
+async fn cl_03_ac4_open_failure_swipe_proceeds() -> TestResult {
     let (w, _g, _j, token, id) = world_with_card().await?;
-    // Tampered: flip the last character.
+    // Tampered: flip the last character. AES-GCM cannot tell this from an
+    // earlier session or expiry, so the swipe proceeds with no eval record
+    // (S7 5.5).
     let mut bytes = token.clone().into_bytes();
     let last = bytes.len() - 1;
     bytes[last] = if bytes[last] == b'A' { b'B' } else { b'A' };
     let tampered = String::from_utf8(bytes)?;
-    let err = swipe(
+    let result = swipe(
         &w.app,
         &w.session(1),
         Uuid::from_u128(1),
         w.request(&id, ActionDto::Keep, tampered),
     )
-    .await
-    .err()
-    .ok_or("tampered must be refused")?;
-    assert!(matches!(err, ApiError::InvalidRequest { .. }));
-    // Sealed to another session: cannot be opened here.
-    let err = swipe(
+    .await?;
+    assert_eq!(result.outcome, SwipeOutcome::Kept);
+    // Sealed to another session: it cannot be opened here and still proceeds.
+    let result = swipe(
         &w.app,
         &w.session(2),
         Uuid::from_u128(2),
         w.request(&id, ActionDto::Keep, token),
     )
-    .await
-    .err()
-    .ok_or("other session must be refused")?;
-    assert!(matches!(err, ApiError::InvalidRequest { .. }));
+    .await?;
+    assert_eq!(result.outcome, SwipeOutcome::Kept);
     Ok(())
 }
 
