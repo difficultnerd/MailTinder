@@ -30,6 +30,22 @@ Phone mode (T-1108c, `demo.sh --phone`) adds two things:
   `404` even with the code. Paths containing `..` or an encoded slash/dot
   (`%2f`, `%2e`) are refused before the `/fake-google/` prefix is matched
   (review finding N1).
+
+Dev mode (T-1113, `demo.sh --dev`) adds `--dev-upstream
+http://127.0.0.1:<port>`: instead of serving the static release build, the front
+door reverse-proxies `/` (and the Flutter dev server's websocket) to a running
+`flutter run -d web-server`, while `/api/**` keeps going to the api. The dev
+server has no access control of its own, so it binds loopback and every request
+still passes the same access control and the same firebase.json `hosting.headers`
+as the normal demo. The websocket relay uses the pinned `websockets` package
+(installed by demo.sh into target/demo/venv); the HTTP handler peeks the first
+bytes of each connection so the upgrade is handed to that relay untouched.
+
+In the non-phone `--dev` run there is no access code (`access is None`): the
+front door has no authentication at all, so the websocket upgrade is instead
+guarded by an `Origin`/`Host` check (review F2) that refuses a cross-site page
+or a DNS-rebound name. `--phone --dev` keeps the access code; `--public-origin`
+names the tunnel origin so the legitimate page still passes the check.
 """
 
 import argparse
@@ -40,6 +56,8 @@ import hmac
 import http.client
 import json
 import mimetypes
+import re
+import select
 import socket
 import sys
 import threading
@@ -47,6 +65,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 mimetypes.add_type("application/wasm", ".wasm")
 mimetypes.add_type("text/javascript", ".js")
@@ -65,6 +84,26 @@ FORWARD_REQUEST_HEADERS = (
 SKIP_RESPONSE_HEADERS = frozenset(
     {"transfer-encoding", "content-length", "connection", "keep-alive"}
 )
+
+# Dev mode (T-1113): headers forwarded to the `flutter run -d web-server`
+# upstream so the browser gets the same assets it would from the dev server.
+DEV_FORWARD_REQUEST_HEADERS = (
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "content-type",
+    "cookie",
+    "origin",
+    "range",
+    "if-none-match",
+    "if-modified-since",
+)
+
+# A websocket upgrade must be answered by the relay, not the HTTP handler, so
+# the first bytes of a connection are peeked (non-destructively) before
+# BaseHTTPRequestHandler consumes them.
+WEBSOCKET_PEEK_BYTES = 65536
+WEBSOCKET_PEEK_TIMEOUT_S = 5.0
 
 # The one fake-google path the browser needs, and the standard viewport meta
 # every served page must carry so the demo is usable on a phone (Behaviour 3).
@@ -123,6 +162,99 @@ def path_is_unsafe(path: str) -> bool:
         or "%2e" in lowered
         or "%5c" in lowered
     )
+
+
+def header_value(head: bytes, name: str) -> str | None:
+    """Value of `name` in a raw request head, or None (case-insensitive)."""
+    wanted = name.lower().encode("ascii")
+    for line in head.split(b"\r\n")[1:]:
+        if not line:
+            break
+        key, sep, value = line.partition(b":")
+        if sep and key.strip().lower() == wanted:
+            return value.strip().decode("latin-1")
+    return None
+
+
+# -- dev-mode websocket Origin/Host check (T-1113 review F2) -------------------
+# In the non-phone `--dev` run the front door has no access code, so without a
+# check any web page the owner visits could open a websocket to the loopback
+# front door (cross-site websocket hijacking) or reach it through DNS rebinding
+# and be relayed to the Flutter debug websocket. The upgrade is therefore
+# accepted only when the Origin is absent (a non-browser client, not the
+# cross-site threat), a loopback origin (the front door reached directly) or the
+# configured public origin (the tunnel in --phone mode), and the Host names the
+# same loopback host or public origin.
+_LOOPBACK_HOST_RE = re.compile(r"^127(\.[0-9]{1,3}){3}$")
+
+
+def is_loopback_hostname(host: str) -> bool:
+    """True for a loopback hostname (127.0.0.0/8, localhost or IPv6 ::1)."""
+    return host in ("localhost", "::1") or bool(_LOOPBACK_HOST_RE.match(host))
+
+
+def origin_is_allowed(origin: str | None, public_origin: str | None) -> bool:
+    """True when a websocket handshake `Origin` is acceptable (review F2)."""
+    if origin is None:
+        return True
+    origin = origin.strip().rstrip("/")
+    if public_origin is not None and origin.lower() == public_origin.lower():
+        return True
+    try:
+        hostname = urllib.parse.urlsplit(origin).hostname
+    except ValueError:
+        return False
+    return is_loopback_hostname(hostname or "")
+
+
+def host_is_allowed(host_header: str | None, public_origin: str | None) -> bool:
+    """True when a websocket handshake `Host` names the front door (review F2).
+
+    A rebound name resolves to loopback but still carries its own Host, so this
+    refuses it as well as a foreign Host in general.
+    """
+    if not host_header:
+        return True
+    host_header = host_header.strip()
+    if host_header.startswith("["):
+        hostname = host_header[1:].split("]", 1)[0]
+    else:
+        hostname = host_header.split(":", 1)[0]
+    if is_loopback_hostname(hostname):
+        return True
+    if public_origin is not None:
+        try:
+            public_host = urllib.parse.urlsplit(public_origin).hostname or ""
+        except ValueError:
+            public_host = ""
+        if hostname.lower() == public_host.lower():
+            return True
+    return False
+
+
+def relay_websocket(client: Any, upstream: Any) -> None:
+    """Copy messages both ways between two websockets connections (T-1113).
+
+    The pinned `websockets` package owns the framing on both legs; this only
+    pumps whole messages, so no frame is ever hand-assembled.
+    """
+
+    def pump(source: Any, sink: Any) -> None:
+        try:
+            while True:
+                sink.send(source.recv())
+        except Exception:
+            pass
+        finally:
+            try:
+                sink.close()
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=pump, args=(client, upstream), daemon=True)
+    thread.start()
+    pump(upstream, client)
+    thread.join()
 
 
 class AccessControl:
@@ -198,6 +330,16 @@ def main() -> None:
         default=None,
         help="phone mode: loopback fake-google base URL to proxy the authorise path",
     )
+    parser.add_argument(
+        "--dev-upstream",
+        default=None,
+        help="dev mode (T-1113): loopback flutter run -d web-server base URL to proxy / to",
+    )
+    parser.add_argument(
+        "--public-origin",
+        default=None,
+        help="phone mode: the origin the front door is reached at (websocket Origin/Host check)",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -211,6 +353,8 @@ def main() -> None:
         code = Path(args.access_code_file).read_text().strip()
         access = AccessControl(code)
     fake_google = parse_api(args.fake_google) if args.fake_google else None
+    dev_upstream = parse_api(args.dev_upstream) if args.dev_upstream else None
+    public_origin = args.public_origin.strip().rstrip("/") if args.public_origin else None
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -226,6 +370,129 @@ def main() -> None:
         def log_message(self, format: str, *log_args: object) -> None:  # noqa: A002
             sys.stderr.write("e2e-host: " + (format % log_args) + "\n")
             sys.stderr.flush()
+
+        # -- dev-mode websocket handoff (T-1113) -------------------------------
+        # A websocket upgrade cannot be answered by BaseHTTPRequestHandler, and
+        # by the time its do_GET runs the request bytes are already consumed, so
+        # the connection is peeked (non-destructively) first and, when it is an
+        # upgrade, handed straight to the `websockets` relay.
+        def handle(self) -> None:
+            if dev_upstream is not None:
+                head = self._peek_request_head()
+                if self._is_websocket_upgrade(head):
+                    self._serve_dev_websocket(head)
+                    return
+            super().handle()
+
+        def _peek_request_head(self) -> bytes:
+            sock = self.connection
+            data = b""
+            deadline = time.monotonic() + WEBSOCKET_PEEK_TIMEOUT_S
+            while b"\r\n\r\n" not in data:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                ready, _, _ = select.select([sock], [], [], remaining)
+                if not ready:
+                    break
+                try:
+                    chunk = sock.recv(WEBSOCKET_PEEK_BYTES, socket.MSG_PEEK)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                # MSG_PEEK returns the same bytes until they are consumed; wait
+                # for more rather than spinning while the head is still arriving.
+                if chunk == data:
+                    time.sleep(0.02)
+                    continue
+                data = chunk
+            return data
+
+        @staticmethod
+        def _is_websocket_upgrade(head: bytes) -> bool:
+            if not head:
+                return False
+            first_line = head.split(b"\r\n", 1)[0]
+            if not first_line.upper().startswith(b"GET "):
+                return False
+            lowered = head.lower()
+            return b"\r\nupgrade:" in lowered and b"websocket" in lowered
+
+        def _serve_dev_websocket(self, head: bytes) -> None:
+            assert dev_upstream is not None
+            verdict = "ok"
+            if access is not None:
+                verdict = access.verdict(header_value(head, "Authorization"))
+            if verdict != "ok":
+                self._deny_websocket(429 if verdict == "blocked" else 401)
+                return
+            # The non-phone `--dev` run has no access code, so refuse a
+            # cross-site or DNS-rebound websocket by Origin and Host (F2).
+            if not origin_is_allowed(
+                header_value(head, "Origin"), public_origin
+            ) or not host_is_allowed(header_value(head, "Host"), public_origin):
+                self._deny_websocket(403)
+                return
+            try:
+                from websockets.server import ServerProtocol
+                from websockets.sync.client import connect
+                from websockets.sync.server import ServerConnection
+            except ImportError:
+                self.send_error(500, "dev mode needs the websockets package")
+                return
+            host, port, prefix = dev_upstream
+            connection = ServerConnection(self.connection, ServerProtocol())
+            state: dict[str, Any] = {}
+
+            def process_request(client: Any, request: Any) -> None:
+                # The upstream leg is a fresh websockets client connection; the
+                # package owns its framing and the browser-facing one alike.
+                offered = request.headers.get("Sec-WebSocket-Protocol")
+                subprotocols = [p.strip() for p in offered.split(",") if p.strip()] if offered else None
+                state["upstream"] = connect(
+                    f"ws://{host}:{port}{prefix}{request.path}",  # nosemgrep: python.django.security.injection.tainted-url-host.tainted-url-host, javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+                    subprotocols=subprotocols,
+                    max_size=None,
+                    open_timeout=30,
+                )
+                return None
+
+            def process_response(client: Any, request: Any, response: Any) -> None:
+                upstream = state.get("upstream")
+                subprotocol = getattr(upstream, "subprotocol", None)
+                if subprotocol:
+                    response.headers["Sec-WebSocket-Protocol"] = subprotocol
+                return None
+
+            connection.handshake(
+                process_request=process_request,
+                process_response=process_response,
+            )
+            upstream = state.get("upstream")
+            if upstream is None:
+                return
+            try:
+                relay_websocket(connection, upstream)
+            finally:
+                for peer in (upstream, connection):
+                    try:
+                        peer.close()
+                    except Exception:
+                        pass
+
+        def _deny_websocket(self, status: int) -> None:
+            reason = http.client.responses.get(status, "")
+            lines = [f"HTTP/1.1 {status} {reason}"]
+            if status == 429:
+                lines.append(f"Retry-After: {int(BLOCK_SECONDS)}")
+            if status == 401:
+                lines.append('WWW-Authenticate: Basic realm="demo"')
+            lines.append("Content-Length: 0")
+            lines.append("Connection: close")
+            lines.append("")
+            lines.append("")
+            self.connection.sendall("\r\n".join(lines).encode("ascii"))
 
         # -- access control (Behaviour 2) --------------------------------------
         def _gate(self) -> bool:
@@ -282,6 +549,33 @@ def main() -> None:
                     headers[name] = value
             self._relay(method, api_host, api_port, path, body=body, headers=headers)
 
+        # -- dev-mode app proxy (T-1113) ---------------------------------------
+        def _dev_proxy(self, method: str) -> None:
+            # The dev server is loopback-only and has no access control of its
+            # own: everything reaches it through this front door, which already
+            # ran `_gate` and adds the firebase.json headers.
+            assert dev_upstream is not None
+            path = self.path.split("?", 1)[0]
+            sys.stderr.write(f"e2e-host: {method} {path} (dev)\n")
+            sys.stderr.flush()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else None
+            host, port, prefix = dev_upstream
+            headers = {"X-Forwarded-For": "127.0.0.1"}
+            for name in DEV_FORWARD_REQUEST_HEADERS:
+                value = self.headers.get(name)
+                if value is not None:
+                    headers[name] = value
+            self._relay(
+                method,
+                host,
+                port,
+                prefix + self.path,
+                body=body,
+                headers=headers,
+                config_headers=path,
+            )
+
         # -- fake-google authorise proxy (Behaviour 0d) ------------------------
         def _fake_google(self, method: str, path: str) -> None:
             if method != "GET" or path != FAKE_GOOGLE_AUTHORISE_PATH or fake_google is None:
@@ -307,6 +601,7 @@ def main() -> None:
             path: str,
             body: bytes | None = None,
             headers: dict[str, str] | None = None,
+            config_headers: str | None = None,
         ) -> None:
             conn = http.client.HTTPConnection(host, port, timeout=30)
             conn.request(method, path, body=body, headers=headers or {})
@@ -323,6 +618,10 @@ def main() -> None:
                     )
                     continue
                 self.send_header(key, value)
+            # Dev mode keeps the same firebase.json security headers as normal
+            # mode (T-1113), matched against the browser-facing path.
+            if config_headers is not None:
+                self._apply_headers(config_headers)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -343,6 +642,11 @@ def main() -> None:
                 return
             if path.startswith("/fake-google/"):
                 self._fake_google(method, path)
+                return
+            if dev_upstream is not None:
+                # Dev mode serves the app from `flutter run -d web-server`
+                # instead of the static release build (T-1113).
+                self._dev_proxy(method)
                 return
             if method in ("GET", "HEAD"):
                 self._serve_file(self.path.lstrip("/").split("?", 1)[0])
