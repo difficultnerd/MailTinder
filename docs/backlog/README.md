@@ -156,6 +156,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1109](T-1109-mutation-testing-pilot.md) | Mutation testing pilot | M11 | sonnet | T-004, T-104, T-105a, T-109 |
 | [T-1110](T-1110-property-tests-hostile-input.md) | Property tests for every parser of hostile input | M11 | sonnet | T-102, T-306, T-406, T-701 |
 | [T-1111](T-1111-visual-and-accessibility-regression.md) | Screenshot and accessibility regression tests | M11 | sonnet | T-1001a, T-1002b, T-1003, T-1005, T-1006a |
+| [T-1111a](T-1111a-pin-flutter-version-in-ci.md) | Pin the Flutter version CI uses | M11 | sonnet | T-1111 |
 | [T-1112a](T-1112a-unsub-e2e-startup-mode.md) | unsub service e2e start-up mode | M11 | strong | T-500b, T-500c, T-701, T-708 |
 | [T-1112b](T-1112b-local-job-runner.md) | Local job runner for e2e mode | M11 | strong | T-500b, T-500c |
 | [T-1112c](T-1112c-reject-reaches-unsubscribe.md) | Wire the runner; reject -> unsubscribe proof | M11 | strong | T-1112a, T-1112b |
