@@ -81,6 +81,11 @@ fn endpoint(base: &Url, path: &str) -> String {
 /// the uploaded log folder (S10 3.3).
 const TEXT_CAP: usize = 200 * 1024;
 
+/// How long `tap` and `type_into` keep looking for a control before giving up. Flutter web builds its labelled semantics nodes
+/// shortly AFTER the page text is visible (slow on a cold CI runner), so a single lookup right after the text appears can miss
+/// a control that is a few hundred milliseconds from existing.
+const FIND_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Directory the harness writes failure artifacts to. `scripts/e2e.sh` points
 /// `MT_E2E_LOG_DIR` at `target/e2e-logs`, the folder the `e2e` CI job uploads.
 fn log_dir() -> PathBuf {
@@ -234,6 +239,22 @@ impl Ui {
         Ok(Self { client })
     }
 
+    /// Run a lookup script until it reports `true` or `FIND_TIMEOUT` passes. The scripts return `false` without side effects when
+    /// the control does not exist yet, so repeating them is safe.
+    async fn poll_script(&self, js: &str, args: Vec<Value>) -> Result<bool, E2eError> {
+        let deadline = Instant::now() + FIND_TIMEOUT;
+        loop {
+            let found = self.client.execute(js, args.clone()).await.map_err(wd)?;
+            if found.as_bool() == Some(true) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// Click the `flt-semantics` control whose `aria-label` is `label`.
     ///
     /// The labelled node is first tagged in the DOM, then clicked through
@@ -244,11 +265,9 @@ impl Ui {
     /// with (for example an element its hit test finds covered).
     pub async fn tap(&self, label: &str) -> Result<(), E2eError> {
         let marked = self
-            .client
-            .execute(MARK_TAPPABLE_JS, vec![json!(label)])
-            .await
-            .map_err(wd)?;
-        if marked.as_bool() != Some(true) {
+            .poll_script(MARK_TAPPABLE_JS, vec![json!(label)])
+            .await?;
+        if !marked {
             self.capture_failure(label).await;
             return Err(E2eError::NotFound(label.to_owned()));
         }
@@ -275,11 +294,9 @@ impl Ui {
     /// Type `text` into the labelled control.
     pub async fn type_into(&self, label: &str, text: &str) -> Result<(), E2eError> {
         let typed = self
-            .client
-            .execute(TYPE_JS, vec![json!(label), json!(text)])
-            .await
-            .map_err(wd)?;
-        if typed.as_bool() == Some(true) {
+            .poll_script(TYPE_JS, vec![json!(label), json!(text)])
+            .await?;
+        if typed {
             Ok(())
         } else {
             self.capture_failure(label).await;
