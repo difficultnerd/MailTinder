@@ -20,6 +20,7 @@ import fnmatch
 import http.client
 import json
 import mimetypes
+import socket
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -83,6 +84,11 @@ def main() -> None:
     parser.add_argument("--api", required=True)
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--port-file", default=None)
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback address to bind (default 127.0.0.1)",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -183,7 +189,15 @@ def main() -> None:
         def do_DELETE(self) -> None:  # noqa: N802
             self._proxy("DELETE") if self._is_api() else self.send_error(404)
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    # Bind the address the caller asked for. An IPv6 literal (::1) needs an
+    # AF_INET6 socket; everything else is IPv4. Previously this was the literal
+    # 127.0.0.1 and --host only changed the printed URL (T-1108a F2).
+    family = socket.AF_INET6 if ":" in args.host else socket.AF_INET
+
+    class _Server(ThreadingHTTPServer):
+        address_family = family
+
+    server = _Server((args.host, args.port), Handler)
     if args.port_file:
         Path(args.port_file).write_text(f"{server.server_address[1]}\n")
     print(f"PORT {server.server_address[1]}", flush=True)
