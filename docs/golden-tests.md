@@ -33,11 +33,17 @@ binding that does not force the test font, which the repository does not use.
 
 ## Platform and version
 
-Goldens are generated and verified on Linux only. They are captured with
-Flutter 3.47.6 stable (the version recorded in
-`docs/decisions/0001-flutter-web-csp.md` for this repository); a different
+Goldens are generated and verified on Linux only. They were captured with
+Flutter 3.47.6 stable, the version recorded in
+`docs/decisions/0001-flutter-web-csp.md` for this repository; a different
 Flutter or a non-Linux host can shift glyph rasterisation and will report a
 false mismatch. Regenerate only on Linux with that version.
+
+CI does **not** pin that version: the `dart` job in
+`.github/workflows/ci.yml` runs `subosito/flutter-action` with `channel: stable`
+and no `flutter-version`, so a stable-channel bump can change rasterisation and
+fail `flutter test` for every pull request. Pinning the CI version is tracked as
+`docs/backlog/T-1111a-pin-flutter-version-in-ci.md`.
 
 ## How to review a golden diff
 
@@ -54,6 +60,31 @@ false mismatch. Regenerate only on Linux with that version.
 If a golden fails in CI it writes the master, test and diff images to
 `app/test/golden/failures/`; the failing test names the screen and width.
 
+## Proving the goldens are a control
+
+Two things show the goldens catch a change, not merely record one.
+
+`golden_test_fails_when_a_widget_changes` in `screens_golden_test.dart` renders
+the sign-in screen at 360 logical pixels and runs the golden comparison twice:
+once against the committed 360-pixel golden (the same rendering, which must
+match) and once against the 390-pixel golden (a different rendering, which the
+comparison must reject). A recording comparator captures the rejection so the
+test can assert it while the run stays green. If the comparison ever stopped
+detecting a difference, the test fails.
+
+The same failure by hand, from a real run — change a colour in a screen (here
+the scaffold background in the shared `_theme()`), run
+`flutter test --tags golden`, and read the mismatch:
+
+    Golden "goldens/sign_in_360.png": Pixel test failed, 82.94%, 238872px diff detected.
+    Failure feedback can be found at app/test/golden/failures
+    ...
+    golden_screens_match_at_three_widths sign_in at 360px [E]
+      Test failed. See exception logs above.
+
+Revert the colour and the suite is green again. The master, test and diff images
+are left in `app/test/golden/failures/` (gitignored) for inspection.
+
 ## When to update a golden
 
 Update it when the visible change was intended and reviewed — a real copy,
@@ -65,6 +96,8 @@ regression these tests exist to catch.
 
 `a11y_test.dart` runs four guidelines over the same six screens:
 `androidTapTargetGuideline`, `iOSTapTargetGuideline`,
-`labeledTapTargetGuideline` and `textContrastGuideline`. A violation fails the
-suite; there are no blanket skips, and a genuine violation is fixed in the
-screen rather than waived.
+`labeledTapTargetGuideline` and `textContrastGuideline`. Each screen at each
+width is a separate test, so a run reports every violation rather than only the
+first, and the semantics handle is released in a `finally` even when a
+guideline fails. A violation fails the suite; there are no blanket skips, and a
+genuine violation is fixed in the screen rather than waived.
