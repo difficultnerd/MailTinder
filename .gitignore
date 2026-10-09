@@ -51,3 +51,5 @@ crash.log
 # Terraform provider caches (114MB each) must never be committed.
 # Local e2e process state and synthetic service logs.
 /target/
+# cargo-mutants install roots (a built executable must never be committed)
+tools/.cargo-mutants/
