@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use adapters_gcp::{
     production_clock, production_rng, CloudKms, CloudTasksScheduler, EnvelopeKeyService,
-    FirestoreConfig, FirestoreStore, GcpHttp, GoogleCallerVerifier, KmsSystemKeyService,
-    MetadataTokenSource, SecretManagerSecrets, SecretsConfig, SystemClock, TasksConfig,
-    TokenSource,
+    FirestoreConfig, FirestoreStore, GcpHttp, GcpTokenSource, GeminiClassifier, GeminiConfig,
+    GoogleCallerVerifier, KmsSystemKeyService, MetadataTokenSource, SecretManagerSecrets,
+    SecretsConfig, SystemClock, TasksConfig, TokenSource,
 };
 use adapters_gmail::identity::{
     GoogleIdentity, GoogleIdentityConfig, GOOGLE_AUTH_ENDPOINT, GOOGLE_JWKS_URI,
@@ -49,6 +49,9 @@ const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GOOGLEAPIS_ROOT: &str = "https://www.googleapis.com";
 /// The Cloud Tasks queue for unsubscribe jobs.
 const QUEUE_ID: &str = "unsubscribe";
+/// The default pinned Gemini Flash-Lite model version (T-904). Never an alias
+/// like `-latest`; override only with a pinned version through `GEMINI_MODEL`.
+const GEMINI_MODEL: &str = "gemini-2.0-flash-lite-001";
 
 /// A start-up failure. Nothing is printed through the print macros; the
 /// process logs one line through `tracing` and exits non-zero.
@@ -138,7 +141,7 @@ pub async fn run() -> Result<(), SetupError> {
     let classifiers = if e2e_requested() {
         crate::classify::ClassifierSet::default()
     } else {
-        build_classifiers(&ports).await
+        build_classifiers(&ports).await?
     };
     serve(ports, config, classifiers).await
 }
@@ -279,13 +282,36 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
     Ok((ports, base.with_keys(rate_key, email_lookup_key)))
 }
 
-/// Build the bake-off classifiers from secrets read once at start-up. `api` is
-/// the only service that loads the Jev key (S4 5.7).
-async fn build_classifiers(ports: &Ports) -> crate::classify::ClassifierSet {
-    crate::classify::ClassifierSet {
-        gemini: None,
+/// Build the bake-off classifiers: the Gemini classifier on Vertex AI (T-904)
+/// and the Jev classifier from the secret read once at start-up. `api` is the
+/// only service that loads the Jev key (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+async fn build_classifiers(ports: &Ports) -> Result<crate::classify::ClassifierSet, SetupError> {
+    Ok(crate::classify::ClassifierSet {
+        gemini: Some(build_gemini(ports)?),
         jev: build_jev(ports).await,
-    }
+    })
+}
+
+/// Build the Gemini classifier. The service-account token comes from the
+/// metadata server; no key exists (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+fn build_gemini(ports: &Ports) -> Result<Arc<dyn Classifier>, SetupError> {
+    let project = env("GOOGLE_CLOUD_PROJECT")?;
+    let model = env("GEMINI_MODEL").unwrap_or_else(|_| GEMINI_MODEL.to_owned());
+    let tokens: Arc<dyn GcpTokenSource> =
+        Arc::new(MetadataTokenSource::new(Arc::clone(&ports.clock)));
+    Ok(Arc::new(GeminiClassifier::new(
+        GeminiConfig::new(project, model),
+        Arc::clone(&ports.egress),
+        tokens,
+    )))
 }
 
 /// Build the Jev classifier. A missing or non-UTF-8 key leaves
@@ -330,8 +356,7 @@ async fn serve(
     classifiers: crate::classify::ClassifierSet,
 ) -> Result<(), SetupError> {
     let listen = SocketAddr::new(config.bind_host, config.port);
-    let mut state = crate::app_state(Arc::new(ports), Arc::new(config));
-    state.classifiers = classifiers;
+    let state = crate::app_state_with_classifiers(Arc::new(ports), Arc::new(config), classifiers);
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|_| SetupError::Adapter)?;

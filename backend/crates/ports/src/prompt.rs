@@ -1,9 +1,10 @@
 //! One byte-identical rendering and fixed questions for both model adapters.
 //!
-//! This lives in `ports` (next to [`crate::classifier::ClassifierInput`]) so
-//! that the API and both model adapter crates render exactly the same bytes
-//! and ask exactly the same questions (S10 BAKE-2). It is re-exported by
-//! `api::classify::prompt`.
+//! T-903 owns the question text and the input rendering; both the Gemini
+//! adapter (`adapters-gcp`) and the Jev adapter (`adapters-models`) must send
+//! byte-identical bytes, so the module lives beside
+//! [`crate::classifier::ClassifierInput`] and every classifier reaches it
+//! through `ports`. It is re-exported by `api::classify::prompt`.
 
 use crate::classifier::ClassifierInput;
 
