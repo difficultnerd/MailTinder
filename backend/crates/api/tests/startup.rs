@@ -518,3 +518,50 @@ async fn api_loopback_egress_rejects_non_loopback_ip_and_caps_body(
     assert_eq!(refused, Err(EgressError::ResponseTooLarge));
     Ok(())
 }
+
+/// T-1108c: with `MT_PUBLIC_BASE_URL` set the browser-facing authorisation URL
+/// is the tunnel's `${MT_PUBLIC_BASE_URL}/fake-google/...` (the one path
+/// `e2e_host.py` proxies to the loopback fake-google); unset it is exactly the
+/// loopback fake-google, unchanged.
+#[cfg(feature = "testkit")]
+#[test]
+fn demo_phone_signin_goes_through_the_front_door() -> Result<(), Box<dyn std::error::Error>> {
+    use api::startup::SetupError;
+    use api::startup_e2e::{public_auth_endpoint, public_base_url};
+    use url::Url;
+
+    let fake_google = Url::parse("http://127.0.0.1:4010")?;
+    // Unset: the loopback fake-google, exactly as before.
+    assert_eq!(
+        public_auth_endpoint(&fake_google, None)?.as_str(),
+        "http://127.0.0.1:4010/o/oauth2/v2/auth"
+    );
+    // Blank is treated as unset.
+    assert!(public_base_url(&|_| Some("   ".to_owned()))?.is_none());
+
+    // Set: the browser is sent to the public tunnel origin at the proxied path.
+    let public = Url::parse("https://demo-phone.trycloudflare.com")?;
+    assert_eq!(
+        public_auth_endpoint(&fake_google, Some(&public))?.as_str(),
+        "https://demo-phone.trycloudflare.com/fake-google/o/oauth2/v2/auth"
+    );
+    let lookup = |name: &str| {
+        if name == "MT_PUBLIC_BASE_URL" {
+            Some("https://demo-phone.trycloudflare.com".to_owned())
+        } else {
+            None
+        }
+    };
+    assert_eq!(
+        public_base_url(&lookup)?
+            .map(|url| url.to_string())
+            .as_deref(),
+        Some("https://demo-phone.trycloudflare.com/")
+    );
+    // A value that is not a URL is refused, not silently ignored.
+    assert!(matches!(
+        public_base_url(&|_| Some("not a url".to_owned())),
+        Err(SetupError::Invalid("MT_PUBLIC_BASE_URL"))
+    ));
+    Ok(())
+}

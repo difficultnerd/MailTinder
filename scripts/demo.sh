@@ -27,13 +27,27 @@ PGIDS=()
 START_S=$SECONDS
 DEMO_HOST="${DEMO_HOST:-127.0.0.1}"
 COMMAND="start"
+# Phone mode (T-1108c): a cloudflared quick tunnel to the front door plus a
+# generated access code. Test seams only: DEMO_CLOUDFLARED (binary path),
+# DEMO_CLOUDFLARED_SHA256 (pin file) and DEMO_TUNNEL_TARGET (target URL, still
+# required to be loopback) exist so the tunnel can be driven with a stub.
+PHONE=0
+ACCESS_CODE=""
+ACCESS_CODE_FILE=""
+PUBLIC_URL=""
+TUNNEL_TARGET=""
+CLOUDFLARED_PIN="${DEMO_CLOUDFLARED_SHA256:-$REPO/scripts/demo/cloudflared.sha256}"
 
 usage() {
   cat <<'EOF'
-demo.sh [start] [--host <loopback addr>]   start and leave the stack running
+demo.sh [start] [--host <loopback addr>] [--phone]   start and leave the stack running
 demo.sh stop                               stop and print the leak census
 demo.sh status                             is the stack running?
 demo.sh --check                            automatic start, fetch, stop
+
+--phone exposes the front door through a cloudflared quick tunnel protected by
+a generated access code. cloudflared must be the pinned release on PATH or at
+~/bin/cloudflared; --check and --phone cannot be combined.
 EOF
 }
 
@@ -43,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     stop) COMMAND="stop"; shift ;;
     status) COMMAND="status"; shift ;;
     --check) COMMAND="check"; shift ;;
+    --phone) PHONE=1; shift ;;
     --host) DEMO_HOST="${2:?--host needs an address}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "demo.sh: unknown argument: $1" >&2; exit 2 ;;
@@ -84,6 +99,155 @@ url_host() {
   esac
 }
 
+# ---------------------------------------------------------------- phone mode --
+# T-1108c: the tunnel target is the front door on loopback, never any of the
+# other services (behaviour 1). The URL form is parsed so an encoded or bracketed
+# spelling cannot slip a non-loopback host past the guard.
+
+# True when a URL's host is loopback (the same strict rule as --host).
+is_loopback_url() {
+  local url="$1" host
+  case "$url" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  host="$(python3 - "$url" <<'PY'
+import sys, urllib.parse
+try:
+    print(urllib.parse.urlsplit(sys.argv[1]).hostname or "")
+except ValueError:
+    print("")
+PY
+)"
+  is_loopback "$host"
+}
+require_loopback_url() {
+  if ! is_loopback_url "$1"; then
+    echo "demo.sh: refusing non-loopback tunnel target '$1' (the front door must stay on loopback)" >&2
+    exit 2
+  fi
+}
+
+# The pinned release's Linux artefact for this machine, or nothing.
+cloudflared_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'linux-amd64' ;;
+    aarch64|arm64) printf 'linux-arm64' ;;
+    *) return 1 ;;
+  esac
+}
+
+# The cloudflared to use: the DEMO_CLOUDFLARED override, PATH, or ~/bin.
+cloudflared_bin() {
+  if [[ -n "${DEMO_CLOUDFLARED:-}" ]]; then
+    # An override that is not actually executable is treated as not found.
+    [[ -x "$DEMO_CLOUDFLARED" ]] || return 1
+    printf '%s' "$DEMO_CLOUDFLARED"
+    return 0
+  fi
+  if command -v cloudflared >/dev/null 2>&1; then
+    command -v cloudflared
+    return 0
+  fi
+  if [[ -x "$HOME/bin/cloudflared" ]]; then
+    printf '%s' "$HOME/bin/cloudflared"
+    return 0
+  fi
+  return 1
+}
+
+pinned_version() {
+  [[ -f "$CLOUDFLARED_PIN" ]] || return 0
+  awk '$1 == "version" {print $2; exit}' "$CLOUDFLARED_PIN" 2>/dev/null || true
+}
+pinned_sha() {
+  [[ -f "$CLOUDFLARED_PIN" ]] || return 0
+  awk -v a="$1" '$1 == "sha256" && $2 == a {print $3; exit}' "$CLOUDFLARED_PIN" 2>/dev/null || true
+}
+
+# Check the binary's --version and SHA-256 against the pin BEFORE it is run
+# (behaviour: the version and hash are checked before cloudflared is started).
+verify_cloudflared() {
+  local bin arch expected_version expected_sha version actual_sha
+  if ! bin="$(cloudflared_bin)"; then
+    echo "demo.sh: --phone needs cloudflared on PATH or at ~/bin/cloudflared" >&2
+    exit 2
+  fi
+  if ! arch="$(cloudflared_arch)"; then
+    echo "demo.sh: refusing cloudflared: unsupported architecture $(uname -m)" >&2
+    exit 2
+  fi
+  expected_version="$(pinned_version)"
+  expected_sha="$(pinned_sha "$arch")"
+  if [[ -z "$expected_version" || -z "$expected_sha" ]]; then
+    echo "demo.sh: refusing cloudflared: no pin for $arch in $CLOUDFLARED_PIN" >&2
+    exit 2
+  fi
+  version="$("$bin" --version 2>/dev/null || true)"
+  if [[ "$version" != *"$expected_version"* ]]; then
+    echo "demo.sh: refusing cloudflared: expected version $expected_version, got '${version:-none}'" >&2
+    exit 2
+  fi
+  actual_sha="$(sha256sum "$bin" | awk '{print $1}')"
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    echo "demo.sh: refusing cloudflared: SHA-256 mismatch for $arch" >&2
+    exit 2
+  fi
+}
+
+# 16 characters from [A-Za-z0-9] from the OS random source (>= 95 bits).
+generate_access_code() {
+  python3 - <<'PY'
+import secrets
+import string
+
+alphabet = string.ascii_letters + string.digits
+print("".join(secrets.choice(alphabet) for _ in range(16)))
+PY
+}
+
+# Validate the tunnel target and cloudflared, then generate the access code into
+# a mode-600 file. Runs before anything is started or built, so a bad binary or
+# target costs nothing and the code is never an argument (N2).
+phone_prepare() {
+  verify_cloudflared
+  if [[ -n "${DEMO_TUNNEL_TARGET:-}" ]]; then
+    require_loopback_url "$DEMO_TUNNEL_TARGET"
+  fi
+  ACCESS_CODE="$(generate_access_code)"
+  if [[ ! "$ACCESS_CODE" =~ ^[A-Za-z0-9]{16}$ ]]; then
+    echo "demo.sh: refusing to start: could not generate an access code" >&2
+    exit 2
+  fi
+  mkdir -p "$RUN"
+  ACCESS_CODE_FILE="$RUN/access-code"
+  local old_umask
+  old_umask="$(umask)"
+  umask 077
+  printf '%s\n' "$ACCESS_CODE" > "$ACCESS_CODE_FILE"
+  umask "$old_umask"
+  chmod 600 "$ACCESS_CODE_FILE"
+}
+
+# Start the quick tunnel to the loopback front door and read the public URL it
+# prints. The target is whatever phone_prepare/demo_start computed.
+start_tunnel() {
+  local log="$LOGS/cloudflared.log" bin waited=0
+  bin="$(cloudflared_bin)"
+  start_bg cloudflared "$log" "$bin" tunnel --url "$TUNNEL_TARGET" --no-autoupdate
+  while (( waited < 60 )); do
+    PUBLIC_URL="$(grep -Eom1 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null || true)"
+    [[ -n "$PUBLIC_URL" ]] && break
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [[ -z "$PUBLIC_URL" ]]; then
+    echo "demo.sh: cloudflared did not report a public URL within ${waited}s" >&2
+    return 1
+  fi
+  echo "    tunnel up: $PUBLIC_URL"
+}
+
 # Every process group this demo started, as "pgid <starttime>" lines: the
 # recorded state plus the crash log scripts/e2e/lib.sh's start_bg appends to.
 pgids_from_state() {
@@ -117,6 +281,18 @@ except Exception:
     print("")
 PY
 }
+# One field from the state file (empty when absent). Used for the phone-mode
+# public URL and access-code file; the code itself is never written to state.
+state_field() {
+  [[ -f "$STATE" ]] || return 1
+  python3 - "$STATE" "$1" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except Exception:
+    print("")
+PY
+}
 
 # True only when the group still looks like one this demo started: the id is a
 # real process group (0 and 1 are rejected - `kill -- -0` would signal the
@@ -139,10 +315,17 @@ pgid_is_ours() {
 }
 
 demo_running() {
-  local url pgid start
+  local url pgid start code_file
   url="$(state_url)" || return 1
   [[ -n "$url" ]] || return 1
-  curl -sf --max-time 2 "$url/" >/dev/null 2>&1 || return 1
+  # Phone mode puts the whole front door behind the access code, so a bare curl
+  # is answered 401; authenticate from the mode-600 file when it is recorded.
+  code_file="$(state_field access_code_file)"
+  if [[ -n "$code_file" && -r "$code_file" ]]; then
+    curl -sf --max-time 2 -u "demo:$(cat "$code_file")" "$url/" >/dev/null 2>&1 || return 1
+  else
+    curl -sf --max-time 2 "$url/" >/dev/null 2>&1 || return 1
+  fi
   while read -r pgid start; do
     [[ -n "$pgid" ]] || continue
     if ps -eo pgid=,stat= | grep -E "^[[:space:]]*$pgid[[:space:]]+[^Z]" >/dev/null; then
@@ -156,9 +339,12 @@ write_state() {
   mkdir -p "$STATE_DIR"
   python3 - "$STATE" "$DEMO_HOST" "$(url_host)" "$HOST_PORT" \
     "$FIRESTORE_PORT" "$FAKE_PORT" "$TESTBED_PORT" "$UNSUB_PORT" "$API_PORT" \
-    "$RUN/service.pgids" <<'PY'
+    "$RUN/service.pgids" "$PUBLIC_URL" "$ACCESS_CODE_FILE" <<'PY'
 import json, sys
-(path, host, url_host, host_port, fs, fake, testbed, unsub, api, pgfile) = sys.argv[1:11]
+(
+    path, host, url_host, host_port, fs, fake, testbed, unsub, api, pgfile,
+    public_url, access_code_file,
+) = sys.argv[1:13]
 pgids = []
 try:
     with open(pgfile) as handle:
@@ -174,6 +360,8 @@ json.dump(
     {
         "host": host,
         "url": f"http://{url_host}:{host_port}",
+        "public_url": public_url,
+        "access_code_file": access_code_file,
         "ports": {
             "firestore": int(fs),
             "fake_google": int(fake),
@@ -215,6 +403,11 @@ demo_start() {
     echo "demo: already running at $(state_url)"
     return 0
   fi
+  # Phone mode fails fast: verify the tunnel binary and generate the access code
+  # before anything is built or started (behaviour 2).
+  if (( PHONE )); then
+    phone_prepare
+  fi
   mkdir -p "$LOGS" "$RUN"
   rm -f "$RUN/service.pgids" "$STATE"
 
@@ -243,6 +436,13 @@ demo_start() {
   API_PORT="$(free_port)"
   HOST_PORT="$(free_port)"
 
+  if (( PHONE )); then
+    # The tunnel exposes the front door only; never api, unsub, fakes or the
+    # emulator. The target is the same loopback address the front door binds.
+    TUNNEL_TARGET="${DEMO_TUNNEL_TARGET:-http://$(url_host):$HOST_PORT}"
+    require_loopback_url "$TUNNEL_TARGET"
+  fi
+
   phase "unsub on 127.0.0.1:$UNSUB_PORT"
   start_bg unsub "$LOGS/unsub.jsonl" env \
     $(env_file "$REPO/scripts/e2e/unsub.env") \
@@ -251,30 +451,67 @@ demo_start() {
     FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
     "$REPO/backend/target/debug/unsub"
 
+  # Behaviour 0a/0b: the tunnel is up first so the api is handed the public
+  # https origin for the OAuth redirect URI, the Secure cookies and the
+  # browser-facing authorisation URL.
+  if (( PHONE )); then
+    phase "tunnel to the front door on 127.0.0.1:$HOST_PORT"
+    start_tunnel
+  fi
+
   phase "api on 127.0.0.1:$API_PORT"
-  start_bg api "$LOGS/api.jsonl" env \
-    $(env_file "$REPO/scripts/e2e/api.env") \
-    MT_E2E=1 \
-    APP_ORIGIN="http://$(url_host):$HOST_PORT" \
-    FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
-    PORT="$API_PORT" \
-    FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
-    "$REPO/backend/target/debug/api"
+  if (( PHONE )); then
+    start_bg api "$LOGS/api.jsonl" env \
+      $(env_file "$REPO/scripts/e2e/api.env") \
+      MT_E2E=1 \
+      APP_ORIGIN="$PUBLIC_URL" \
+      MT_PUBLIC_BASE_URL="$PUBLIC_URL" \
+      FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
+      PORT="$API_PORT" \
+      FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
+      "$REPO/backend/target/debug/api"
+  else
+    start_bg api "$LOGS/api.jsonl" env \
+      $(env_file "$REPO/scripts/e2e/api.env") \
+      MT_E2E=1 \
+      APP_ORIGIN="http://$(url_host):$HOST_PORT" \
+      FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
+      PORT="$API_PORT" \
+      FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
+      "$REPO/backend/target/debug/api"
+  fi
   wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
   phase "serving the web build on http://$(url_host):$HOST_PORT"
   HOST_PORT_FILE="$RUN/host.port"
-  start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
-    --root "$REPO/app/build/web" \
-    --firebase-json "$REPO/firebase.json" \
-    --host "$DEMO_HOST" \
-    --api "http://127.0.0.1:$API_PORT" \
-    --port "$HOST_PORT" \
-    --port-file "$HOST_PORT_FILE"
+  if (( PHONE )); then
+    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
+      --root "$REPO/app/build/web" \
+      --firebase-json "$REPO/firebase.json" \
+      --host "$DEMO_HOST" \
+      --api "http://127.0.0.1:$API_PORT" \
+      --port "$HOST_PORT" \
+      --port-file "$HOST_PORT_FILE" \
+      --fake-google "http://127.0.0.1:$FAKE_PORT" \
+      --access-code-file "$ACCESS_CODE_FILE"
+  else
+    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
+      --root "$REPO/app/build/web" \
+      --firebase-json "$REPO/firebase.json" \
+      --host "$DEMO_HOST" \
+      --api "http://127.0.0.1:$API_PORT" \
+      --port "$HOST_PORT" \
+      --port-file "$HOST_PORT_FILE"
+  fi
   HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 
   write_state
   echo "demo: running at http://$(url_host):$HOST_PORT"
+  if (( PHONE )); then
+    # Printed once, to the terminal only; never logged or committed.
+    echo "demo: phone URL: $PUBLIC_URL"
+    echo "demo: access code (sign in as user 'demo'): $ACCESS_CODE"
+  fi
 }
 
 demo_stop() {
@@ -303,7 +540,7 @@ demo_stop() {
       remaining=1
     fi
   done
-  rm -f "$STATE" "$RUN/service.pgids"
+  rm -f "$STATE" "$RUN/service.pgids" "$RUN/access-code"
   if (( remaining )); then
     echo "demo: leak census: live processes remain" >&2
     return 1
@@ -322,6 +559,10 @@ demo_status() {
 
 demo_check() {
   require_loopback
+  if (( PHONE )); then
+    echo "demo: --check cannot be combined with --phone" >&2
+    return 2
+  fi
   # Never kill a demo the user is already running (F4): refuse instead of
   # silently tearing their stack down, and start from nothing only when it is
   # already down.
