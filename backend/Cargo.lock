@@ -2819,6 +2819,7 @@ dependencies = [
  "obs",
  "ports",
  "proptest",
+ "reqwest",
  "serde",
  "serde_json",
  "svc-common",
