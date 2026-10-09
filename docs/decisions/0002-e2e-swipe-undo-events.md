@@ -22,3 +22,5 @@ The allowlist in `backend/crates/obs/src/registry.rs` names events that nothing 
 T-1101b step 6 is amended. Revisit if swipe/undo telemetry is added later (then restore the assertions in the same change).
 
 Enforcement: T-1107 (the budget, monitoring and alert task that builds the `unrecoverable_actions` metric behind alert A1) now depends on T-1114, so the alert cannot be built or go live before the events it watches are emitted.
+
+Note (2026-10-09): T-1101b was later split; the former step 6 (events) now lives in T-1101e (journeys 4 and 5), and T-1101f covers journey 6. T-1114 restores the swipe and undo assertions in those tasks.

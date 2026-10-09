@@ -144,8 +144,11 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1009](T-1009-blitz-mode.md) | Blitz mode | M10 | sonnet | T-1008a |
 | [T-1010](T-1010-on-device-category-name.md) | On-device category name proposal | M10 | sonnet | T-1003 |
 | [T-1101a](T-1101a-e2e-harness-and-required-check.md) | End-to-end harness, first journey and the `e2e` required check | M11 | sonnet | M6, M7, T-205a, T-205b, T-206, T-500b, T-708, T-1001a, T-1002b |
-| [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end journeys: sessions, mixed Feed, reject, unsubscribe and filing | M11 | sonnet | T-1003, T-1006a, T-1101a, T-1112c |
-| [T-1101c](T-1101c-e2e-journeys-and-leak-scans.md) | End-to-end journeys: Needs Attention, disconnect, delete account; leak, storage and CSP scans | M11 | sonnet | T-006, T-1005, T-1101b |
+| [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end helpers and the sessions journey | M11 | sonnet | T-1003, T-1006a, T-1101a, T-1112c |
+| [T-1101c](T-1101c-e2e-journeys-and-leak-scans.md) | End-to-end journeys: Needs Attention, disconnect, delete account; leak, storage and CSP scans | M11 | sonnet | T-006, T-1005, T-1101b, T-1101d, T-1101e, T-1101f |
+| [T-1101d](T-1101d-e2e-journey-mixed-feed.md) | End-to-end journey: mixed Feed across two mailboxes | M11 | sonnet | T-1101b |
+| [T-1101e](T-1101e-e2e-journeys-reject-undo-and-unsubscribe.md) | End-to-end journeys: reject then undo, reject and unsubscribe | M11 | sonnet | T-1101b |
+| [T-1101f](T-1101f-e2e-journey-file.md) | End-to-end journey: file a message | M11 | sonnet | T-1101b |
 | [T-1102a](T-1102a-terraform-prod-foundation.md) | Terraform, production foundation: service accounts, IAM, KMS, Firestore, secrets, logs | M11 | strong | needs S11 |
 | [T-1102b](T-1102b-terraform-prod-runtime-and-deploy-identity.md) | Terraform, production runtime: Cloud Run, Cloud Tasks, Scheduler, Hosting and the deploy identity | M11 | strong | T-1102a, needs S11 |
 | [T-1103](T-1103-terraform-staging-project.md) | Terraform, staging project | M11 | sonnet | T-1102b |
@@ -165,7 +168,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1108b](T-1108b-demo-seed.md) | Demo seed: fake mailbox and invite URL | M11 | sonnet | T-1108a |
 | [T-1108c](T-1108c-demo-phone-access.md) | demo --phone: HTTPS tunnel and access code | M11 | sonnet | T-1108a |
 | [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108a, T-1108c |
-| [T-1114](T-1114-emit-swipe-undo-metric-events.md) | Emit the swipe, undo and unrecoverable-action metric events | M11 | sonnet | T-307, T-1101b |
+| [T-1114](T-1114-emit-swipe-undo-metric-events.md) | Emit the swipe, undo and unrecoverable-action metric events | M11 | sonnet | T-307, T-1101b, T-1101e, T-1101f |
 | [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.
