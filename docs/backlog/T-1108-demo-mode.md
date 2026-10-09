@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 250 lines of code plus tests | T-500b, T-1101a |
+| M11 | sonnet | about 250 lines of code plus tests | T-500b, T-500c, T-1101a |
 
 **Read only these spec sections:** `docs/backlog/T-1101a-e2e-harness-and-required-check.md` (the harness this task reuses), `docs/backlog/T-500b-api-binary-wiring-and-e2e-config.md` (e2e mode), S10 section 3.3. Nothing else is needed.
 
@@ -22,7 +22,7 @@ One command, `scripts/demo.sh`, starts the same local stack as `scripts/e2e.sh` 
 
 ## Behaviour
 
-1. `demo.sh` binds **127.0.0.1 only** and refuses to start if any configured host is not loopback. It never listens on `0.0.0.0`.
+1. The api binary binds `0.0.0.0` unconditionally today; T-500c makes e2e mode bind `127.0.0.1` only, and this task depends on it (found by the Sol review of PR #33). `demo.sh` binds **127.0.0.1 only** and refuses to start if any configured host is not loopback. It never listens on `0.0.0.0`.
 2. It picks free ports with `scripts/free_port.py`, writes `target/demo/state.json` (ports, pids, URL), and prints `Open: http://localhost:<port>/#/invite?t=<token>`. The web app is served at one port so a single SSH tunnel is enough.
 3. `stop` kills every process it started (process group), even after a crash; `status` reports which pieces are up.
 4. `--check` is the automated test: start, `GET` the invite URL's page and `/api/v1/healthz` through the proxy, assert 200 and the `firebase.json` security headers, then stop and assert no child process remains. It must finish in under 3 minutes on verify1.
