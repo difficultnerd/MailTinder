@@ -6,6 +6,7 @@
 //! decides the process exit; the mode (production or e2e) is chosen once at
 //! start and never falls back.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use adapters_gcp::{
@@ -27,7 +28,7 @@ use ports::{
 };
 use url::Url;
 
-use crate::config::{ApiConfig, ConfigError};
+use crate::config::{ApiConfig, ConfigError, Mode};
 
 // The GCP region, KMS key ring, key names, API roots and Cloud Tasks queue.
 // Duplicated from `backend/crates/unsub/src/main.rs`, which owns the same
@@ -154,8 +155,9 @@ fn e2e_startup() -> Result<(Ports, ApiConfig), SetupError> {
 /// environment and [`SetupError::Adapter`] when an adapter cannot be built.
 #[allow(clippy::too_many_lines)]
 pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> {
-    let base = ApiConfig::from_env()?;
+    let base = ApiConfig::from_env(Mode::Production)?;
     let project = env("GOOGLE_CLOUD_PROJECT")?;
+    validate_project_id(&project)?;
     let unsub_base =
         Url::parse(&env("UNSUB_BASE_URL")?).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
     let audience = env("UNSUB_AUDIENCE")?;
@@ -271,9 +273,9 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
 
 /// Bind and serve the router with graceful shutdown on `SIGTERM` and `SIGINT`.
 async fn serve(ports: Ports, config: ApiConfig) -> Result<(), SetupError> {
-    let port = config.port;
+    let listen = SocketAddr::new(config.bind_host, config.port);
     let state = crate::app_state(Arc::new(ports), Arc::new(config));
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+    let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|_| SetupError::Adapter)?;
     tracing::info!(event = "op", route = "api.startup", outcome = "success");
@@ -324,4 +326,28 @@ fn endpoint(name: &'static str, raw: &str) -> Result<Url, SetupError> {
 /// The full KMS key resource name for `key` in the project.
 fn kms_key(project: &str, key: &str) -> String {
     format!("projects/{project}/locations/{LOCATION}/keyRings/{KEY_RING}/cryptoKeys/{key}")
+}
+
+/// Validate a GCP project id against `^[a-z][a-z0-9-]{4,28}[a-z0-9]$` before it
+/// is interpolated into a KMS key, Cloud Tasks queue or Secret Manager resource
+/// name. Only the variable name is ever surfaced.
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] for any value that does not match.
+pub fn validate_project_id(project: &str) -> Result<(), SetupError> {
+    let bytes = project.as_bytes();
+    let matches = (6..=30).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_lowercase)
+        && bytes
+            .last()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-');
+    if matches {
+        Ok(())
+    } else {
+        Err(SetupError::Invalid("GOOGLE_CLOUD_PROJECT"))
+    }
 }
