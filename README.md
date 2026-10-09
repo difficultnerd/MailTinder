@@ -36,7 +36,7 @@ Flutter/Dart must already be on `PATH`.
 | Concern | Tool | Where it runs |
 |---|---|---|
 | Secret scanning | Gitleaks | pre-commit; CI `gitleaks` (full history, every push and PR) |
-| Dependency updates | Dependabot (cargo, pub, github-actions) | `.github/dependabot.yml` |
+| Dependency updates | Dependabot (cargo, pub, pip, github-actions) | `.github/dependabot.yml` |
 | Rust advisories | cargo-audit | CI `cargo-audit`, plus weekly schedule |
 | Static analysis | Clippy, Dart analyzer, Semgrep | Clippy and analyzer: pre-push and CI `rust`, `dart`; Semgrep: CI `semgrep` |
 | Format | rustfmt, `dart format` | pre-commit; CI `rust`, `dart` |

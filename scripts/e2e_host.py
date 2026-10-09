@@ -87,6 +87,35 @@ MAX_FAILURES = 5
 FAILURE_WINDOW_S = 60.0
 BLOCK_SECONDS = 60.0
 
+# Characters allowed in the `Host` reflected into proxied JS by
+# `_front_ws_origin` (dev mode, review finding F4). A hostile `Host` could
+# otherwise break out of the surrounding string literal. Only a DNS name, an
+# IPv4/IPv6 literal and an optional port are legitimate here.
+_WS_HOST_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:[]-"
+)
+
+
+def safe_ws_host(host: str | None) -> bool:
+    """True when `host` is a plausible `Host` value we may reflect (F4)."""
+    return bool(host) and all(char in _WS_HOST_CHARS for char in host)
+
+
+def origin_matches_host(origin: str | None, host: str | None) -> bool:
+    """True when a browser `Origin` is same-origin with the dialed `Host` (F4).
+
+    A browser always sends `Origin`; a hostile page's origin differs from the
+    front door's host, so its upgrade is refused. A non-browser client (the
+    Dart debug client) sends no `Origin`; that is allowed, matching a
+    same-origin browser request.
+    """
+    if origin is None:
+        return True
+    if host is None:
+        return False
+    parsed = urllib.parse.urlsplit(origin)
+    return parsed.scheme in ("http", "https") and parsed.netloc == host
+
 
 def load_headers(config_path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
     """[(source_glob, [(key, value), ...]), ...] from firebase.json hosting.headers."""
@@ -217,6 +246,8 @@ def start_dev_websocket_relay(bind_host: str, upstream: tuple[str, int]) -> int 
     importable (demo.sh installs it; the HTTP proxy still works without it).
     """
     try:
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
         from websockets.sync.client import connect as ws_connect
         from websockets.sync.server import serve as ws_serve
     except ImportError:
@@ -226,6 +257,21 @@ def start_dev_websocket_relay(bind_host: str, upstream: tuple[str, int]) -> int 
         return None
 
     upstream_host, upstream_port = upstream
+
+    def guard_origin(connection: object, request: object) -> object:
+        """Refuse a cross-site upgrade before the handshake (review F4).
+
+        This private relay is the dev debug socket's new attack surface. A
+        hostile web page can reach the loopback front door (whose port is
+        random per run) and try a cross-site websocket; its `Origin` differs
+        from the `Host` it dialed, so the upgrade is refused before any frame
+        is relayed. A non-browser client sends no `Origin` and is allowed.
+        """
+        origin = request.headers.get("Origin")  # type: ignore[attr-defined]
+        host = request.headers.get("Host")  # type: ignore[attr-defined]
+        if origin_matches_host(origin, host):
+            return None
+        return Response(403, "Forbidden", Headers())
 
     def handler(connection: object) -> None:
         request = connection.request  # type: ignore[attr-defined]
@@ -249,6 +295,7 @@ def start_dev_websocket_relay(bind_host: str, upstream: tuple[str, int]) -> int 
         handler,
         bind_host,
         0,
+        process_request=guard_origin,  # type: ignore[arg-type]
         select_subprotocol=lambda _connection, subprotocols: (
             subprotocols[0] if subprotocols else None
         ),
@@ -444,8 +491,11 @@ def main() -> None:
 
         # -- dev upstream proxy (T-1113) --------------------------------------
         def _front_ws_origin(self) -> str:
+            # `Host` is client-supplied and lands in proxied JS, so reflect it
+            # only when it is a plausible host (review F4); otherwise fall back
+            # to the address we are bound to.
             host = self.headers.get("Host")
-            if not host:
+            if not safe_ws_host(host):
                 address = self.server.server_address
                 host = f"{address[0]}:{address[1]}"
             scheme = "wss" if self.headers.get("X-Forwarded-Proto") == "https" else "ws"

@@ -453,9 +453,10 @@ demo_build() {
 
 # ------------------------------------------------------------- dev mode (T-1113)
 
-# The pinned websocket relay into target/demo/venv. The front door imports it
-# through this interpreter so the frames are handled by the package, not a
-# hand-written relay.
+# The pinned, hash-checked websocket relay into target/demo/venv. The front door
+# imports it through this interpreter so the frames are handled by the package,
+# not a hand-written relay. --require-hashes rejects any artifact whose SHA-256
+# is not in requirements-dev.txt (supply chain, ASVS V15).
 dev_prepare_venv() {
   local log="$LOGS/dev-pip.log"
   if [[ ! -x "$DEV_VENV/bin/python" ]]; then
@@ -464,7 +465,7 @@ dev_prepare_venv() {
   fi
   phase "installing the pinned websocket relay"
   "$DEV_VENV/bin/python" -m pip install --disable-pip-version-check --quiet \
-    -r "$DEV_REQUIREMENTS" >>"$log" 2>&1
+    --require-hashes -r "$DEV_REQUIREMENTS" >>"$log" 2>&1
 }
 
 # Wait for the dev server to finish its first compile and answer, up to 300 s:
@@ -535,6 +536,20 @@ dev_reload_restore() {
   fi
 }
 
+# Recover from a previous run killed by SIGKILL (review F5). Such a run leaves
+# the needle in the tracked file and a stale backup behind. Put the backup back
+# only when the needle is still there, then drop the backup so no later restore
+# can overwrite a developer's own later edits with stale content.
+dev_reload_recover() {
+  if [[ ! -f "$DEV_RELOAD_BAK" ]]; then
+    return 0
+  fi
+  if grep -qF "$DEV_RELOAD_NEEDLE" "$DEV_RELOAD_FILE"; then
+    cp "$DEV_RELOAD_BAK" "$DEV_RELOAD_FILE"
+  fi
+  rm -f "$DEV_RELOAD_BAK"
+}
+
 # AC2: edit a visible string with the helper, assert the new string is served
 # through the front door within 30 s, then revert.
 dev_check_reload() {
@@ -570,13 +585,35 @@ dev_check_reload() {
 # access control as normal mode (dev check turns the code on).
 dev_check() {
   local url="$1" anon with
-  echo "demo: PASS demo_dev_serves_app_and_api_through_one_origin"
+  # AC3 first: the dev front door sits behind the same gate as normal mode. The
+  # websocket upgrade (the new attack surface) is covered by tools/test_demo_dev.py,
+  # which needs no stack and fails if _route handles the upgrade before _gate.
   anon="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url/")"
   with="$(app_status "$url/")"
   if [[ "$anon" != "401" || "$with" != "200" ]]; then
     echo "demo: dev access control is wrong (anonymous=$anon authenticated=$with)" >&2
     return 1
   fi
+  # AC1: the page and the api come from one origin, and the page really is the
+  # live dev server - the DDC module only exists while `flutter run` serves the
+  # app, so a stale app/web file cannot answer this path. PASS is printed only
+  # once these hold, so the check fails when the behaviour is removed (S10 10.4).
+  local page_file module_file
+  page_file="$STATE_DIR/dev-page.html"
+  module_file="$STATE_DIR/dev-module.js"
+  if ! app_get "$url/" -o "$page_file" || ! grep -qi '<html' "$page_file"; then
+    echo "demo: the dev app was not served through the front door" >&2
+    return 1
+  fi
+  if ! app_get "$url/api/v1/healthz" -o "$STATE_DIR/dev-health.json"; then
+    echo "demo: the api was not served through the front door" >&2
+    return 1
+  fi
+  if ! app_get "$url$DEV_MODULE_PATH" -o "$module_file" || [[ ! -s "$module_file" ]]; then
+    echo "demo: the DDC module was not served by the dev server" >&2
+    return 1
+  fi
+  echo "demo: PASS demo_dev_serves_app_and_api_through_one_origin"
   echo "demo: PASS demo_dev_applies_access_control_like_normal_mode"
   dev_check_reload "$url"
 }
@@ -799,11 +836,16 @@ demo_check() {
     return 2
   fi
   # Restore the file the dev reload check edits, then stop, whatever happens.
-  trap 'dev_reload_restore; demo_stop >/dev/null 2>&1 || true' EXIT
+  # Only a dev check touches that file, so a non-dev check must not run the
+  # restore: a stale backup from a crashed dev run would otherwise overwrite a
+  # developer's later edits (review F5).
+  trap 'if (( DEV )); then dev_reload_restore; fi; demo_stop >/dev/null 2>&1 || true' EXIT
 
   # The dev check turns the access code on (like --phone) so the hot-reload
-  # front door is proven to sit behind the same gate (T-1113 AC3).
+  # front door is proven to sit behind the same gate (T-1113 AC3). Recover the
+  # tracked file first in case a previous dev run was killed (review F5).
   if (( DEV )); then
+    dev_reload_recover
     write_access_code
   fi
 
