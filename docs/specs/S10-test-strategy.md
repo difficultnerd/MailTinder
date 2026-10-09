@@ -290,7 +290,7 @@ The three measures need content-free counters. Every metric event holds only: ev
 Tests for the measures themselves:
 
 - Aggregation code is unit-tested with fixed event streams, including the edge cases (undo of a reject whose unsubscribe already went counts as an undo and not as an unsubscribe failure).
-- The e2e suite asserts each journey emits exactly the expected events.
+- The e2e suite asserts each journey emits exactly the expected events. (Amended by ADR 0002: until T-1114 merges the journeys assert only `unsub_outcome`; T-1114 restores the `swipe` and `undo` assertions.)
 - The "unrecoverable" counters are wired to an alert in S11; any non-zero value during the trial pages James `[ASSUMES]`.
 
 Delivery checks run when the user's mail is next fetched (on open and refresh, D12), so the unsubscribe success figure lags by however long users stay away. The report shows how many checks are still pending.
