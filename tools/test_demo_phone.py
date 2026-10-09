@@ -282,7 +282,7 @@ class DemoPhoneGuardTest(unittest.TestCase):
             "fi\n"
             "exit 0\n"
         )
-        os.chmod(stub, 0o755)
+        os.chmod(stub, 0o500)
         return stub
 
     def _pin(self, stub: Path, version: str = "2026.10.0", sha: str | None = None) -> Path:
@@ -411,7 +411,7 @@ class DemoPhoneStackTest(unittest.TestCase):
             f'echo "INF {self.PUBLIC_URL}"\n'
             "while true; do sleep 1; done\n"
         )
-        os.chmod(stub, 0o755)
+        os.chmod(stub, 0o500)
         return stub
 
     def test_demo_phone_exposes_only_the_front_door(self) -> None:
