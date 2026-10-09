@@ -30,11 +30,15 @@ sha2.workspace = true
 [features]
 firestore-emulator = []
 test-support = []
+# Only in this crate's dependency graph: allows `GeminiConfig::with_base_url`
+# so tests may point the classifier at `fake-vertex`. Never set in production.
+testkit = []
 
 [dev-dependencies]
 testkit.workspace = true
 proptest.workspace = true
 axum.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

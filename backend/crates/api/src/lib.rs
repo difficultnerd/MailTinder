@@ -289,6 +289,18 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
 /// Build an `AppState` from real ports and config (used by `main`).
 #[must_use]
 pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
+    app_state_with_classifiers(ports, config, classify::ClassifierSet::default())
+}
+
+/// Build an `AppState` with the bake-off models wired in (T-904). `main` passes
+/// the production `GeminiClassifier`; tests keep the empty default via
+/// [`app_state`].
+#[must_use]
+pub fn app_state_with_classifiers(
+    ports: Arc<Ports>,
+    config: Arc<ApiConfig>,
+    classifiers: classify::ClassifierSet,
+) -> AppState {
     let limits = Arc::new(RateLimiter::new(
         ports.store.clone(),
         ports.clock.clone(),
@@ -301,7 +313,7 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         limits,
         tokens: Arc::new(crate::tokens::TokenService::new()),
         invite_mailer,
-        classifiers: classify::ClassifierSet::default(),
+        classifiers,
         bakeoff_gate: classify::BakeoffGate::default(),
         business_calendar: Arc::new(crate::services::delivery_check::national_calendar()),
     }

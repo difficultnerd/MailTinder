@@ -185,7 +185,13 @@ impl HttpEgress for FakeHttpEgress {
                 if let Some(body) = &req.body {
                     rb = rb.body(body.clone());
                 }
-                let resp = rb.send().await.map_err(|_| EgressError::Connect)?;
+                let resp = rb.send().await.map_err(|e| {
+                    if e.is_timeout() {
+                        EgressError::Timeout
+                    } else {
+                        EgressError::Connect
+                    }
+                })?;
                 let status = resp.status().as_u16();
                 let headers = resp
                     .headers()
