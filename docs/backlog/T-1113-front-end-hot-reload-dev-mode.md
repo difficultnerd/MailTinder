@@ -12,7 +12,7 @@
 
 ## Behaviour
 
-1. `--dev` starts the same backend stack as `demo.sh` but serves the app from `flutter run -d web-server --web-hostname 127.0.0.1 --web-port <free port>` (hot reload and hot restart enabled); `e2e_host.py` gains a `--dev-upstream http://127.0.0.1:<port>` option that proxies `/` and the dev server's websocket to it and keeps proxying `/api/**` to the api, adding the same security headers and the same access control as normal demo mode.
+1. `--dev` starts the same backend stack as `demo.sh` but serves the app from `flutter run -d web-server --web-hostname 127.0.0.1 --web-port <free port>` (hot reload and hot restart enabled); `e2e_host.py` gains a `--dev-upstream http://127.0.0.1:<port>` option that proxies `/` and the dev server's websocket to it. The standard library has no websocket relay, so dev mode may import one pinned, well-known package (for example `websockets==<pinned version>`) installed by `demo.sh` into a virtualenv under `target/demo/venv`; do not hand-write a frame relay. The dev server has no authentication of its own, so it binds loopback and is reachable only through the front door's access control. The dev build uses `--dart-define=MT_E2E=true` (the app needs it to accept loopback http and the fake sign-in) and keeps proxying `/api/**` to the api, adding the same security headers and the same access control as normal demo mode.
 2. Edits are made in the demo worktree; a small helper `scripts/demo_reload.sh` triggers a hot reload by sending `r` to the dev server's stdin (or the documented Flutter mechanism), so a coding agent can change a file and refresh the view without restarting anything.
 3. Phone access and the access code work exactly as in T-1108c (`--phone`); a warning in the output states that the dev server is slower than the release build and is for look-and-feel iteration only.
 
@@ -28,4 +28,4 @@ Production builds, release signing, native mobile builds, device farms.
 
 ## Done when
 
-Tests pass, belt green, PR body shows a before/after of a one-line UI change reloaded in the running demo. Definition of done in S10 10.4. Do not edit `.github/workflows/`.
+Tests pass, belt green, PR body shows a before/after of a one-line UI change reloaded in the running demo. Definition of done in S10 10.4. Do not edit `.github/workflows/` or `CLAUDE.md`.

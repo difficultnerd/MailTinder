@@ -14,7 +14,7 @@
 
 | Action | Path | What |
 | --- | --- | --- |
-| Create | `backend/crates/unsub/src/startup_e2e.rs` | `#[cfg(feature = "testkit")]`: wiring with the Firestore emulator store, `testkit` fakes for keys and secrets, fake-google for Gmail, a loopback-only egress that allows only the unsub-testbed and fake-google sockets, and a caller verifier that accepts ONLY the test identity (a fixed bearer value read from `UNSUB_E2E_CALLER_TOKEN`) |
+| Create | `backend/crates/unsub/src/startup_e2e.rs` | `#[cfg(feature = "testkit")]`: wiring with the Firestore emulator store, `testkit` fakes for keys and secrets, fake-google for Gmail, a loopback-only egress that allows only the unsub-testbed and fake-google sockets, and a caller verifier that accepts ONLY the test identity (a fixed bearer value read from `UNSUB_E2E_CALLER_TOKEN`; the service REFUSES TO START in e2e mode if the token is unset, empty or shorter than 16 characters) |
 | Change | `backend/crates/unsub/src/main.rs` | Use `startup_e2e` only when built with `testkit` AND `MT_E2E=1`; otherwise exactly today's production wiring; `MT_E2E=1` without the feature refuses to start |
 | Change | `backend/crates/unsub/Cargo.toml` | `testkit` as an optional dependency behind the feature (same pattern as `api`) |
 | Create | `backend/crates/unsub/tests/startup_e2e.rs` | Tests below |
@@ -29,6 +29,7 @@
 
 - `unsub_e2e_serves_health_on_loopback_only`
 - `unsub_e2e_verifier_accepts_only_the_test_token`
+- `unsub_e2e_refuses_empty_unset_or_short_token` (an empty `Bearer ` header must never match)
 - `unsub_e2e_mode_refused_without_testkit_build` (process test, build without the feature)
 - `unsub_testkit_build_without_e2e_env_behaves_as_production`
 - Existing `unsub` tests stay green

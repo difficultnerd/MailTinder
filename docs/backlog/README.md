@@ -144,7 +144,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1009](T-1009-blitz-mode.md) | Blitz mode | M10 | sonnet | T-1008a |
 | [T-1010](T-1010-on-device-category-name.md) | On-device category name proposal | M10 | sonnet | T-1003 |
 | [T-1101a](T-1101a-e2e-harness-and-required-check.md) | End-to-end harness, first journey and the `e2e` required check | M11 | sonnet | M6, M7, T-205a, T-205b, T-206, T-500b, T-708, T-1001a, T-1002b |
-| [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end journeys: sessions, mixed Feed, reject, unsubscribe and filing | M11 | sonnet | T-1003, T-1006a, T-1101a |
+| [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end journeys: sessions, mixed Feed, reject, unsubscribe and filing | M11 | sonnet | T-1003, T-1006a, T-1101a, T-1112c |
 | [T-1101c](T-1101c-e2e-journeys-and-leak-scans.md) | End-to-end journeys: Needs Attention, disconnect, delete account; leak, storage and CSP scans | M11 | sonnet | T-006, T-1005, T-1101b |
 | [T-1102a](T-1102a-terraform-prod-foundation.md) | Terraform, production foundation: service accounts, IAM, KMS, Firestore, secrets, logs | M11 | strong | needs S11 |
 | [T-1102b](T-1102b-terraform-prod-runtime-and-deploy-identity.md) | Terraform, production runtime: Cloud Run, Cloud Tasks, Scheduler, Hosting and the deploy identity | M11 | strong | T-1102a, needs S11 |
