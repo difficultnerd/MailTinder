@@ -473,12 +473,21 @@ start_dev_server() {
       --web-hostname 127.0.0.1 --web-port '$DEV_PORT' \
       --dart-define=MT_E2E=true --pid-file '$FLUTTER_PID_FILE' </dev/null"
   wait_http "http://127.0.0.1:$DEV_PORT/" 300
+  # The web-server device answers the port as soon as it binds, but
+  # `flutter run --pid-file` writes the pid only once it has hooked its signal
+  # handlers, i.e. after the first compile - seconds later on a cold CI runner.
+  # Reading the file right after the port opened made demo.sh fail with
+  # "did not write a pid" though the dev server was healthy (T-1113 CI), so wait
+  # for it with the same budget the port wait uses.
+  if ! pid="$(wait_port_file "$FLUTTER_PID_FILE" 300)"; then
+    echo "demo.sh: flutter run did not write a pid to $FLUTTER_PID_FILE" >&2
+    return 1
+  fi
   # Record the tool's pid and its /proc start time in a companion token. The pid
   # alone is not proof of ownership, so scripts/demo_reload.sh compares the
   # token before signalling and refuses a reused pid (T-1113 review F3).
-  pid="$(tr -d '[:space:]' < "$FLUTTER_PID_FILE" 2>/dev/null || true)"
   if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
-    echo "demo.sh: flutter run did not write a pid to $FLUTTER_PID_FILE" >&2
+    echo "demo.sh: flutter run wrote an unusable pid to $FLUTTER_PID_FILE" >&2
     return 1
   fi
   printf '%s %s\n' "$pid" "$(proc_starttime "$pid" 2>/dev/null || true)" \
