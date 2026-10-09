@@ -114,6 +114,9 @@ jobs:
       - run: cargo build --release --locked -p api --no-default-features
       - run: cargo test --locked -p api --no-default-features --test release_routes
       - run: cargo test --locked -p api --no-default-features --test startup
+      # `unsub`'s own no-testkit refusal guard (T-1112d); the workspace `rust`
+      # job's `--all-features` compiles the guard out, so it must run here.
+      - run: cargo test --locked -p unsub --no-default-features --test startup_e2e
       - run: flutter pub get
         working-directory: app
       - run: scripts/e2e.sh
