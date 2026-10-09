@@ -59,8 +59,11 @@ scope_paths() {
     [ -z "$area" ] && continue
     [ -n "$want" ] && [ "$area" != "$want" ] && continue
     rest="${line#*:}"
-    local IFS=','
-    for p in $rest; do
+    # Split the comma-separated path list with IFS scoped to this one read
+    # (never assigned globally); see bash.lang.security.ifs-tampering.
+    local -a parts
+    IFS=',' read -r -a parts <<< "$rest"
+    for p in "${parts[@]}"; do
       p="$(trim "$p")"
       [ -z "$p" ] && continue
       printf '%s\t%s\n' "$area" "$p"
