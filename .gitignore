@@ -15,6 +15,9 @@ app/ios/Pods/
 app/android/.gradle/
 app/android/local.properties
 app/coverage/
+# Golden-test mismatch artefacts (T-1111): the diff PNGs are never committed;
+# only app/test/golden/goldens/ is tracked.
+app/test/golden/failures/
 # Python (tooling only)
 __pycache__/
 *.pyc
