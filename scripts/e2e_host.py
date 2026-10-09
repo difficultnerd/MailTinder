@@ -20,6 +20,7 @@ import fnmatch
 import http.client
 import json
 import mimetypes
+import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -93,8 +94,17 @@ def main() -> None:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        # The access log is a diagnostic (T-1101a CI): it shows exactly what the
+        # browser asked for. The query string is dropped so a token can never
+        # reach it (S5); the fragment never reaches the server at all.
+        def log_request(self, code: object = "-", size: object = "-") -> None:
+            path = self.path.split("?", 1)[0]
+            sys.stderr.write(f"e2e-host: {self.command} {path} -> {code}\n")
+            sys.stderr.flush()
+
         def log_message(self, format: str, *log_args: object) -> None:  # noqa: A002
-            pass
+            sys.stderr.write("e2e-host: " + (format % log_args) + "\n")
+            sys.stderr.flush()
 
         def _apply_headers(self, path: str) -> None:
             for source, headers in header_blocks:
@@ -116,6 +126,10 @@ def main() -> None:
             self.wfile.write(body)
 
         def _proxy(self, method: str) -> None:
+            # Trace before the upstream call: if the api hangs, the log still
+            # proves the browser made the request.
+            sys.stderr.write(f"e2e-host: {method} {self.path.split('?', 1)[0]} (proxy)\n")
+            sys.stderr.flush()
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else None
             path = api_prefix + self.path

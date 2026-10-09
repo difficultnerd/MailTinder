@@ -16,6 +16,11 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
+# Per-phase timing: a cold CI runner is far slower than a warm developer machine,
+# so every step prints how long it has taken so far.
+START_S=$SECONDS
+phase() { printf '==> [%3ss] %s\n' "$((SECONDS - START_S))" "$*"; }
+
 JOURNEY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +33,11 @@ LOGS="$REPO/target/e2e-logs"
 RUN="$REPO/target/e2e-run"
 rm -rf "$RUN"
 mkdir -p "$LOGS" "$RUN"
+
+# The harness writes failure artifacts (screenshot, page text/source, semantics,
+# console log, ChromeDriver tail) here; the `e2e` CI job uploads this folder on
+# failure, so the folder exists before the first journey runs.
+export MT_E2E_LOG_DIR="$LOGS"
 
 # `$CHROMEWEBDRIVER` is set on GitHub-hosted runners; locally chromedriver is on
 # PATH.
@@ -63,14 +73,16 @@ trap 'exit 143' TERM
 free_port() { python3 "$REPO/scripts/free_port.py"; }
 
 wait_http() {
-  local url="$1"
-  for _ in {1..60}; do
+  local url="$1" waited=0
+  while (( waited < 60 )); do
     if curl -sf --max-time 2 "$url" >/dev/null; then
+      echo "    ready after ${waited}s: $url" >&2
       return 0
     fi
     sleep 1
+    waited=$((waited + 1))
   done
-  echo "timed out waiting for service readiness" >&2
+  echo "timed out after ${waited}s waiting for $url" >&2
   return 1
 }
 
@@ -85,6 +97,8 @@ wait_port_file() {
     sleep 1
     waited=$((waited + 1))
   done
+  # Timing goes to stderr: stdout is the port value the caller captures.
+  echo "    $file ready after ${waited}s" >&2
   tr -d '[:space:]' < "$file"
 }
 
@@ -101,28 +115,30 @@ start_bg() { # <name> <logfile> <command...>
 # consume the rest as KEY=VALUE.
 env_file() { grep -vE '^[[:space:]]*(#|$)' "$1" | xargs; }
 
-echo "==> building services in test configuration"
+phase "building services in test configuration"
 (cd backend && cargo build --locked -p api -p unsub --features api/testkit,unsub/testkit)
 (cd backend && cargo build --locked -p fake-google -p unsub-testbed)
 
-echo "==> building the Flutter web app with the e2e define"
+phase "building the Flutter web app with the e2e define"
 (cd app && flutter build web --release --no-web-resources-cdn --dart-define=MT_E2E=true)
 
-echo "==> Firestore emulator"
+phase "Firestore emulator"
 FIRESTORE_PORT="$(free_port)"
 export FIRESTORE_EMULATOR_HOST="127.0.0.1:$FIRESTORE_PORT"
 start_bg firestore "$LOGS/firestore.log" \
   gcloud emulators firestore start --host-port="$FIRESTORE_EMULATOR_HOST" --quiet
+# The api's Firestore client must see the emulator accepting connections before
+# the api starts, or the first request fails on a cold runner (T-1101a CI).
 wait_http "http://$FIRESTORE_EMULATOR_HOST/"
 
-echo "==> fake-google"
+phase "fake-google"
 FAKE_PORT_FILE="$RUN/fake-google.port"
 start_bg fake-google "$LOGS/fake-google.jsonl" \
   env FAKE_GOOGLE_PORT_FILE="$FAKE_PORT_FILE" "$REPO/backend/target/debug/fake-google"
 FAKE_PORT="$(wait_port_file "$FAKE_PORT_FILE" 30)"
 export MT_E2E_FAKE_GOOGLE_URL="http://localhost:$FAKE_PORT"
 
-echo "==> unsub-testbed"
+phase "unsub-testbed"
 TESTBED_PORT_FILE="$RUN/unsub-testbed.port"
 start_bg unsub-testbed "$LOGS/unsub-testbed.jsonl" \
   env TESTBED_PORT_FILE="$TESTBED_PORT_FILE" "$REPO/backend/target/debug/unsub-testbed"
@@ -136,7 +152,7 @@ CD_PORT="$(free_port)"
 
 # The discovered values come after the env files so they win: the files carry a
 # placeholder emulator host, but this run's emulator is on the free port above.
-echo "==> unsub on 127.0.0.1:$UNSUB_PORT"
+phase "unsub on 127.0.0.1:$UNSUB_PORT"
 start_bg unsub "$LOGS/unsub.jsonl" env \
   $(env_file "$REPO/scripts/e2e/unsub.env") \
   PORT="$UNSUB_PORT" \
@@ -144,7 +160,7 @@ start_bg unsub "$LOGS/unsub.jsonl" env \
   FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
   "$REPO/backend/target/debug/unsub"
 
-echo "==> api on 127.0.0.1:$API_PORT"
+phase "api on 127.0.0.1:$API_PORT"
 start_bg api "$LOGS/api.jsonl" env \
   $(env_file "$REPO/scripts/e2e/api.env") \
   MT_E2E=1 \
@@ -155,7 +171,7 @@ start_bg api "$LOGS/api.jsonl" env \
   "$REPO/backend/target/debug/api"
 wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
-echo "==> serving the web build on http://localhost:$HOST_PORT"
+phase "serving the web build on http://localhost:$HOST_PORT"
 HOST_PORT_FILE="$RUN/host.port"
 start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
   --root "$REPO/app/build/web" \
@@ -168,16 +184,21 @@ HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 export MT_E2E_APP_URL="http://localhost:$HOST_PORT"
 export MT_E2E_API_URL="http://127.0.0.1:$API_PORT"
 
-echo "==> chromedriver on 127.0.0.1:$CD_PORT"
-start_bg chromedriver "$LOGS/chromedriver.log" "$CHROMEDRIVER" --port="$CD_PORT"
+phase "chromedriver on 127.0.0.1:$CD_PORT"
+# `--verbose` makes ChromeDriver log each command and any browser crash; the
+# harness tails the file into the failure diagnostics.
+start_bg chromedriver "$LOGS/chromedriver.log" "$CHROMEDRIVER" --port="$CD_PORT" --verbose
 wait_http "http://127.0.0.1:$CD_PORT/status"
 export MT_E2E_WEBDRIVER_URL="http://127.0.0.1:$CD_PORT"
+export MT_E2E_CHROMEDRIVER_LOG="$LOGS/chromedriver.log"
 
-echo "==> journeys"
+phase "journeys"
+# `--nocapture` prints each journey step's elapsed time as it happens, so a slow
+# step is visible in the CI log even before the failure diagnostics land.
 if [[ -n "$JOURNEY" ]]; then
-  (cd backend && cargo test --locked -p e2e --test "$JOURNEY" -- --ignored --test-threads=1)
+  (cd backend && cargo test --locked -p e2e --test "$JOURNEY" -- --ignored --test-threads=1 --nocapture)
 else
-  (cd backend && cargo test --locked -p e2e -- --ignored --test-threads=1)
+  (cd backend && cargo test --locked -p e2e -- --ignored --test-threads=1 --nocapture)
 fi
 
-echo "==> e2e passed"
+phase "e2e passed"

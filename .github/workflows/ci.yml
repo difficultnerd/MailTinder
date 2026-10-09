@@ -118,7 +118,11 @@ jobs:
         working-directory: app
       - run: scripts/e2e.sh
         working-directory: .
-      - if: failure()
+      # Diagnostics from a failed run: screenshots, page text/source, the
+      # semantics tree, the browser console log, the ChromeDriver tail and the
+      # service logs. Runs when a step fails and when the timeout cancels the
+      # job, so a red run is always diagnosable.
+      - if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-logs
