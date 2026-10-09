@@ -26,6 +26,7 @@ sha2.workspace = true
 subtle = "2"
 
 [dev-dependencies]
+proptest.workspace = true
 testkit.workspace = true
 fake-google = { path = "../fake-google", version = "0.1.0" }
 tokio.workspace = true

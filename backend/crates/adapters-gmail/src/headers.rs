@@ -115,7 +115,7 @@ pub fn build_header_facts(h: &RawHeaders, from: &ParsedFrom) -> HeaderFacts {
     let list_id = h.first("List-Id").and_then(normalise_list_id);
     let feedback_id = h
         .first("Feedback-ID")
-        .map(|v| truncate(v.trim(), KEY_MAX_CHARS))
+        .map(|v| truncate(&sanitise_plain(v.trim(), usize::MAX), KEY_MAX_CHARS))
         .filter(|s| !s.is_empty());
     let precedence_bulk = h.first("Precedence").is_some_and(|v| {
         matches!(
@@ -149,14 +149,16 @@ pub fn build_header_facts(h: &RawHeaders, from: &ParsedFrom) -> HeaderFacts {
     }
 }
 
-/// The text inside the last `<...>` of a `List-Id`, lower-cased and bounded.
+/// The text inside the last `<...>` of a `List-Id`, lower-cased, made safe
+/// plain text (no raw CR or LF; T-1110 hostile-input property) and bounded.
 fn normalise_list_id(value: &str) -> Option<String> {
     let inner = match (value.rfind('<'), value.rfind('>')) {
         (Some(open), Some(close)) if open < close => &value[open + 1..close],
         _ => value,
     };
     let normalised = inner.trim().to_ascii_lowercase();
-    (!normalised.is_empty()).then(|| truncate(&normalised, KEY_MAX_CHARS))
+    (!normalised.is_empty())
+        .then(|| truncate(&sanitise_plain(&normalised, usize::MAX), KEY_MAX_CHARS))
 }
 
 /// The first matching ESP hint from `List-Id`, `Feedback-ID` or `Return-Path`.
