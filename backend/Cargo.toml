@@ -46,6 +46,10 @@ mail-parser = "0.9"
 jsonwebtoken = "9"
 html5ever = "0.27"
 unicode-segmentation = "1"
+# WebDriver client for the end-to-end harness crate (`crates/e2e`, dev-only).
+# rustls keeps it off the native-tls/openssl path; the transitive `webdriver`
+# crate is MPL-2.0 (see backend/deny.toml).
+fantoccini = { version = "0.21", default-features = false, features = ["rustls-tls"] }
 
 # Keep local tests and the separate llvm-cov build within the worker disk budget.
 # Coverage instrumentation does not require debug information or incremental caches.
