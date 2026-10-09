@@ -18,6 +18,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Default is the directory demo.sh writes its state into.
 RUN="${DEMO_RUN_DIR:-$REPO/target/demo/run}"
 PID_FILE="$RUN/flutter.pid"
+# demo.sh records "<pid> <proc start time>" here when it starts the dev server;
+# a pid on its own is not proof the process is ours (T-1113 review F3).
+TOKEN_FILE="$RUN/flutter.pid.start"
+
+# proc_starttime: field 22 of /proc/<pid>/stat, the ownership token.
+# shellcheck source=scripts/e2e/lib.sh
+source "$REPO/scripts/e2e/lib.sh"
 
 if [[ ! -s "$PID_FILE" ]]; then
   echo "demo_reload: no dev server pid file at $PID_FILE (is 'scripts/demo.sh --dev' running?)" >&2
@@ -30,6 +37,21 @@ if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
 fi
 if ! kill -0 "$pid" 2>/dev/null; then
   echo "demo_reload: dev server (pid $pid) is not running" >&2
+  exit 1
+fi
+# A pid read from a file is not proof the process is ours: after `stop` (or a
+# crash) the pid can be reused by an unrelated process, and SIGUSR1 kills a
+# process with no handler. Refuse unless the recorded start time still matches,
+# the same ownership check scripts/demo.sh uses before signalling a group
+# (T-1113 review F3).
+if [[ ! -s "$TOKEN_FILE" ]]; then
+  echo "demo_reload: refusing: no start-time token at $TOKEN_FILE (was this run started by 'scripts/demo.sh --dev'?)" >&2
+  exit 1
+fi
+read -r token_pid token_start < "$TOKEN_FILE" || true
+now="$(proc_starttime "$pid" 2>/dev/null || true)"
+if [[ "$token_pid" != "$pid" || -z "$now" || "$now" != "$token_start" ]]; then
+  echo "demo_reload: refusing: pid $pid is not the dev server this run started" >&2
   exit 1
 fi
 kill -USR1 "$pid"

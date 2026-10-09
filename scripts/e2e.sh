@@ -183,4 +183,11 @@ MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_phone.py" \
 phase "demo.sh --check --dev (T-1113)"
 bash "$REPO/scripts/demo.sh" --check --dev
 
+# The websocket relay tests (T-1113 review F1) need the pinned `websockets`
+# package both the relay and the test client use; the phase above just installed
+# it into target/demo/venv, so run them with that python. Where websockets is
+# absent (the ac-coverage job) these two tests skip instead.
+phase "dev-mode websocket relay (T-1113)"
+"$REPO/target/demo/venv/bin/python" "$REPO/tools/test_demo_dev.py" -k websocket
+
 phase "e2e passed"

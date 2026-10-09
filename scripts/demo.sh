@@ -466,13 +466,23 @@ demo_venv() {
 # scripts/demo_reload.sh hot reload it (SIGUSR1); stdin is /dev/null so it never
 # reads the caller's terminal.
 start_dev_server() {
-  local log="$LOGS/flutter-dev.log"
+  local log="$LOGS/flutter-dev.log" pid
   phase "Flutter dev server with hot reload on 127.0.0.1:$DEV_PORT"
   start_bg flutter-dev "$log" \
     bash -c "cd '$REPO/app' && exec flutter run -d web-server \
       --web-hostname 127.0.0.1 --web-port '$DEV_PORT' \
       --dart-define=MT_E2E=true --pid-file '$FLUTTER_PID_FILE' </dev/null"
   wait_http "http://127.0.0.1:$DEV_PORT/" 300
+  # Record the tool's pid and its /proc start time in a companion token. The pid
+  # alone is not proof of ownership, so scripts/demo_reload.sh compares the
+  # token before signalling and refuses a reused pid (T-1113 review F3).
+  pid="$(tr -d '[:space:]' < "$FLUTTER_PID_FILE" 2>/dev/null || true)"
+  if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
+    echo "demo.sh: flutter run did not write a pid to $FLUTTER_PID_FILE" >&2
+    return 1
+  fi
+  printf '%s %s\n' "$pid" "$(proc_starttime "$pid" 2>/dev/null || true)" \
+    > "$FLUTTER_PID_FILE.start"
 }
 
 demo_start() {
@@ -593,7 +603,11 @@ demo_start() {
     --port-file "$HOST_PORT_FILE"
   )
   if (( PHONE )); then
-    front_door+=(--fake-google "http://127.0.0.1:$FAKE_PORT" --access-code-file "$ACCESS_CODE_FILE")
+    # --public-origin names the tunnel the browser reaches the front door at, so
+    # the dev-mode websocket Origin/Host check accepts the legitimate page
+    # (T-1113 F2). HTTP still passes through the access code.
+    front_door+=(--fake-google "http://127.0.0.1:$FAKE_PORT" \
+      --access-code-file "$ACCESS_CODE_FILE" --public-origin "$PUBLIC_URL")
   fi
   if (( DEV )); then
     # The front door proxies `/` and the dev server's websocket to it; /api/**
@@ -634,7 +648,9 @@ demo_stop() {
   done < <(all_pgids)
 
   if (( ${#ours[@]} == 0 )); then
-    rm -f "$STATE"
+    # Nothing we own is alive; still drop a stale dev-server pid file so
+    # scripts/demo_reload.sh cannot signal a reused pid (T-1113 F3).
+    rm -f "$STATE" "$RUN/flutter.pid" "$RUN/flutter.pid.start"
     echo "demo: nothing running"
     return 0
   fi
@@ -648,7 +664,8 @@ demo_stop() {
       remaining=1
     fi
   done
-  rm -f "$STATE" "$RUN/service.pgids" "$RUN/access-code"
+  rm -f "$STATE" "$RUN/service.pgids" "$RUN/access-code" \
+    "$RUN/flutter.pid" "$RUN/flutter.pid.start"
   if (( remaining )); then
     echo "demo: leak census: live processes remain" >&2
     return 1

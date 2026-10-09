@@ -40,6 +40,12 @@ still passes the same access control and the same firebase.json `hosting.headers
 as the normal demo. The websocket relay uses the pinned `websockets` package
 (installed by demo.sh into target/demo/venv); the HTTP handler peeks the first
 bytes of each connection so the upgrade is handed to that relay untouched.
+
+In the non-phone `--dev` run there is no access code (`access is None`): the
+front door has no authentication at all, so the websocket upgrade is instead
+guarded by an `Origin`/`Host` check (review F2) that refuses a cross-site page
+or a DNS-rebound name. `--phone --dev` keeps the access code; `--public-origin`
+names the tunnel origin so the legitimate page still passes the check.
 """
 
 import argparse
@@ -50,6 +56,7 @@ import hmac
 import http.client
 import json
 import mimetypes
+import re
 import select
 import socket
 import sys
@@ -169,6 +176,62 @@ def header_value(head: bytes, name: str) -> str | None:
     return None
 
 
+# -- dev-mode websocket Origin/Host check (T-1113 review F2) -------------------
+# In the non-phone `--dev` run the front door has no access code, so without a
+# check any web page the owner visits could open a websocket to the loopback
+# front door (cross-site websocket hijacking) or reach it through DNS rebinding
+# and be relayed to the Flutter debug websocket. The upgrade is therefore
+# accepted only when the Origin is absent (a non-browser client, not the
+# cross-site threat), a loopback origin (the front door reached directly) or the
+# configured public origin (the tunnel in --phone mode), and the Host names the
+# same loopback host or public origin.
+_LOOPBACK_HOST_RE = re.compile(r"^127(\.[0-9]{1,3}){3}$")
+
+
+def is_loopback_hostname(host: str) -> bool:
+    """True for a loopback hostname (127.0.0.0/8, localhost or IPv6 ::1)."""
+    return host in ("localhost", "::1") or bool(_LOOPBACK_HOST_RE.match(host))
+
+
+def origin_is_allowed(origin: str | None, public_origin: str | None) -> bool:
+    """True when a websocket handshake `Origin` is acceptable (review F2)."""
+    if origin is None:
+        return True
+    origin = origin.strip().rstrip("/")
+    if public_origin is not None and origin.lower() == public_origin.lower():
+        return True
+    try:
+        hostname = urllib.parse.urlsplit(origin).hostname
+    except ValueError:
+        return False
+    return is_loopback_hostname(hostname or "")
+
+
+def host_is_allowed(host_header: str | None, public_origin: str | None) -> bool:
+    """True when a websocket handshake `Host` names the front door (review F2).
+
+    A rebound name resolves to loopback but still carries its own Host, so this
+    refuses it as well as a foreign Host in general.
+    """
+    if not host_header:
+        return True
+    host_header = host_header.strip()
+    if host_header.startswith("["):
+        hostname = host_header[1:].split("]", 1)[0]
+    else:
+        hostname = host_header.split(":", 1)[0]
+    if is_loopback_hostname(hostname):
+        return True
+    if public_origin is not None:
+        try:
+            public_host = urllib.parse.urlsplit(public_origin).hostname or ""
+        except ValueError:
+            public_host = ""
+        if hostname.lower() == public_host.lower():
+            return True
+    return False
+
+
 def relay_websocket(client: Any, upstream: Any) -> None:
     """Copy messages both ways between two websockets connections (T-1113).
 
@@ -272,6 +335,11 @@ def main() -> None:
         default=None,
         help="dev mode (T-1113): loopback flutter run -d web-server base URL to proxy / to",
     )
+    parser.add_argument(
+        "--public-origin",
+        default=None,
+        help="phone mode: the origin the front door is reached at (websocket Origin/Host check)",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -286,6 +354,7 @@ def main() -> None:
         access = AccessControl(code)
     fake_google = parse_api(args.fake_google) if args.fake_google else None
     dev_upstream = parse_api(args.dev_upstream) if args.dev_upstream else None
+    public_origin = args.public_origin.strip().rstrip("/") if args.public_origin else None
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -356,7 +425,14 @@ def main() -> None:
             if access is not None:
                 verdict = access.verdict(header_value(head, "Authorization"))
             if verdict != "ok":
-                self._deny_websocket(verdict)
+                self._deny_websocket(429 if verdict == "blocked" else 401)
+                return
+            # The non-phone `--dev` run has no access code, so refuse a
+            # cross-site or DNS-rebound websocket by Origin and Host (F2).
+            if not origin_is_allowed(
+                header_value(head, "Origin"), public_origin
+            ) or not host_is_allowed(header_value(head, "Host"), public_origin):
+                self._deny_websocket(403)
                 return
             try:
                 from websockets.server import ServerProtocol
@@ -405,16 +481,13 @@ def main() -> None:
                     except Exception:
                         pass
 
-        def _deny_websocket(self, verdict: str) -> None:
-            if verdict == "blocked":
-                status = 429
-            else:
-                status = 401
+        def _deny_websocket(self, status: int) -> None:
             reason = http.client.responses.get(status, "")
             lines = [f"HTTP/1.1 {status} {reason}"]
             if status == 429:
                 lines.append(f"Retry-After: {int(BLOCK_SECONDS)}")
-            lines.append('WWW-Authenticate: Basic realm="demo"')
+            if status == 401:
+                lines.append('WWW-Authenticate: Basic realm="demo"')
             lines.append("Content-Length: 0")
             lines.append("Connection: close")
             lines.append("")
