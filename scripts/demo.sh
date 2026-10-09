@@ -274,6 +274,11 @@ demo_start() {
   HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 
   write_state
+  phase "seeding the demo mailbox and invite (T-1108b)"
+  python3 "$REPO/scripts/demo_seed.py" \
+    --fake-google-url "http://127.0.0.1:$FAKE_PORT" \
+    --api-url "http://127.0.0.1:$API_PORT" \
+    --app-origin "http://$(url_host):$HOST_PORT"
   echo "demo: running at http://$(url_host):$HOST_PORT"
 }
 
