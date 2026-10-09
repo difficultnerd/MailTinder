@@ -152,6 +152,10 @@ def main() -> None:
             for key, value in response.getheaders():
                 if key.lower() in SKIP_RESPONSE_HEADERS:
                     continue
+                # Never relay a header carrying CR/LF (response splitting); drop it rather than rewrite it.
+                if any(c in key or c in value for c in "\r\n\0"):
+                    sys.stderr.write(f"e2e-host: dropped upstream header with control characters: {key!r}\n")
+                    continue
                 self.send_header(key, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
