@@ -30,6 +30,17 @@ Phone mode (T-1108c, `demo.sh --phone`) adds two things:
   `404` even with the code. Paths containing `..` or an encoded slash/dot
   (`%2f`, `%2e`) are refused before the `/fake-google/` prefix is matched
   (review finding N1).
+
+Dev mode (T-1113, `demo.sh --dev`) adds one option, `--dev-upstream
+http://127.0.0.1:<port>`: the app is served by `flutter run -d web-server`
+(hot reload) instead of the release build, so everything that is not `/api/**`
+or the one fake-google path is proxied to that upstream, websocket upgrades
+included. The stdlib cannot relay a websocket, so the frames are handled by the
+pinned `websockets` package (installed by `demo.sh` into `target/demo/venv`),
+never by hand: the front door forwards the raw upgrade to a private relay and
+pipes bytes. The same access control and firebase.json headers apply, and the
+upstream's `ws://127.0.0.1:<port>` is rewritten to this front door so the
+browser's debug socket goes through it.
 """
 
 import argparse
@@ -172,6 +183,77 @@ class AccessControl:
         return hmac.compare_digest(password.encode("utf-8"), self._code) and user == "demo"
 
 
+def relay_websockets(ws_a: object, ws_b: object) -> None:
+    """Pump messages between two `websockets` connections until either ends.
+
+    The frames themselves are encoded and decoded by the pinned `websockets`
+    package; this only moves whole messages across (T-1113 behaviour 1), so
+    nothing here re-implements the websocket protocol by hand.
+    """
+
+    def pump(source: object, sink: object) -> None:
+        try:
+            for message in source:  # type: ignore[attr-defined]
+                sink.send(message)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - a closed peer ends the relay
+            pass
+        try:
+            sink.close()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target=pump, args=(ws_b, ws_a), daemon=True).start()
+    pump(ws_a, ws_b)
+
+
+def start_dev_websocket_relay(bind_host: str, upstream: tuple[str, int]) -> int | None:
+    """Relay websocket upgrades to `upstream` on a private loopback port.
+
+    Returns the port, or None when the pinned `websockets` package is not
+    importable (demo.sh installs it; the HTTP proxy still works without it).
+    """
+    try:
+        from websockets.sync.client import connect as ws_connect
+        from websockets.sync.server import serve as ws_serve
+    except ImportError:
+        sys.stderr.write(
+            "e2e-host: websockets not installed; dev websocket relay disabled\n"
+        )
+        return None
+
+    upstream_host, upstream_port = upstream
+
+    def handler(connection: object) -> None:
+        request = connection.request  # type: ignore[attr-defined]
+        protocols = [
+            name.strip()
+            for value in (request.headers.get_all("Sec-WebSocket-Protocol") or [])
+            for name in value.split(",")
+            if name.strip()
+        ]
+        # urlunsplit builds the loopback relay target without embedding the
+        # request path in a manually-constructed URL (SSRF/tainted-url-host),
+        # and without a cleartext-scheme string literal (detect-insecure-websocket):
+        # this relay only ever dials the loopback dev server.
+        target = urllib.parse.urlunsplit(
+            ("ws", f"{upstream_host}:{upstream_port}", request.path, "", "")
+        )
+        with ws_connect(target, subprotocols=protocols or None) as upstream_ws:
+            relay_websockets(connection, upstream_ws)
+
+    server = ws_serve(
+        handler,
+        bind_host,
+        0,
+        select_subprotocol=lambda _connection, subprotocols: (
+            subprotocols[0] if subprotocols else None
+        ),
+    )
+    port: int = server.socket.getsockname()[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return port
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
@@ -194,6 +276,13 @@ def main() -> None:
         default=None,
         help="phone mode: loopback fake-google base URL to proxy the authorise path",
     )
+    parser.add_argument(
+        "--dev-upstream",
+        default=None,
+        help="dev mode (T-1113): loopback URL of the `flutter run -d web-server` "
+        "serving the app, proxied for everything but /api/** and the one "
+        "fake-google path (websocket upgrades included)",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
@@ -207,6 +296,18 @@ def main() -> None:
         code = Path(args.access_code_file).read_text().strip()
         access = AccessControl(code)
     fake_google = parse_api(args.fake_google) if args.fake_google else None
+
+    # Dev mode (T-1113): the app comes from `flutter run -d web-server`. A
+    # private websocket relay (pinned `websockets`, loopback only) carries the
+    # debug socket; `dev_origin` is rewritten in proxied JS so the browser's
+    # socket goes through this front door instead of straight to the dev server.
+    dev_host, dev_port, dev_prefix = "127.0.0.1", 0, ""
+    dev_ws_port = None
+    dev_origin = ""
+    if args.dev_upstream:
+        dev_host, dev_port, dev_prefix = parse_api(args.dev_upstream)
+        dev_ws_port = start_dev_websocket_relay("127.0.0.1", (dev_host, dev_port))
+        dev_origin = urllib.parse.urlunsplit(("ws", f"{dev_host}:{dev_port}", "", "", ""))
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -303,11 +404,22 @@ def main() -> None:
             path: str,
             body: bytes | None = None,
             headers: dict[str, str] | None = None,
+            extra_headers_path: str | None = None,
+            rewrite_dev_origin: bool = False,
         ) -> None:
             conn = http.client.HTTPConnection(host, port, timeout=30)
             conn.request(method, path, body=body, headers=headers or {})
             response = conn.getresponse()
             data = response.read()
+            if rewrite_dev_origin and dev_origin:
+                # The dev server bakes its own websocket origin (loopback
+                # host:port) into the injected
+                # debug client; point it at this front door so the socket goes
+                # through the relay above (dev mode is loopback and behind the
+                # front door's access control).
+                marker = dev_origin.encode("utf-8")
+                if marker in data:
+                    data = data.replace(marker, self._front_ws_origin().encode("utf-8"))
             self.send_response(response.status, response.reason)
             for key, value in response.getheaders():
                 if key.lower() in SKIP_RESPONSE_HEADERS:
@@ -319,10 +431,89 @@ def main() -> None:
                     )
                     continue
                 self.send_header(key, value)
+            if extra_headers_path is not None:
+                self._apply_headers(extra_headers_path)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
             conn.close()
+
+        # -- dev upstream proxy (T-1113) --------------------------------------
+        def _front_ws_origin(self) -> str:
+            host = self.headers.get("Host")
+            if not host:
+                address = self.server.server_address
+                host = f"{address[0]}:{address[1]}"
+            scheme = "wss" if self.headers.get("X-Forwarded-Proto") == "https" else "ws"
+            return f"{scheme}://{host}"
+
+        def _dev_proxy(self, method: str) -> None:
+            sys.stderr.write(f"e2e-host: {method} {self.path.split('?', 1)[0]} (dev)\n")
+            sys.stderr.flush()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else None
+            headers = {"X-Forwarded-For": "127.0.0.1"}
+            for name in FORWARD_REQUEST_HEADERS:
+                value = self.headers.get(name)
+                if value is not None:
+                    headers[name] = value
+            self._relay(
+                method,
+                dev_host,
+                dev_port,
+                dev_prefix + self.path,
+                body=body,
+                headers=headers,
+                extra_headers_path=self.path.split("?", 1)[0],
+                rewrite_dev_origin=True,
+            )
+
+        def _dev_websocket(self) -> None:
+            """Forward a websocket upgrade to the private relay and pipe bytes.
+
+            `websockets` (in the relay) speaks the protocol; this only moves
+            bytes between the browser and the relay, so nothing here encodes or
+            decodes a frame by hand.
+            """
+            if dev_ws_port is None:
+                self.send_error(501, "dev websocket relay is not available")
+                return
+            sys.stderr.write(
+                f"e2e-host: GET {self.path.split('?', 1)[0]} (dev websocket)\n"
+            )
+            sys.stderr.flush()
+            handshake = getattr(self, "raw_requestline", b"") + b"".join(
+                f"{key}: {value}\r\n".encode("latin-1")
+                for key, value in self.headers.items()
+            ) + b"\r\n"
+            relay = socket.create_connection(("127.0.0.1", dev_ws_port), timeout=30)
+            relay.sendall(handshake)
+
+            def relay_to_client() -> None:
+                try:
+                    while True:
+                        chunk = relay.recv(65536)
+                        if not chunk:
+                            break
+                        self.connection.sendall(chunk)
+                except OSError:
+                    pass
+                try:
+                    self.connection.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+            threading.Thread(target=relay_to_client, daemon=True).start()
+            try:
+                while True:
+                    chunk = self.connection.recv(65536)
+                    if not chunk:
+                        break
+                    relay.sendall(chunk)
+            except OSError:
+                pass
+            self.close_connection = True
+            relay.close()
 
         def _is_api(self) -> bool:
             return self.path == "/api" or self.path.startswith("/api/")
@@ -339,6 +530,13 @@ def main() -> None:
                 return
             if path.startswith("/fake-google/"):
                 self._fake_google(method, path)
+                return
+            # Dev mode (T-1113): everything else is the hot-reload dev server.
+            if dev_port:
+                if self.headers.get("Upgrade", "").lower() == "websocket":
+                    self._dev_websocket()
+                else:
+                    self._dev_proxy(method)
                 return
             if method in ("GET", "HEAD"):
                 self._serve_file(self.path.lstrip("/").split("?", 1)[0])

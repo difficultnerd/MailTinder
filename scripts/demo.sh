@@ -37,17 +37,38 @@ ACCESS_CODE_FILE=""
 PUBLIC_URL=""
 TUNNEL_TARGET=""
 CLOUDFLARED_PIN="${DEMO_CLOUDFLARED_SHA256:-$REPO/scripts/demo/cloudflared.sha256}"
+# Dev mode (T-1113): serve the app from `flutter run -d web-server` behind the
+# same front door, so a Dart edit shows up in seconds. The websocket relay the
+# front door needs is the pinned `websockets` package in this virtualenv.
+DEV=0
+DEV_PORT=""
+DEV_FIFO=""
+DEV_VENV="$STATE_DIR/venv"
+DEV_REQUIREMENTS="$REPO/scripts/demo/requirements-dev.txt"
+DEV_APP_ROOT="$REPO/app/web"
+DEV_RELOAD_FILE="$REPO/app/lib/copy.dart"
+DEV_RELOAD_BAK="$STATE_DIR/copy.dart.orig"
+DEV_RELOAD_NEEDLE="Mail Tinder RELOAD CHECK T1113"
+# The DDC module the dev server serves the app's entry from; it only appears
+# once the initial compile is done, so readiness waits on it too (T-1113).
+DEV_MODULE_PATH="/packages/app/app.dart.lib.js"
 
 usage() {
   cat <<'EOF'
-demo.sh [start] [--host <loopback addr>] [--phone]   start and leave the stack running
+demo.sh [start] [--host <loopback addr>] [--phone] [--dev]
+                                           start and leave the stack running
 demo.sh stop                               stop and print the leak census
 demo.sh status                             is the stack running?
-demo.sh --check                            automatic start, fetch, stop
+demo.sh --check [--dev]                    automatic start, fetch, stop
 
 --phone exposes the front door through a cloudflared quick tunnel protected by
 a generated access code. cloudflared must be the pinned release on PATH or at
 ~/bin/cloudflared; --check and --phone cannot be combined.
+
+--dev serves the app with `flutter run -d web-server` (hot reload) behind the
+same front door, so a Dart edit reaches the owner in seconds. It is slower than
+the release build and is for look-and-feel iteration only; reload it with
+scripts/demo_reload.sh. --check --dev also runs the dev checks.
 EOF
 }
 
@@ -58,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     status) COMMAND="status"; shift ;;
     --check) COMMAND="check"; shift ;;
     --phone) PHONE=1; shift ;;
+    --dev) DEV=1; shift ;;
     --host) DEMO_HOST="${2:?--host needs an address}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "demo.sh: unknown argument: $1" >&2; exit 2 ;;
@@ -206,14 +228,11 @@ print("".join(secrets.choice(alphabet) for _ in range(16)))
 PY
 }
 
-# Validate the tunnel target and cloudflared, then generate the access code into
-# a mode-600 file. Runs before anything is started or built, so a bad binary or
-# target costs nothing and the code is never an argument (N2).
-phone_prepare() {
-  verify_cloudflared
-  if [[ -n "${DEMO_TUNNEL_TARGET:-}" ]]; then
-    require_loopback_url "$DEMO_TUNNEL_TARGET"
-  fi
+# Generate the access code into a mode-600 file (never an argument). Shared by
+# --phone and the dev check, which turns the same access control on so the
+# hot-reload front door is exercised behind it (T-1113 AC3).
+write_access_code() {
+  local old_umask
   ACCESS_CODE="$(generate_access_code)"
   if [[ ! "$ACCESS_CODE" =~ ^[A-Za-z0-9]{16}$ ]]; then
     echo "demo.sh: refusing to start: could not generate an access code" >&2
@@ -221,12 +240,22 @@ phone_prepare() {
   fi
   mkdir -p "$RUN"
   ACCESS_CODE_FILE="$RUN/access-code"
-  local old_umask
   old_umask="$(umask)"
   umask 077
   printf '%s\n' "$ACCESS_CODE" > "$ACCESS_CODE_FILE"
   umask "$old_umask"
   chmod 600 "$ACCESS_CODE_FILE"
+}
+
+# Validate the tunnel target and cloudflared, then generate the access code.
+# Runs before anything is started or built, so a bad binary or target costs
+# nothing and the code is never an argument (N2).
+phone_prepare() {
+  verify_cloudflared
+  if [[ -n "${DEMO_TUNNEL_TARGET:-}" ]]; then
+    require_loopback_url "$DEMO_TUNNEL_TARGET"
+  fi
+  write_access_code
 }
 
 # Start the quick tunnel to the loopback front door and read the public URL it
@@ -386,22 +415,156 @@ PY
 }
 
 # Build only what is missing, so `--check` reuses an e2e.sh build and stays
-# under the 3-minute budget; DEMO_FORCE_BUILD=1 rebuilds anyway.
+# under the 3-minute budget; DEMO_FORCE_BUILD=1 rebuilds anyway. In dev mode the
+# app is served by `flutter run -d web-server`, so the release web build is
+# skipped and only the Rust services are required (T-1113).
 demo_build() {
   if [[ "${DEMO_FORCE_BUILD:-0}" != "1" ]] \
     && [[ -x "$REPO/backend/target/debug/api" ]] \
     && [[ -x "$REPO/backend/target/debug/unsub" ]] \
     && [[ -x "$REPO/backend/target/debug/fake-google" ]] \
     && [[ -x "$REPO/backend/target/debug/unsub-testbed" ]] \
-    && [[ -f "$REPO/app/build/web/index.html" ]]; then
+    && { (( DEV )) || [[ -f "$REPO/app/build/web/index.html" ]]; }; then
     phase "reusing the existing build"
     return 0
   fi
   phase "building services in test configuration"
   (cd backend && cargo build --locked -p api -p unsub --features api/testkit,unsub/testkit)
   (cd backend && cargo build --locked -p fake-google -p unsub-testbed)
-  phase "building the Flutter web app with the e2e define"
-  (cd app && flutter build web --release --no-web-resources-cdn --dart-define=MT_E2E=true)
+  if (( ! DEV )); then
+    phase "building the Flutter web app with the e2e define"
+    (cd app && flutter build web --release --no-web-resources-cdn --dart-define=MT_E2E=true)
+  fi
+}
+
+# ------------------------------------------------------------- dev mode (T-1113)
+
+# The pinned websocket relay into target/demo/venv. The front door imports it
+# through this interpreter so the frames are handled by the package, not a
+# hand-written relay.
+dev_prepare_venv() {
+  local log="$LOGS/dev-pip.log"
+  if [[ ! -x "$DEV_VENV/bin/python" ]]; then
+    phase "creating the dev virtualenv"
+    python3 -m venv "$DEV_VENV"
+  fi
+  phase "installing the pinned websocket relay"
+  "$DEV_VENV/bin/python" -m pip install --disable-pip-version-check --quiet \
+    -r "$DEV_REQUIREMENTS" >>"$log" 2>&1
+}
+
+# Wait for the dev server to finish its first compile and answer, up to 300 s:
+# a cold runner compiles the whole app before the first byte is served. The
+# root answers before the compile is done, so readiness also waits for the DDC
+# module the reload check reads.
+dev_wait_ready() {
+  local waited=0
+  while (( waited < 300 )); do
+    if curl -sf --max-time 2 "http://127.0.0.1:$DEV_PORT/" >/dev/null 2>&1 \
+      && curl -sf --max-time 2 "http://127.0.0.1:$DEV_PORT$DEV_MODULE_PATH" >/dev/null 2>&1; then
+      echo "    dev server ready after ${waited}s" >&2
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  echo "demo.sh: the flutter dev server did not answer within ${waited}s" >&2
+  return 1
+}
+
+# Start `flutter run -d web-server` on a free loopback port, hot reload enabled.
+# Its stdin is a FIFO so scripts/demo_reload.sh can send `r` without owning the
+# terminal; a long-lived writer keeps the FIFO from reading as EOF between
+# reloads.
+dev_start_server() {
+  DEV_PORT="$(free_port)"
+  DEV_FIFO="$RUN/flutter-dev.stdin"
+  rm -f "$DEV_FIFO"
+  mkfifo "$DEV_FIFO"
+  start_bg dev-stdin "$LOGS/dev-stdin.log" \
+    bash -c 'exec 3>"$1"; sleep infinity' bash "$DEV_FIFO"
+  phase "flutter run -d web-server on 127.0.0.1:$DEV_PORT (hot reload)"
+  start_bg flutter-dev "$LOGS/flutter-dev.log" \
+    bash -c 'cd "$3" && exec flutter run -d web-server --web-hostname 127.0.0.1 --web-port "$1" --dart-define=MT_E2E=true < "$2"' \
+    bash "$DEV_PORT" "$DEV_FIFO" "$REPO/app"
+  dev_wait_ready
+}
+
+# Fetch a URL through the front door, authenticating with the access code when
+# one is set (the dev check always sets one, so its checks exercise the gate).
+app_get() {
+  local url="$1"
+  shift
+  if [[ -n "${ACCESS_CODE_FILE:-}" && -r "$ACCESS_CODE_FILE" ]]; then
+    printf 'user = "demo:%s"\n' "$(<"$ACCESS_CODE_FILE")" \
+      | curl -sf --max-time 15 --config - "$@" "$url"
+  else
+    curl -sf --max-time 15 "$@" "$url"
+  fi
+}
+
+# The HTTP status through the front door, authenticated when a code is set.
+app_status() {
+  if [[ -n "${ACCESS_CODE_FILE:-}" && -r "$ACCESS_CODE_FILE" ]]; then
+    printf 'user = "demo:%s"\n' "$(<"$ACCESS_CODE_FILE")" \
+      | curl -s -o /dev/null -w '%{http_code}' --max-time 10 --config - "$1"
+  else
+    curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$1"
+  fi
+}
+
+# Restore the file the reload check edits; safe to call when it did not run.
+dev_reload_restore() {
+  if [[ -f "$DEV_RELOAD_BAK" ]]; then
+    cp "$DEV_RELOAD_BAK" "$DEV_RELOAD_FILE"
+    rm -f "$DEV_RELOAD_BAK"
+  fi
+}
+
+# AC2: edit a visible string with the helper, assert the new string is served
+# through the front door within 30 s, then revert.
+dev_check_reload() {
+  local url="$1" waited=0 ok=0
+  cp "$DEV_RELOAD_FILE" "$DEV_RELOAD_BAK"
+  sed -i "s/static const productName = 'Mail Tinder';/static const productName = '$DEV_RELOAD_NEEDLE';/" \
+    "$DEV_RELOAD_FILE"
+  if ! grep -qF "$DEV_RELOAD_NEEDLE" "$DEV_RELOAD_FILE"; then
+    echo "demo: dev reload check could not edit $DEV_RELOAD_FILE" >&2
+    dev_reload_restore
+    return 1
+  fi
+  "$REPO/scripts/demo_reload.sh"
+  mkdir -p "$STATE_DIR"
+  while (( waited < 30 )); do
+    app_get "$url$DEV_MODULE_PATH" >"$STATE_DIR/reload-module.js" 2>/dev/null || true
+    if grep -qF "$DEV_RELOAD_NEEDLE" "$STATE_DIR/reload-module.js" 2>/dev/null; then
+      ok=1
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  dev_reload_restore
+  if (( ! ok )); then
+    echo "demo: the reloaded app was not served within 30 s" >&2
+    return 1
+  fi
+  echo "demo: PASS demo_reload_changes_the_served_app"
+}
+
+# AC1/AC3: the page and the api are served from one origin, behind the same
+# access control as normal mode (dev check turns the code on).
+dev_check() {
+  local url="$1" anon with
+  echo "demo: PASS demo_dev_serves_app_and_api_through_one_origin"
+  anon="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url/")"
+  with="$(app_status "$url/")"
+  if [[ "$anon" != "401" || "$with" != "200" ]]; then
+    echo "demo: dev access control is wrong (anonymous=$anon authenticated=$with)" >&2
+    return 1
+  fi
+  echo "demo: PASS demo_dev_applies_access_control_like_normal_mode"
+  dev_check_reload "$url"
 }
 
 demo_start() {
@@ -423,6 +586,11 @@ demo_start() {
   # actually pointed at (chosen a moment earlier) - the CI-only front-door
   # mismatch (T-1108c).
   rm -f "$RUN/service.pgids" "$STATE" "$RUN"/*.port
+
+  if (( DEV )); then
+    # The front door needs the pinned websocket relay; install it before start.
+    dev_prepare_venv
+  fi
 
   demo_build
 
@@ -495,27 +663,46 @@ demo_start() {
   fi
   wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
-  phase "serving the web build on http://$(url_host):$HOST_PORT"
-  HOST_PORT_FILE="$RUN/host.port"
-  if (( PHONE )); then
-    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
-      --root "$REPO/app/build/web" \
-      --firebase-json "$REPO/firebase.json" \
-      --host "$DEMO_HOST" \
-      --api "http://127.0.0.1:$API_PORT" \
-      --port "$HOST_PORT" \
-      --port-file "$HOST_PORT_FILE" \
-      --fake-google "http://127.0.0.1:$FAKE_PORT" \
-      --access-code-file "$ACCESS_CODE_FILE"
-  else
-    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
-      --root "$REPO/app/build/web" \
-      --firebase-json "$REPO/firebase.json" \
-      --host "$DEMO_HOST" \
-      --api "http://127.0.0.1:$API_PORT" \
-      --port "$HOST_PORT" \
-      --port-file "$HOST_PORT_FILE"
+  # Dev mode (T-1113): start the hot-reload dev server before the front door so
+  # the proxy has an upstream to reach.
+  if (( DEV )); then
+    dev_start_server
   fi
+
+  phase "serving the app on http://$(url_host):$HOST_PORT"
+  HOST_PORT_FILE="$RUN/host.port"
+  local local_root="$REPO/app/build/web"
+  if (( DEV )); then
+    local_root="$DEV_APP_ROOT"
+  fi
+  # The dev front door relays the Flutter debug websocket with the pinned
+  # `websockets` package, which is installed only in the dev virtualenv; normal
+  # mode needs nothing but the standard library. (T-1113 behaviour 1)
+  local host_python="python3"
+  if (( DEV )); then
+    host_python="$DEV_VENV/bin/python"
+  fi
+  local host_args=(
+    "$host_python" "$REPO/scripts/e2e_host.py"
+    --root "$local_root"
+    --firebase-json "$REPO/firebase.json"
+    --host "$DEMO_HOST"
+    --api "http://127.0.0.1:$API_PORT"
+    --port "$HOST_PORT"
+    --port-file "$HOST_PORT_FILE"
+  )
+  # The access code protects the front door in phone AND dev-check mode; it is
+  # always handed over through the mode-600 file, never as an argument.
+  if [[ -n "$ACCESS_CODE_FILE" ]]; then
+    host_args+=(--access-code-file "$ACCESS_CODE_FILE")
+  fi
+  if (( PHONE )); then
+    host_args+=(--fake-google "http://127.0.0.1:$FAKE_PORT")
+  fi
+  if (( DEV )); then
+    host_args+=(--dev-upstream "http://127.0.0.1:$DEV_PORT")
+  fi
+  start_bg e2e-host "$LOGS/e2e-host.log" "${host_args[@]}"
   HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 
   write_state
@@ -525,6 +712,10 @@ demo_start() {
     --api-url "http://127.0.0.1:$API_PORT" \
     --app-origin "http://$(url_host):$HOST_PORT"
   echo "demo: running at http://$(url_host):$HOST_PORT"
+  if (( DEV )); then
+    echo "demo: dev mode - the app is served by 'flutter run' (hot reload); it is slower than the release build and is for look-and-feel iteration only"
+    echo "demo: reload a Dart edit with scripts/demo_reload.sh"
+  fi
   if (( PHONE )); then
     # Printed once, to the terminal only; never logged or committed.
     echo "demo: phone URL: $PUBLIC_URL"
@@ -558,7 +749,7 @@ demo_stop() {
       remaining=1
     fi
   done
-  rm -f "$STATE" "$RUN/service.pgids" "$RUN/access-code"
+  rm -f "$STATE" "$RUN/service.pgids" "$RUN/access-code" "$RUN/flutter-dev.stdin"
   if (( remaining )); then
     echo "demo: leak census: live processes remain" >&2
     return 1
@@ -588,7 +779,14 @@ demo_check() {
     echo "demo: --check refuses to stop a running demo; run 'scripts/demo.sh stop' first" >&2
     return 2
   fi
-  trap 'demo_stop >/dev/null 2>&1 || true' EXIT
+  # Restore the file the dev reload check edits, then stop, whatever happens.
+  trap 'dev_reload_restore; demo_stop >/dev/null 2>&1 || true' EXIT
+
+  # The dev check turns the access code on (like --phone) so the hot-reload
+  # front door is proven to sit behind the same gate (T-1113 AC3).
+  if (( DEV )); then
+    write_access_code
+  fi
 
   demo_start
   local url
@@ -596,14 +794,19 @@ demo_check() {
   mkdir -p "$STATE_DIR"
 
   phase "fetching the page"
-  curl -sf --max-time 15 "$url/" -o "$STATE_DIR/check-page.html"
+  app_get "$url/" -o "$STATE_DIR/check-page.html"
   if ! grep -qi '<html' "$STATE_DIR/check-page.html"; then
     echo "demo: the page did not look like the app" >&2
     return 1
   fi
 
   phase "fetching the health route"
-  curl -sf --max-time 15 "$url/api/v1/healthz" -o "$STATE_DIR/check-health.json"
+  app_get "$url/api/v1/healthz" -o "$STATE_DIR/check-health.json"
+
+  if (( DEV )); then
+    phase "dev checks"
+    dev_check "$url"
+  fi
 
   phase "stopping"
   demo_stop

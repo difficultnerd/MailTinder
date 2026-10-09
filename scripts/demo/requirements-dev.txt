@@ -1,0 +1,5 @@
+# Pinned runtime dependency for `demo.sh --dev` (T-1113), installed into
+# target/demo/venv. The front door (scripts/e2e_host.py) uses `websockets` to
+# relay the Flutter dev server's debug websocket, so the frames are handled by
+# the package rather than a hand-written relay. Keep the exact version pinned.
+websockets==15.0.1

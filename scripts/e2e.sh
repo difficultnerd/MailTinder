@@ -176,4 +176,11 @@ phase "demo.sh --phone (T-1108c)"
 MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_phone.py" \
   DemoPhoneStackTest.test_demo_phone_exposes_only_the_front_door
 
+# The dev hot-reload test (T-1113) starts `flutter run -d web-server` behind
+# demo.sh's front door and proves the reload path, one-origin serving and the
+# access control; it reuses this job's Flutter tooling.
+phase "demo.sh --check --dev (T-1113)"
+MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_dev.py" \
+  DemoDevStackTest.test_demo_reload_changes_the_served_app
+
 phase "e2e passed"
