@@ -1,0 +1,18 @@
+# Mutation-testing pilot scope (T-1109).
+#
+# One line per area:  <area>: <path>[, <path>...]
+# Paths are repository-root relative (so they read the same in the PR and the
+# report). tools/mutation.sh runs cargo-mutants from backend/ and strips the
+# leading "backend/" before passing them as --file globs.
+#
+# Only hand-written pure logic is listed. cargo-mutants already skips #[test]
+# functions, #[cfg(test)] modules and #[mutants::skip]; limiting --file to
+# these paths keeps the run off adapters, the API crate, test crates and any
+# generated code (T-1109 behaviour 3).
+rules: backend/crates/domain/src/rules.rs
+swipe: backend/crates/domain/src/swipe.rs
+undo: backend/crates/domain/src/undo.rs
+header_rules: backend/crates/domain/src/header_rules.rs
+redact: backend/crates/domain/src/redact.rs
+gamification: backend/crates/domain/src/gamification.rs
+feed: backend/crates/domain/src/feed.rs
