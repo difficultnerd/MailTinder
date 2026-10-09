@@ -156,11 +156,22 @@ if [ "$LIST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-if ! command -v cargo-mutants >/dev/null 2>&1; then
+# cargo-mutants is a cargo subcommand: it must be invoked as `cargo mutants`,
+# which needs the binary on PATH under the name `cargo-mutants`. Accept it from
+# PATH, the setup-local-checks.sh install location or the aarch64 fallback.
+MUTANTS_BIN="$(command -v cargo-mutants || true)"
+if [ -z "$MUTANTS_BIN" ] && [ -x "$ROOT/tools/.bin/cargo-mutants" ]; then
+  MUTANTS_BIN="$ROOT/tools/.bin/cargo-mutants"
+fi
+if [ -z "$MUTANTS_BIN" ] && [ -x "$ROOT/tools/.cargo-mutants/bin/cargo-mutants" ]; then
+  MUTANTS_BIN="$ROOT/tools/.cargo-mutants/bin/cargo-mutants"
+fi
+if [ -z "$MUTANTS_BIN" ]; then
   echo "error: cargo-mutants not found on PATH" >&2
   echo "  install it with: ./tools/setup-local-checks.sh" >&2
   exit 1
 fi
+export PATH="$(dirname "$MUTANTS_BIN"):$PATH"
 
 if [ -n "$SHARD" ]; then
   OUT="$OUT_ROOT/shard-${shard_index}of${shard_total}"
@@ -176,15 +187,38 @@ for p in "${FINAL_PATHS[@]}"; do
 done
 
 echo "==> cargo-mutants ${CARGO_ARGS[*]}"
+# Clear this run's output directory first: the report reads every outcomes.json
+# under $OUT_ROOT, so a stale run or a shard from different arguments must not
+# be merged into this one. cargo-mutants creates the leaf but not its parent,
+# so recreate it.
+if [ -n "${OUT:-}" ] && [ "$OUT" != "/" ]; then
+  rm -rf -- "$OUT"
+  mkdir -p -- "$(dirname "$OUT")"
+fi
 START=$SECONDS
 cargo_rc=0
-( cd "$CARGO_ROOT" && cargo-mutants "${CARGO_ARGS[@]}" ) || cargo_rc=$?
+( cd "$CARGO_ROOT" && cargo mutants "${CARGO_ARGS[@]}" ) || cargo_rc=$?
 ELAPSED=$((SECONDS - START))
 echo "==> cargo-mutants finished in ${ELAPSED}s (exit $cargo_rc)"
 
+# cargo-mutants exit codes (https://mutants.rs/exit-codes.html):
+#   0 all viable mutants caught, 2 some mutants missed, 3 some tests timed out
+# (a timeout counts as caught in our scoring, behaviour 3), so those are the
+# only non-zero codes a valid run may return. Anything else — 1 usage error,
+# 4 baseline tests already failing, 5/6 bad --in-diff, 70 internal — means no
+# trustworthy results were produced and must fail the gate instead of silently
+# reporting an earlier run.
+case "$cargo_rc" in
+  0 | 2 | 3) ;;
+  *)
+    echo "error: cargo-mutants failed (exit $cargo_rc); refusing to report" >&2
+    exit 1
+    ;;
+esac
+
 if ! find "$OUT_ROOT" -name outcomes.json -type f | grep -q .; then
   echo "error: cargo-mutants produced no outcomes.json under $OUT_ROOT" >&2
-  exit "${cargo_rc:-1}"
+  exit 1
 fi
 
 report_rc=0

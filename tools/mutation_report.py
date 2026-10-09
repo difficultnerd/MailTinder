@@ -95,23 +95,35 @@ def parse_scope(text: str) -> tuple[dict[str, list[str]], list[str]]:
     return areas, order
 
 
+def _anchor(entry: str) -> str:
+    """Reduce a scope entry to the cargo-workspace-relative tail.
+
+    Scope paths are repository-root relative (``backend/crates/domain/src/rules.rs``)
+    while cargo-mutants reports them relative to the cargo workspace root
+    (``crates/domain/src/rules.rs``). Anchoring on this one form, rather than
+    accepting a boundary suffix in either direction, keeps attribution to a
+    single root so an unrelated path cannot be folded into the wrong area.
+    """
+    entry_norm = os.path.normpath(entry).replace(os.sep, "/")
+    prefix = "backend/"
+    if entry_norm.startswith(prefix):
+        return entry_norm[len(prefix) :]
+    return entry_norm
+
+
 def area_for_file(path: str, areas: dict[str, list[str]]) -> str | None:
     """Return the area whose scope entry matches ``path``, else None.
 
-    cargo-mutants reports files relative to the cargo workspace root
-    (``crates/domain/src/rules.rs``) while the scope file uses repository-root
-    paths (``backend/crates/domain/src/rules.rs``), so match on either being a
-    path-boundary suffix of the other.
+    ``path`` is matched against each scope entry's cargo-workspace-relative
+    anchor (see ``_anchor``): equality, or a path-boundary suffix so an
+    absolute path (``/repo/backend/crates/domain/src/rules.rs``) still lands in
+    the right area. Matching happens in one direction only.
     """
     norm = os.path.normpath(path).replace(os.sep, "/")
     for area, paths in areas.items():
         for entry in paths:
-            entry_norm = os.path.normpath(entry).replace(os.sep, "/")
-            if (
-                norm == entry_norm
-                or norm.endswith("/" + entry_norm)
-                or entry_norm.endswith("/" + norm)
-            ):
+            anchor = _anchor(entry)
+            if norm == anchor or norm.endswith("/" + anchor):
                 return area
     return None
 

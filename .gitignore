@@ -39,6 +39,11 @@ __pycache__/
 # Local check tooling (not committed)
 tools/.bin/
 tools/.venv-semgrep/
+# cargo-mutants artifacts (T-1109): mutant logs hold copies of source and
+# diffs, and the aarch64 fallback builds into tools/.cargo-mutants. Never
+# commit either.
+/target/
+tools/.cargo-mutants/
 # Terraform provider cache and state (never commit these).
 # A single Google provider binary is ~114 MB and GitHub hard-rejects
 # anything over 100 MB — the T-607b push died on exactly that.

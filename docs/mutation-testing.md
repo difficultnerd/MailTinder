@@ -26,9 +26,14 @@ adapters, the API crate and generated code are never mutated.
 
     ./tools/setup-local-checks.sh
 
-This installs `cargo-mutants` v27.1.0 into `tools/.bin` on x86_64 Linux, pinning
-the release tarball by SHA-256. Other architectures fall back to a pinned
-`cargo install`. Put `tools/.bin` on your PATH (ci-local.sh already does).
+This installs `cargo-mutants` v27.1.0 into `tools/.bin`. On x86_64 Linux the
+release tarball is pinned by a SHA-256 recorded in `tools/setup-local-checks.sh`
+and verified before extraction, so that is the strongest guarantee. On other
+architectures (e.g. aarch64/verify1) there is no prebuilt binary, so it falls
+back to `cargo install --locked --root tools/.cargo-mutants`, pinned by version
+only: that still uses the crates.io package checksum and the crate's own
+`Cargo.lock`, but not a repo-committed SHA-256. Put `tools/.bin` on your PATH
+(ci-local.sh already does).
 
 ## Run
 
