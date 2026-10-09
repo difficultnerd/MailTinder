@@ -1,11 +1,19 @@
 """Tests for scripts/demo.sh and the shared scripts/e2e/lib.sh (T-1108a).
 
 `demo_refuses_non_loopback_bind` needs nothing but bash and the script, so it
-runs in the ordinary `python3 -m unittest discover -s tools` gate. The other two
-start the whole local e2e stack (Firestore emulator, fake-google, unsub-testbed,
-`api`, the Flutter web build served by scripts/e2e_host.py, ChromeDriver), so
-they run only when `MT_DEMO_STACK=1` - the same way the e2e crate's journeys are
-`#[ignore]`d and run by scripts/e2e.sh rather than the default suite.
+runs in the ordinary `python3 -m unittest discover -s tools` gate (the
+`ac-coverage` CI job).
+
+The other two start the whole local e2e stack (Firestore emulator, fake-google,
+unsub-testbed, `api`, the Flutter web build served by scripts/e2e_host.py), so
+they run under `MT_DEMO_STACK=1`, the same way the e2e crate's journeys are
+`#[ignore]`d. `scripts/e2e.sh` - the `e2e` CI job, the only job with the stack -
+runs `demo_check_serves_page_and_health_then_cleans_up` directly (security review
+F5), so that AC is exercised on every pull request. `e2e_sh_still_passes_unchanged`
+is proven by that job itself: it *is* a run of `scripts/e2e.sh` whose journeys
+must pass and which ends with "e2e passed"; the named test here is for running it
+locally (`MT_DEMO_STACK=1`), and it cannot be run from inside e2e.sh without
+recursing.
 """
 
 from __future__ import annotations
@@ -39,7 +47,19 @@ def run_demo(args, env=None, timeout=180):
 
 class DemoScriptTest(unittest.TestCase):
     def test_demo_refuses_non_loopback_bind(self):
-        for host in ("0.0.0.0", "192.168.1.5", "10.0.0.1", "example.com"):
+        hosts = (
+            "0.0.0.0",
+            "192.168.1.5",
+            "10.0.0.1",
+            "example.com",
+            # Names that merely start with `127.` must not slip past the guard
+            # (T-1108a F1): the old `127.*` glob accepted these.
+            "127.evil.example",
+            "127.0.0.1.evil.example",
+            # A dotted-quad with an out-of-range octet is not loopback either.
+            "127.0.0.256",
+        )
+        for host in hosts:
             with self.subTest(host=host):
                 proc = run_demo(["start", "--host", host])
                 combined = (proc.stdout + proc.stderr).lower()

@@ -8,13 +8,8 @@
 # leak census; `status` says whether it is up; `--check` is the automatic test:
 # start, fetch the page and the health route, stop, and report nothing left.
 #
-# Usage:
-#   scripts/demo.sh [start] [--host <loopback addr>]   # start and leave running
-#   scripts/demo.sh stop                               # stop and print the census
-#   scripts/demo.sh status                             # is it running?
-#   scripts/demo.sh --check                            # automatic start/fetch/stop
-#
-# Everything binds loopback only; a non-loopback host is refused.
+# Everything binds loopback only - 127.0.0.0/8, `localhost` or IPv6 `::1`. The
+# host is validated strictly and is the address the web server actually binds.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +28,14 @@ START_S=$SECONDS
 DEMO_HOST="${DEMO_HOST:-127.0.0.1}"
 COMMAND="start"
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() {
+  cat <<'EOF'
+demo.sh [start] [--host <loopback addr>]   start and leave the stack running
+demo.sh stop                               stop and print the leak census
+demo.sh status                             is the stack running?
+demo.sh --check                            automatic start, fetch, stop
+EOF
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,22 +49,43 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Loopback only (behaviour 1): 127.0.0.0/8 and the two localhost spellings.
+# Accept the bracketed IPv6 spelling too ([::1] -> ::1).
+DEMO_HOST="${DEMO_HOST#[}"
+DEMO_HOST="${DEMO_HOST%]}"
+
+# Loopback only (behaviour 1). Matching a strict dotted-quad is deliberate: the
+# old `127.*` glob also accepted DNS names that merely start with `127.`, such
+# as `127.evil.example`, which then reached APP_ORIGIN and the printed URL
+# (T-1108a F1).
 is_loopback() {
-  case "$1" in
-    127.*|localhost|::1|"[::1]") return 0 ;;
-    *) return 1 ;;
+  local host="${1#[}" octet
+  host="${host%]}"
+  case "$host" in
+    localhost|::1) return 0 ;;
   esac
+  [[ "$host" =~ ^127(\.[0-9]{1,3}){3}$ ]] || return 1
+  local IFS=.
+  for octet in $host; do
+    (( 10#$octet <= 255 )) || return 1
+  done
+  return 0
 }
 require_loopback() {
   if ! is_loopback "$DEMO_HOST"; then
-    echo "demo.sh: refusing non-loopback host '$DEMO_HOST' (use 127.0.0.1 or localhost)" >&2
+    echo "demo.sh: refusing non-loopback host '$DEMO_HOST' (use 127.0.0.1, localhost or ::1)" >&2
     exit 2
   fi
 }
+# The host as it appears inside a URL: an IPv6 literal needs brackets.
+url_host() {
+  case "$DEMO_HOST" in
+    *:*) printf '[%s]' "$DEMO_HOST" ;;
+    *) printf '%s' "$DEMO_HOST" ;;
+  esac
+}
 
-# Every process group this demo started: the recorded state plus the crash log
-# scripts/e2e/lib.sh's start_bg keeps in $RUN/service.pgids.
+# Every process group this demo started, as "pgid <starttime>" lines: the
+# recorded state plus the crash log scripts/e2e/lib.sh's start_bg appends to.
 pgids_from_state() {
   [[ -f "$STATE" ]] || return 0
   python3 - "$STATE" <<'PY'
@@ -71,15 +94,18 @@ try:
     data = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
-for pid in data.get("pgids", []):
-    print(pid)
+for entry in data.get("pgids", []):
+    if isinstance(entry, dict):
+        print(entry.get("pgid", ""), entry.get("start", ""))
+    else:
+        print(entry, "")
 PY
 }
 all_pgids() {
   {
     pgids_from_state
     cat "$RUN/service.pgids" 2>/dev/null || true
-  } | grep -E '^[0-9]+$' | sort -u || true
+  } | awk 'NF && $1 ~ /^[0-9]+$/ {print $1, ($2 == "" ? "-" : $2)}' | sort -u || true
 }
 state_url() {
   [[ -f "$STATE" ]] || return 1
@@ -92,12 +118,32 @@ except Exception:
 PY
 }
 
+# True only when the group still looks like one this demo started: the id is a
+# real process group (0 and 1 are rejected - `kill -- -0` would signal the
+# caller's own group) and, when a start-time token was recorded, the leader's
+# current /proc start time matches. The token changes when a pid is reused, so a
+# stale or tampered state file cannot make `stop` signal an unrelated group
+# (T-1108a F3).
+pgid_is_ours() {
+  local pgid="$1" start="$2" now
+  [[ "$pgid" =~ ^[0-9]+$ ]] || return 1
+  (( pgid >= 2 )) || return 1
+  if [[ -z "$start" || "$start" == "-" ]]; then
+    # Nothing to verify against. On Linux /proc always exists, so an absent
+    # token means the record is untrustworthy and the group is not ours.
+    [[ -r /proc/self/stat ]] && return 1
+    return 0
+  fi
+  now="$(proc_starttime "$pgid" 2>/dev/null || true)"
+  [[ -n "$now" && "$now" == "$start" ]]
+}
+
 demo_running() {
-  local url pgid
+  local url pgid start
   url="$(state_url)" || return 1
   [[ -n "$url" ]] || return 1
   curl -sf --max-time 2 "$url/" >/dev/null 2>&1 || return 1
-  while read -r pgid; do
+  while read -r pgid start; do
     [[ -n "$pgid" ]] || continue
     if ps -eo pgid=,stat= | grep -E "^[[:space:]]*$pgid[[:space:]]+[^Z]" >/dev/null; then
       return 0
@@ -108,15 +154,26 @@ demo_running() {
 
 write_state() {
   mkdir -p "$STATE_DIR"
-  python3 - "$STATE" "$DEMO_HOST" "$HOST_PORT" \
+  python3 - "$STATE" "$DEMO_HOST" "$(url_host)" "$HOST_PORT" \
     "$FIRESTORE_PORT" "$FAKE_PORT" "$TESTBED_PORT" "$UNSUB_PORT" "$API_PORT" \
-    ${PGIDS[@]+"${PGIDS[@]}"} <<'PY'
+    "$RUN/service.pgids" <<'PY'
 import json, sys
-path, host, host_port, fs, fake, testbed, unsub, api = sys.argv[1:9]
+(path, host, url_host, host_port, fs, fake, testbed, unsub, api, pgfile) = sys.argv[1:11]
+pgids = []
+try:
+    with open(pgfile) as handle:
+        for line in handle:
+            parts = line.split()
+            if parts and parts[0].isdigit():
+                pgids.append(
+                    {"pgid": int(parts[0]), "start": parts[1] if len(parts) > 1 else ""}
+                )
+except FileNotFoundError:
+    pass
 json.dump(
     {
         "host": host,
-        "url": f"http://{host}:{host_port}",
+        "url": f"http://{url_host}:{host_port}",
         "ports": {
             "firestore": int(fs),
             "fake_google": int(fake),
@@ -125,7 +182,7 @@ json.dump(
             "api": int(api),
             "host": int(host_port),
         },
-        "pgids": [int(p) for p in sys.argv[9:]],
+        "pgids": pgids,
     },
     open(path, "w"),
     indent=2,
@@ -198,40 +255,49 @@ demo_start() {
   start_bg api "$LOGS/api.jsonl" env \
     $(env_file "$REPO/scripts/e2e/api.env") \
     MT_E2E=1 \
-    APP_ORIGIN="http://$DEMO_HOST:$HOST_PORT" \
+    APP_ORIGIN="http://$(url_host):$HOST_PORT" \
     FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
     PORT="$API_PORT" \
     FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
     "$REPO/backend/target/debug/api"
   wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
-  phase "serving the web build on http://$DEMO_HOST:$HOST_PORT"
+  phase "serving the web build on http://$(url_host):$HOST_PORT"
   HOST_PORT_FILE="$RUN/host.port"
   start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
     --root "$REPO/app/build/web" \
     --firebase-json "$REPO/firebase.json" \
+    --host "$DEMO_HOST" \
     --api "http://127.0.0.1:$API_PORT" \
     --port "$HOST_PORT" \
     --port-file "$HOST_PORT_FILE"
   HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 
   write_state
-  echo "demo: running at http://$DEMO_HOST:$HOST_PORT"
+  echo "demo: running at http://$(url_host):$HOST_PORT"
 }
 
 demo_stop() {
-  local pgids pgid remaining=0
-  pgids="$(all_pgids | tr '\n' ' ')"
-  if [[ -z "${pgids// /}" ]]; then
+  local pgid start remaining=0 ours=()
+  while read -r pgid start; do
+    [[ -n "$pgid" ]] || continue
+    if pgid_is_ours "$pgid" "$start"; then
+      ours+=("$pgid")
+    else
+      echo "demo: ignoring process group $pgid (not this demo's, or already gone)" >&2
+    fi
+  done < <(all_pgids)
+
+  if (( ${#ours[@]} == 0 )); then
     rm -f "$STATE"
     echo "demo: nothing running"
     return 0
   fi
-  for pgid in $pgids; do kill -TERM -- "-$pgid" 2>/dev/null || true; done
+  for pgid in "${ours[@]}"; do kill -TERM -- "-$pgid" 2>/dev/null || true; done
   sleep 2
-  for pgid in $pgids; do kill -KILL -- "-$pgid" 2>/dev/null || true; done
+  for pgid in "${ours[@]}"; do kill -KILL -- "-$pgid" 2>/dev/null || true; done
   sleep 1
-  for pgid in $pgids; do
+  for pgid in "${ours[@]}"; do
     if ps -eo pgid=,stat= | grep -E "^[[:space:]]*$pgid[[:space:]]+[^Z]" >/dev/null; then
       echo "demo: process group $pgid still alive" >&2
       remaining=1
@@ -256,8 +322,13 @@ demo_status() {
 
 demo_check() {
   require_loopback
-  # Start from nothing so the check proves start and stop, not a leftover.
-  demo_stop >/dev/null 2>&1 || true
+  # Never kill a demo the user is already running (F4): refuse instead of
+  # silently tearing their stack down, and start from nothing only when it is
+  # already down.
+  if demo_running; then
+    echo "demo: --check refuses to stop a running demo; run 'scripts/demo.sh stop' first" >&2
+    return 2
+  fi
   trap 'demo_stop >/dev/null 2>&1 || true' EXIT
 
   demo_start

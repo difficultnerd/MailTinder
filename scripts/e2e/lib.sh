@@ -48,12 +48,39 @@ wait_port_file() {
   tr -d '[:space:]' < "$file"
 }
 
+# Field helpers over /proc/<pid>/stat. The comm field (2) is parenthesised and
+# may contain spaces, so strip through the last ')'; the remaining fields then
+# start at field 3, which makes pgrp field 5 the 3rd token and starttime field
+# 22 the 20th. An unreadable /proc entry (a gone pid, or a non-Linux host)
+# returns non-zero so the caller can tell "unknown" from a real value.
+proc_pgrp() {
+  local stat
+  stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  stat="${stat##*)}"
+  set -- $stat
+  printf '%s' "${3:-}"
+}
+proc_starttime() {
+  local stat
+  stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  stat="${stat##*)}"
+  set -- $stat
+  printf '%s' "${20:-}"
+}
+
 start_bg() { # <name> <logfile> <command...>
-  local name="$1" log="$2"
+  local name="$1" log="$2" pid start
   shift 2
   setsid "$@" >"$log" 2>&1 &
-  PGIDS+=("$!")
-  printf '%s\n' "$!" >>"$RUN/service.pgids"
+  # setsid(1) execs the command when it is not already a process-group leader,
+  # which a non-interactive shell's background job never is, so `$!` is the new
+  # session and process-group leader (F7). Its start time is recorded beside the
+  # pid: /proc starttime changes when a pid is reused, which is how `stop` tells
+  # a group this demo owns from an unrelated one (F3).
+  pid=$!
+  start="$(proc_starttime "$pid" 2>/dev/null || true)"
+  PGIDS+=("$pid")
+  printf '%s %s\n' "$pid" "$start" >>"$RUN/service.pgids"
   echo "    started $name (log: $log)"
 }
 

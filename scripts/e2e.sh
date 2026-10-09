@@ -160,4 +160,13 @@ else
   (cd backend && cargo test --locked -p e2e -- --ignored --test-threads=1 --nocapture)
 fi
 
+# The stack-dependent demo acceptance test (T-1108a) runs here, in the only CI
+# job that has the stack (Firestore emulator, Chrome, a Flutter web build); the
+# default `python3 -m unittest discover` gate cannot start it, so without this
+# it was permanently skipped (security review F5). It starts and stops its own
+# stack on free ports and reuses this job's build, so the cost is one stack.
+phase "demo.sh --check (T-1108a)"
+MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_script.py" \
+  DemoScriptTest.test_demo_check_serves_page_and_health_then_cleans_up
+
 phase "e2e passed"
