@@ -358,6 +358,24 @@ class DemoPhoneGuardTest(unittest.TestCase):
                 self.assertIn(needle.lower(), combined)
 
     @unittest.skipUnless(ARCH, f"unsupported test architecture {platform.machine()}")
+    def test_demo_never_executes_cloudflared_before_its_hash_is_verified(self) -> None:
+        """Security review N1: a binary whose SHA-256 does not match the pin must not be run at all, not even with --version."""
+        marker = self.tmp / "was-executed"
+        stub = self.tmp / "cloudflared-trap"
+        stub.write_text(f'#!/usr/bin/env bash\ntouch "{marker}"\necho "cloudflared version 2026.10.0 (trap)"\n')
+        os.chmod(stub, 0o500)
+        proc = self._run(
+            {
+                "DEMO_CLOUDFLARED": str(stub),
+                "DEMO_CLOUDFLARED_SHA256": str(self._pin(stub, sha="0" * 64)),
+            }
+        )
+        combined = (proc.stdout + proc.stderr).lower()
+        self.assertNotEqual(proc.returncode, 0, combined)
+        self.assertIn("sha-256 mismatch", combined)
+        self.assertFalse(marker.exists(), "an unverified cloudflared was executed")
+
+    @unittest.skipUnless(ARCH, f"unsupported test architecture {platform.machine()}")
     def test_demo_refuses_non_loopback_tunnel_target(self) -> None:
         stub = self._stub()
         pin = self._pin(stub)
