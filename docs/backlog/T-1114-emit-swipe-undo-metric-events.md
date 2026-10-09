@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 200 lines of code plus tests | T-307, T-1101b |
+| M11 | sonnet | about 200 lines of code plus tests | T-307, T-1101b, T-1101e, T-1101f |
 
 **Read only these spec sections:** S10 section 8 (`docs/specs/S10-test-strategy.md`), S11 alert A1 (`docs/specs/S11-operations.md`), ADR 0002 (`docs/decisions/0002-e2e-swipe-undo-events.md`), `backend/crates/obs/src/registry.rs`. Nothing else is needed.
 
