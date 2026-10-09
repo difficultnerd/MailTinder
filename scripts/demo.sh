@@ -416,7 +416,13 @@ demo_start() {
     phone_prepare
   fi
   mkdir -p "$LOGS" "$RUN"
-  rm -f "$RUN/service.pgids" "$STATE"
+  # Clear per-run scratch. The *.port files matter: wait_port_file returns the
+  # first non-empty file it sees, so a leftover port from a previous run would
+  # be read as this run's port. In --phone that made the printed front-door URL
+  # (read back from host.port) disagree with the loopback port the tunnel was
+  # actually pointed at (chosen a moment earlier) - the CI-only front-door
+  # mismatch (T-1108c).
+  rm -f "$RUN/service.pgids" "$STATE" "$RUN"/*.port
 
   demo_build
 
