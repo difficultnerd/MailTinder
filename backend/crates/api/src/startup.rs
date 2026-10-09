@@ -86,13 +86,21 @@ impl SetupError {
     }
 }
 
+/// True when the process was asked for e2e mode (`MT_E2E=1`). Read at run time
+/// and independently of the build: a build without the `testkit` feature uses
+/// it to refuse e2e outright instead of silently starting as production
+/// (S10 3.3, Behaviour 5).
+fn e2e_requested() -> bool {
+    std::env::var("MT_E2E").is_ok_and(|v| v == "1")
+}
+
 /// True when the process should start in e2e mode. False unless the crate was
 /// built with the `testkit` feature *and* `MT_E2E=1` is set (S10 3.3). T-1101a
 /// mounts its test-only routes only when this is true.
 #[cfg(feature = "testkit")]
 #[must_use]
 pub fn e2e_mode_enabled() -> bool {
-    std::env::var("MT_E2E").is_ok_and(|v| v == "1")
+    e2e_requested()
 }
 
 /// False in any build without the `testkit` feature.
@@ -118,7 +126,7 @@ pub async fn run() -> Result<(), SetupError> {
     .map_err(|_| SetupError::Obs)?;
     obs::register_http_routes(crate::ROUTE_TEMPLATES);
 
-    let (ports, config) = if e2e_mode_enabled() {
+    let (ports, config) = if e2e_requested() {
         e2e_startup()?
     } else {
         build_production_ports().await?

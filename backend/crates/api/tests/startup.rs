@@ -100,13 +100,47 @@ fn api_config_reads_port_default_and_override() -> Result<(), Box<dyn std::error
 #[cfg(not(feature = "testkit"))]
 #[test]
 fn api_e2e_env_refused_without_testkit_build() -> Result<(), Box<dyn std::error::Error>> {
+    // A complete, otherwise-valid production environment plus `MT_E2E=1`.
+    // Without the refusal guard, production wiring would run from this
+    // environment, so make that observable: point the GCP HTTP clients at a
+    // local socket that is never answered. A production start then blocks and
+    // cannot exit within the deadline; the guard must refuse before any of
+    // that. (A missing-variable environment would let production exit for the
+    // wrong reason and hide the guard, which is the point of this test.)
+    let stall = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let proxy = format!("http://{}", stall.local_addr()?);
+
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_api"));
-    cmd.env_clear().env("MT_E2E", "1");
+    cmd.env_clear()
+        .env("MT_E2E", "1")
+        .env("GOOGLE_CLOUD_PROJECT", "demo-project")
+        .env("APP_ORIGIN", "https://mailtinder.example.com")
+        .env("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        .env("UNSUB_BASE_URL", "https://unsub.example.com")
+        .env("UNSUB_AUDIENCE", "https://unsub.example.com")
+        .env(
+            "UNSUB_TASKS_CALLER",
+            "caller@example.iam.gserviceaccount.com",
+        )
+        .env("HTTP_PROXY", proxy.clone())
+        .env("HTTPS_PROXY", proxy);
+
     let output = run_within_5s(&mut cmd)?;
     assert!(
         !output.status.success(),
         "MT_E2E in a build without the testkit feature must exit non-zero"
     );
+    let text = combined(&output);
+    assert!(
+        text.contains("\"outcome\":\"failure\""),
+        "start-up must log its failure through tracing"
+    );
+    assert!(
+        !text.contains("\"outcome\":\"success\""),
+        "the binary must not reach a running state"
+    );
+    assert!(!text.contains("panicked"), "startup must not panic");
+    drop(stall);
     Ok(())
 }
 
