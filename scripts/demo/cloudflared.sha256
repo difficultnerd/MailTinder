@@ -1,0 +1,15 @@
+# Pinned cloudflared release for `scripts/demo.sh --phone` (T-1108c).
+#
+# The demo runs only a cloudflared whose `--version` reports this release and
+# whose SHA-256 matches the artefact below for the machine's architecture. A
+# binary that is unpinned, a different version, or a hash mismatch is refused
+# before it is ever executed, so a tampered or unexpected tunnel binary cannot
+# be launched (review finding F2).
+#
+# Hashes are the SHA-256 of the official Linux release artefacts:
+#   https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/<artefact>
+#
+# Format: `version <tag>` and `sha256 <artefact> <hex>`, one per line.
+version 2026.10.0
+sha256 linux-amd64 d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db
+sha256 linux-arm64 e6422b9d4f72d3194bc5a38676f13667c06666523217b842a877d72a80b5ac08

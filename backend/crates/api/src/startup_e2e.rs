@@ -88,6 +88,9 @@ where
     let fake_google_raw = required(&lookup, "FAKE_GOOGLE_URL")?;
     let fake_google =
         Url::parse(&fake_google_raw).map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+    // The browser-facing origin, set only in phone mode (Behaviour 0c). Unset,
+    // the authorisation URL is the loopback fake-google exactly as before.
+    let public_base = public_base_url(&lookup)?;
 
     let (mut ports, fakes) = testkit::fake_ports();
     // Standalone services share real time: fake-google checks provider-token
@@ -115,7 +118,7 @@ where
         GoogleIdentityConfig {
             client_id: base.google_client_id.clone(),
             client_secret: Sensitive::new(CLIENT_SECRET.to_owned()),
-            auth_endpoint: join(&fake_google, "o/oauth2/v2/auth")?,
+            auth_endpoint: public_auth_endpoint(&fake_google, public_base.as_ref())?,
             token_endpoint: join(&fake_google, "token")?,
             revoke_endpoint: join(&fake_google, "revoke")?,
             jwks_uri: join(&fake_google, "oauth2/v3/certs")?,
@@ -349,6 +352,49 @@ fn required(
 fn join(base: &Url, path: &str) -> Result<Url, SetupError> {
     base.join(path)
         .map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))
+}
+
+/// The optional browser-facing base URL (`MT_PUBLIC_BASE_URL`).
+///
+/// In `demo.sh --phone` mode the laptop's loopback is unreachable from the
+/// phone, so the authorisation page the *browser* is sent to lives behind the
+/// tunnel; this is that public origin. Unset, blank or absent keeps today's
+/// behaviour. Server-to-server calls never use it: they keep `FAKE_GOOGLE_URL`.
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when the variable is set but is not a URL.
+pub fn public_base_url(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<Url>, SetupError> {
+    match lookup("MT_PUBLIC_BASE_URL").filter(|value| !value.trim().is_empty()) {
+        Some(raw) => Url::parse(raw.trim())
+            .map(Some)
+            .map_err(|_| SetupError::Invalid("MT_PUBLIC_BASE_URL")),
+        None => Ok(None),
+    }
+}
+
+/// The browser-facing authorisation endpoint (Behaviour 0c).
+///
+/// With a public base URL set, the browser is redirected to the tunnel's
+/// `/fake-google/o/oauth2/v2/auth` (the one path `e2e_host.py` proxies to the
+/// loopback fake-google); without one it is the loopback `fake-google`,
+/// exactly as before.
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when the join fails.
+pub fn public_auth_endpoint(
+    fake_google: &Url,
+    public_base: Option<&Url>,
+) -> Result<Url, SetupError> {
+    match public_base {
+        Some(base) => base
+            .join("fake-google/o/oauth2/v2/auth")
+            .map_err(|_| SetupError::Invalid("MT_PUBLIC_BASE_URL")),
+        None => join(fake_google, "o/oauth2/v2/auth"),
+    }
 }
 
 /// A random 32-byte HMAC key from the injected `Rng`.
