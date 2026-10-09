@@ -85,7 +85,7 @@ pub fn build_router_with_routes(
     state: AppState,
     routes: impl FnOnce(Router<AppState>) -> Router<AppState>,
 ) -> Router {
-    routes(Router::new())
+    let app = routes(Router::new())
         .route("/api/v1/healthz", get(healthz))
         .route(
             "/api/v1/auth/:provider/start",
@@ -118,8 +118,16 @@ pub fn build_router_with_routes(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             request_id_layer,
-        ))
-        .with_state(state)
+        ));
+    // Test-only routes are merged after the layers so a synthetic call needs no
+    // session; require both the `testkit` feature and runtime e2e mode (S10 3.2).
+    #[cfg(feature = "testkit")]
+    let app = if startup::e2e_mode_enabled() {
+        app.merge(crate::routes::testkit::router())
+    } else {
+        app
+    };
+    app.with_state(state)
 }
 
 /// Load the session cookie into the request extensions (S7 3.2).

@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [features]
 # e2e configuration (S10 3.3). Never enabled in a release build.
+# Reserved for the e2e harness's test configuration (scripts/e2e.sh builds
+# `--features unsub/testkit`).
 testkit = ["dep:testkit", "dep:reqwest"]
 
 [dependencies]
