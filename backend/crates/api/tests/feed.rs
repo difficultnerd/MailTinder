@@ -110,6 +110,27 @@ async fn exp_2_feed_fetches_once_with_gate_and_keeps_preview_cap() -> TestResult
     Ok(())
 }
 
+/// T-1101a / CL-02: with no `config/classifiers` document the Feed is served
+/// normally - a missing configuration document means no configuration
+/// (classifiers off, the gate stays closed), never a 500. `World::new` seeds
+/// no config document, so this is the absent-document path through the route.
+#[tokio::test]
+async fn feed_route_missing_config_document_is_no_config_not_an_error() -> TestResult {
+    let w = World::new().await?;
+    assert!(
+        w.fakes.store.config().get_classifiers().await?.is_none(),
+        "the fixture must have no config document"
+    );
+    w.seed(&w.primary, "acme", 10);
+    let router = build_router(w.app.clone());
+    let a = authed(&w).await?;
+    let resp = post_feed(&router, &a, r#"{"cursor":null,"limit":20,"refresh":false}"#).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_of(resp).await?;
+    assert_eq!(body["cards"].as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
 const ORIGIN: &str = "https://mailtinder.test";
 const EMAIL_KEY: &[u8] = b"fake-email-key";
 const BASE: i64 = 1_790_000_000;
