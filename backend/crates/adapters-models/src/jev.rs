@@ -3,8 +3,65 @@
 //! One request carries both questions (a `Choice` over the five classes and a
 //! `Score` for bulk). The answer is validated strictly; any deviation becomes a
 //! [`ClassifierError`] so the card is unaffected (CL-03 AC2, CR-01 3).
+//!
+//! ## Confirmed wire format
+//!
+//! Confirmed against TypeSafe's API reference, <https://docs.typesafe.ai/api.md>
+//! (sections "Evaluation endpoint", "Question types" and "Answer types"), and
+//! the JavaScript SDK interface pages it links, on 2026-10-09. The task's
+//! earlier shape was an assumption; this is the confirmed contract:
+//!
+//! ```json
+//! // request
+//! {
+//!   "model": "jev-1.13.0",
+//!   "state": "<render_model_text(input)>",
+//!   "questions": {
+//!     "class": {
+//!       "type": "choice",
+//!       "instructions": "<CLASS_QUESTION>",
+//!       "criteria": { "list": "…", "bulk_no_header": "…", "notice": "…", "personal": "…", "suspect": "…" }
+//!     },
+//!     "bulk": {
+//!       "type": "score",
+//!       "instructions": "<BULK_QUESTION>",
+//!       "criteria": [ "0 (certainly one-to-one)", "100 (certainly bulk)" ]
+//!     }
+//!   }
+//! }
+//! // response
+//! {
+//!   "model": "jev-1.13.0",
+//!   "answers": {
+//!     "class": { "type": "choice", "choice": "list",
+//!                "probabilities": { "list": 0.7, "bulk_no_header": 0.1, "notice": 0.1, "personal": 0.05, "suspect": 0.05 },
+//!                "confidence": 0.7 },
+//!     "bulk":  { "type": "score", "score": 0.42,
+//!                "legend": { "0": "0 (certainly one-to-one)", "1": "100 (certainly bulk)" },
+//!                "probabilities": { "0": 0.58, "1": 0.42 },
+//!                "confidence": 0.9 }
+//!   },
+//!   "usage": { "input_tokens": 5, "output_tokens": 2 }
+//! }
+//! ```
+//!
+//! Three consequences of the confirmed shape, recorded here because they are
+//! not obvious from the task's earlier assumption:
+//!
+//! - `questions` and `answers` are **maps keyed by the question id**, not
+//!   arrays. Each question carries `instructions` (not `prompt`); a Choice
+//!   carries `criteria` as an option-to-description map and a Score carries
+//!   `criteria` as an ordered array of level descriptions.
+//! - A Choice answer returns its `probabilities` as an **option-to-probability
+//!   map**, so we reorder by the fixed [`ports::prompt::CLASS_OPTIONS`] order
+//!   and reject a missing or extra option (task edge case).
+//! - A Score answer's `score` is the probability-weighted level index and the
+//!   API caps a Score at ten levels, so a 101-level 0-to-100 rubric is not
+//!   expressible. We send two levels anchored at 0 and 100; the confirmed
+//!   `score` is then a fraction in `0..=1` we scale to `0..=100`.
 #![allow(clippy::doc_markdown)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +72,8 @@ use ports::{
     Classifier, ClassifierError, ClassifierId, ClassifierInput, EgressError, EgressRequest,
     EgressResponse, HttpEgress, HttpMethod,
 };
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
 
 /// The pinned model. Never `jev-latest`: its answers change without notice
@@ -34,10 +92,12 @@ pub const PROBABILITY_SUM_TOLERANCE: f64 = 1e-3;
 const SYSTEM_ONE_PATH: &str = "/v1/systemone";
 /// The `[TUNABLE]` per-call timeout (CR-01 T-new-3), enforced by the egress.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-/// The named question for the class `Choice`.
-const CLASS_NAME: &str = "class";
-/// The named question for the bulk `Score`.
-const BULK_NAME: &str = "bulk";
+/// The `bulk` `Score` rubric. TypeSafe returns the probability-weighted level
+/// index, so two anchors give a fraction in `0..=1`; the API allows at most ten
+/// levels, so this is how a 0-to-100 question is asked.
+const BULK_LEVELS: [&str; 2] = ["0 (certainly one-to-one)", "100 (certainly bulk)"];
+/// The bulk score's range: the two-anchor rubric's fraction times this.
+const BULK_SCORE_SCALE: f64 = 100.0;
 
 /// Where the classifier calls the vendor. `base_url` is overridable only in
 /// test builds (see [`JevConfig::with_base_url`]).
@@ -132,25 +192,25 @@ fn map_egress(error: &EgressError) -> ClassifierError {
 }
 
 /// Build the request body: the pinned model, the shared rendered state, and the
-/// two questions in fixed order.
+/// two named questions. `questions` is a map keyed by the question id, each
+/// Choice option keeps the fixed `CLASS_OPTIONS` order (CR-01 1.1).
 fn request_body(input: &ClassifierInput) -> Result<Vec<u8>, serde_json::Error> {
     let state = ports::prompt::render_model_text(input);
     let request = JevRequest {
         model: JEV_MODEL,
         state: &state,
-        questions: [
-            JevQuestion::Choice {
-                name: CLASS_NAME,
-                prompt: ports::prompt::CLASS_QUESTION,
-                options: ports::prompt::CLASS_OPTIONS.map(|(name, _)| name),
+        questions: JevQuestions {
+            class: JevQuestion::Choice {
+                instructions: ports::prompt::CLASS_QUESTION,
+                criteria: OrderedMap {
+                    entries: ports::prompt::CLASS_OPTIONS.as_slice(),
+                },
             },
-            JevQuestion::Score {
-                name: BULK_NAME,
-                prompt: ports::prompt::BULK_QUESTION,
-                min: 0,
-                max: 100,
+            bulk: JevQuestion::Score {
+                instructions: ports::prompt::BULK_QUESTION,
+                criteria: BULK_LEVELS,
             },
-        ],
+        },
     };
     serde_json::to_vec(&request)
 }
@@ -166,7 +226,10 @@ fn interpret(response: &EgressResponse) -> Result<Classification, ClassifierErro
     }
     let parsed: JevResponse =
         serde_json::from_slice(&response.body).map_err(|_| ClassifierError::InvalidOutput)?;
-    if parsed.model != JEV_MODEL {
+    if parsed.model != JEV_MODEL
+        || parsed.answers.class.kind != "choice"
+        || parsed.answers.bulk.kind != "score"
+    {
         return Err(ClassifierError::InvalidOutput);
     }
     let Some(class) = MessageClass::ALL
@@ -176,10 +239,9 @@ fn interpret(response: &EgressResponse) -> Result<Classification, ClassifierErro
     else {
         return Err(ClassifierError::InvalidOutput);
     };
-    let probabilities = &parsed.answers.class.probabilities;
-    if probabilities.len() != 5 || !probabilities.iter().all(|v| in_unit(*v)) {
+    let Some(probabilities) = ordered_probabilities(&parsed.answers.class.probabilities) else {
         return Err(ClassifierError::InvalidOutput);
-    }
+    };
     let sum: f64 = probabilities.iter().sum();
     if (sum - 1.0).abs() > PROBABILITY_SUM_TOLERANCE {
         return Err(ClassifierError::InvalidOutput);
@@ -187,16 +249,34 @@ fn interpret(response: &EgressResponse) -> Result<Classification, ClassifierErro
     let class_confidence = parsed.answers.class.confidence;
     let bulk_confidence = parsed.answers.bulk.confidence;
     let score = parsed.answers.bulk.score;
-    if !in_unit(class_confidence) || !in_unit(bulk_confidence) || !(0.0..=100.0).contains(&score) {
+    if !in_unit(class_confidence) || !in_unit(bulk_confidence) || !in_unit(score) {
         return Err(ClassifierError::InvalidOutput);
     }
     Ok(Classification {
         class,
-        bulk_score: round_score(score),
+        bulk_score: bulk_score(score),
         bulk_reason: "jev".to_owned(),
         confidence: Some(as_f32(class_confidence)),
-        probabilities: Some(to_probabilities(probabilities)),
+        probabilities: Some(to_probabilities(&probabilities)),
     })
+}
+
+/// The five class probabilities reordered into [`ports::prompt::CLASS_OPTIONS`]
+/// order, or `None` if any option is missing, any extra option is present, or
+/// any probability is not finite and in `0..=1`.
+fn ordered_probabilities(values: &BTreeMap<String, f64>) -> Option<[f64; 5]> {
+    if values.len() != ports::prompt::CLASS_OPTIONS.len() {
+        return None;
+    }
+    let mut out = [0.0_f64; 5];
+    for (slot, (name, _)) in out.iter_mut().zip(ports::prompt::CLASS_OPTIONS.iter()) {
+        let value = values.get(*name)?;
+        if !in_unit(*value) {
+            return None;
+        }
+        *slot = *value;
+    }
+    Some(out)
 }
 
 /// Finite and within `0` to `1` inclusive.
@@ -215,10 +295,11 @@ fn content_type_is_json(headers: &[(String, String)]) -> bool {
     })
 }
 
-/// `score` is already in `0.0..=100.0`; round to the nearest whole number.
+/// `score` is already finite and in `0..=1` (the two-anchor rubric's fraction);
+/// scale it to `0..=100`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn round_score(score: f64) -> u8 {
-    score.round() as u8
+fn bulk_score(score: f64) -> u8 {
+    (score * BULK_SCORE_SCALE).round() as u8
 }
 
 /// `value` is already finite and in `0.0..=1.0`.
@@ -237,28 +318,47 @@ fn to_probabilities(values: &[f64]) -> [f32; 5] {
     out
 }
 
-// --- Wire format (an assumption; see the task's edge cases) ---
+// --- Confirmed wire format (see the module doc) ---
+
+/// Serialises `entries` as a JSON object in the order given (never sorted), so
+/// the Choice criteria keep the fixed `CLASS_OPTIONS` order (CR-01 1.1).
+struct OrderedMap<'a> {
+    entries: &'a [(&'a str, &'a str)],
+}
+
+impl Serialize for OrderedMap<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (key, value) in self.entries {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
 
 #[derive(Serialize)]
 struct JevRequest<'a> {
     model: &'a str,
     state: &'a str,
-    questions: [JevQuestion<'a>; 2],
+    questions: JevQuestions<'a>,
+}
+
+#[derive(Serialize)]
+struct JevQuestions<'a> {
+    class: JevQuestion<'a>,
+    bulk: JevQuestion<'a>,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum JevQuestion<'a> {
     Choice {
-        name: &'a str,
-        prompt: &'a str,
-        options: [&'a str; 5],
+        instructions: &'a str,
+        criteria: OrderedMap<'a>,
     },
     Score {
-        name: &'a str,
-        prompt: &'a str,
-        min: u8,
-        max: u8,
+        instructions: &'a str,
+        criteria: [&'a str; 2],
     },
 }
 
@@ -282,23 +382,39 @@ struct JevAnswers {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChoiceAnswer {
+    #[serde(rename = "type")]
+    kind: String,
     choice: String,
-    probabilities: Vec<f64>,
+    /// Probabilities keyed by option name (reordered into `CLASS_OPTIONS` order).
+    probabilities: BTreeMap<String, f64>,
     confidence: f64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScoreAnswer {
+    #[serde(rename = "type")]
+    kind: String,
+    /// The probability-weighted level index over `BULK_LEVELS`.
     score: f64,
+    /// Rubric descriptions keyed by level (not read; present in the wire shape).
+    #[allow(dead_code)]
+    legend: BTreeMap<String, String>,
+    /// Probabilities keyed by level (not read; present in the wire shape).
+    #[allow(dead_code)]
+    probabilities: BTreeMap<String, f64>,
     confidence: f64,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(dead_code)]
 struct JevUsage {
-    input_tokens: u64,
+    #[serde(rename = "input_tokens")]
+    #[allow(dead_code)]
+    input: u64,
+    #[serde(rename = "output_tokens")]
+    #[allow(dead_code)]
+    output: u64,
 }
 
 #[cfg(test)]

@@ -1,7 +1,14 @@
 //! `fake-jev`: an `axum` stand-in for `POST https://api.typesafe.ai/v1/systemone`
-//! (S10 9.1). It records every request, guards the pinned model and option
-//! order, and serves one scripted scenario per response shape the classifier
-//! must reject.
+//! (S10 9.1). It records every request, guards the pinned model and the fixed
+//! Choice option order, and serves one scripted scenario per response shape the
+//! classifier must reject.
+//!
+//! The wire shape mirrors the confirmed TypeSafe contract
+//! (<https://docs.typesafe.ai/api.md>): `questions` and `answers` are maps keyed
+//! by the question id, each question carries `instructions` and `criteria`, a
+//! Choice answer returns `probabilities` keyed by option, and a Score answer
+//! carries `legend` and `probabilities` keyed by level. See
+//! `adapters-models/src/jev.rs` for the full shape and its confirmation.
 #![allow(clippy::doc_markdown)]
 
 use std::net::SocketAddr;
@@ -28,7 +35,11 @@ const MODEL: &str = "jev-1.13.0";
 const OPTIONS: [&str; 5] = ["list", "bulk_no_header", "notice", "personal", "suspect"];
 
 /// A well-formed, valid answer.
-const VALID: &str = r#"{"model":"jev-1.13.0","answers":{"class":{"choice":"list","probabilities":[0.7,0.1,0.1,0.05,0.05],"confidence":0.7},"bulk":{"score":42,"confidence":0.9}},"usage":{"input_tokens":5}}"#;
+const VALID: &str = r#"{"model":"jev-1.13.0","answers":{"class":{"type":"choice","choice":"list","probabilities":{"list":0.7,"bulk_no_header":0.1,"notice":0.1,"personal":0.05,"suspect":0.05},"confidence":0.7},"bulk":{"type":"score","score":0.42,"legend":{"0":"0 (certainly one-to-one)","1":"100 (certainly bulk)"},"probabilities":{"0":0.58,"1":0.42},"confidence":0.9}},"usage":{"input_tokens":5,"output_tokens":2}}"#;
+
+/// The class-probabilities object in [`VALID`], the anchor the probability
+/// scenarios replace.
+const VALID_PROBABILITIES: &str = r#""probabilities":{"list":0.7,"bulk_no_header":0.1,"notice":0.1,"personal":0.05,"suspect":0.05}"#;
 
 /// The response shape `fake-jev` serves next.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -223,36 +234,69 @@ async fn system_one(State(state): State<SharedState>, headers: HeaderMap, body: 
     scenario_response(scenario)
 }
 
-/// Reject a request that is not the pinned model with the fixed option order.
+/// Reject a request that is not the pinned model with the two named questions
+/// and the Choice options in their fixed order.
 fn validate_request(body: &[u8]) -> Result<(), &'static str> {
-    let value: Value = serde_json::from_slice(body).map_err(|_| "invalid json")?;
+    let raw = std::str::from_utf8(body).map_err(|_| "invalid json")?;
+    let value: Value = serde_json::from_str(raw).map_err(|_| "invalid json")?;
     if value.get("model").and_then(Value::as_str) != Some(MODEL) {
         return Err("model must be jev-1.13.0");
     }
     let questions = value
         .get("questions")
-        .and_then(Value::as_array)
+        .and_then(Value::as_object)
         .ok_or("questions missing")?;
-    let options_match = questions
-        .first()
-        .and_then(|q| q.get("options"))
-        .and_then(Value::as_array)
-        .is_some_and(|sent| {
-            sent.iter()
-                .map(Value::as_str)
-                .eq(OPTIONS.iter().map(|name| Some(*name)))
-        });
-    let shape_ok = questions.len() == 2
-        && questions[0].get("type").and_then(Value::as_str) == Some("choice")
-        && questions[0].get("name").and_then(Value::as_str) == Some("class")
-        && options_match
-        && questions[1].get("type").and_then(Value::as_str) == Some("score")
-        && questions[1].get("name").and_then(Value::as_str) == Some("bulk");
-    if shape_ok {
+    let class_ok = questions.get("class").is_some_and(choice_question_ok);
+    let bulk_ok = questions.get("bulk").is_some_and(score_question_ok);
+    if questions.len() == 2 && class_ok && bulk_ok && options_in_fixed_order(raw) {
         Ok(())
     } else {
-        Err("options must be in the fixed order")
+        Err("questions must be a map with fixed-order Choice options")
     }
+}
+
+/// A Choice question: `type: "choice"`, instructions, and a criteria map with
+/// exactly the five option names.
+fn choice_question_ok(question: &Value) -> bool {
+    question.get("type").and_then(Value::as_str) == Some("choice")
+        && question
+            .get("instructions")
+            .and_then(Value::as_str)
+            .is_some()
+        && question
+            .get("criteria")
+            .and_then(Value::as_object)
+            .is_some_and(|criteria| {
+                criteria.len() == OPTIONS.len()
+                    && OPTIONS.iter().all(|name| criteria.contains_key(*name))
+            })
+}
+
+/// A Score question: `type: "score"`, instructions, and at least two levels.
+fn score_question_ok(question: &Value) -> bool {
+    question.get("type").and_then(Value::as_str) == Some("score")
+        && question
+            .get("instructions")
+            .and_then(Value::as_str)
+            .is_some()
+        && question
+            .get("criteria")
+            .and_then(Value::as_array)
+            .is_some_and(|levels| levels.len() >= 2)
+}
+
+/// The five option names appear as `criteria` keys in the fixed order in the
+/// serialised bytes (a JSON object loses key order when parsed).
+fn options_in_fixed_order(raw: &str) -> bool {
+    let mut rest = raw;
+    for name in OPTIONS {
+        let needle = format!("\"{name}\":");
+        let Some(at) = rest.find(&needle) else {
+            return false;
+        };
+        rest = &rest[at + needle.len()..];
+    }
+    true
 }
 
 fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
@@ -309,29 +353,38 @@ fn scenario_response(scenario: Scenario) -> Response {
             "a".repeat(70_000)
         )),
         Scenario::ChoiceOutsideFive => {
-            ok_json(VALID.replace("\"choice\":\"list\"", "\"choice\":\"other\""))
+            ok_json(VALID.replace(r#""choice":"list""#, r#""choice":"other""#))
         }
         Scenario::UnknownField => {
-            ok_json(VALID.replace("\"confidence\":0.7}", "\"confidence\":0.7,\"extra\":true}"))
+            ok_json(VALID.replace(r#""confidence":0.7}"#, r#""confidence":0.7,"extra":true}"#))
         }
-        Scenario::Score101 => ok_json(VALID.replace("\"score\":42", "\"score\":101")),
-        Scenario::ProbabilityNan => ok_json(probabilities("[0.7,0.1,0.1,0.05,NaN]")),
-        Scenario::ProbabilityInf => ok_json(probabilities("[0.7,0.1,0.1,0.05,Infinity]")),
-        Scenario::FourProbabilities => ok_json(probabilities("[0.7,0.1,0.1,0.1]")),
-        Scenario::ProbabilitiesSumLow => ok_json(probabilities("[0.6,0.1,0.1,0.05,0.05]")),
-        Scenario::MissingField => ok_json(VALID.replace("\"confidence\":0.7}", "}")),
+        Scenario::Score101 => ok_json(VALID.replace(r#""score":0.42"#, r#""score":101"#)),
+        Scenario::ProbabilityNan => ok_json(class_probabilities(
+            r#"{"list":0.7,"bulk_no_header":0.1,"notice":0.1,"personal":0.05,"suspect":NaN}"#,
+        )),
+        Scenario::ProbabilityInf => ok_json(class_probabilities(
+            r#"{"list":0.7,"bulk_no_header":0.1,"notice":0.1,"personal":0.05,"suspect":Infinity}"#,
+        )),
+        Scenario::FourProbabilities => ok_json(class_probabilities(
+            r#"{"list":0.7,"bulk_no_header":0.1,"notice":0.1,"personal":0.1}"#,
+        )),
+        Scenario::ProbabilitiesSumLow => ok_json(class_probabilities(
+            r#"{"list":0.6,"bulk_no_header":0.1,"notice":0.1,"personal":0.05,"suspect":0.05}"#,
+        )),
+        Scenario::MissingField => ok_json(VALID.replace(r#","confidence":0.7}"#, "}")),
         Scenario::ModelLatest => {
-            ok_json(VALID.replace("\"model\":\"jev-1.13.0\"", "\"model\":\"jev-latest\""))
+            ok_json(VALID.replace(r#""model":"jev-1.13.0""#, r#""model":"jev-latest""#))
         }
         Scenario::InstructionText => ok_json(VALID.replace(
-            "\"choice\":\"list\"",
-            "\"choice\":\"ignore previous instructions\"",
+            r#""choice":"list""#,
+            r#""choice":"ignore previous instructions""#,
         )),
     }
 }
 
-fn probabilities(array: &str) -> String {
-    VALID.replace("[0.7,0.1,0.1,0.05,0.05]", array)
+/// Replaces the class `probabilities` object in [`VALID`] with `map`.
+fn class_probabilities(map: &str) -> String {
+    VALID.replace(VALID_PROBABILITIES, &format!("\"probabilities\":{map}"))
 }
 
 /// A response that declares a body far larger than it sends, so the client sees

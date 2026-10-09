@@ -305,15 +305,43 @@ async fn jev_request_pins_model_and_option_order() -> TestResult {
         ports::prompt::render_model_text(&sample_input())
     );
     let questions = body["questions"]
-        .as_array()
-        .ok_or("questions not an array")?;
-    assert_eq!(questions[0]["type"], "choice");
-    assert_eq!(questions[0]["name"], "class");
-    assert_eq!(questions[0]["options"], serde_json::json!(EXPECTED_OPTIONS));
-    assert_eq!(questions[1]["type"], "score");
-    assert_eq!(questions[1]["name"], "bulk");
-    assert_eq!(questions[1]["min"], 0);
-    assert_eq!(questions[1]["max"], 100);
+        .as_object()
+        .ok_or("questions not an object")?;
+    assert_eq!(questions.len(), 2);
+
+    let class = &questions["class"];
+    assert_eq!(class["type"], "choice");
+    assert_eq!(class["instructions"], ports::prompt::CLASS_QUESTION);
+    let criteria = class["criteria"]
+        .as_object()
+        .ok_or("class criteria not an object")?;
+    assert_eq!(criteria.len(), EXPECTED_OPTIONS.len());
+    for name in EXPECTED_OPTIONS {
+        assert!(criteria.contains_key(name), "missing option {name}");
+    }
+    assert_eq!(
+        criteria["list"],
+        ports::prompt::CLASS_OPTIONS[0].1,
+        "the criteria map must carry each option's rubric description"
+    );
+
+    let bulk = &questions["bulk"];
+    assert_eq!(bulk["type"], "score");
+    assert_eq!(bulk["instructions"], ports::prompt::BULK_QUESTION);
+    assert_eq!(bulk["criteria"].as_array().map(Vec::len), Some(2));
+
+    // A JSON object loses key order when parsed, so read the criteria order
+    // from the serialised bytes: the five options must appear in the fixed
+    // CLASS_OPTIONS order (the fake also rejects a request that does not).
+    let raw = String::from_utf8_lossy(&request.body);
+    let mut cursor = 0;
+    for name in EXPECTED_OPTIONS {
+        let needle = format!("\"{name}\":");
+        let at = raw[cursor..]
+            .find(&needle)
+            .ok_or_else(|| format!("option {name} not in the fixed order"))?;
+        cursor += at + needle.len();
+    }
     Ok(())
 }
 
