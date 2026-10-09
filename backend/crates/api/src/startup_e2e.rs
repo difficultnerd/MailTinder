@@ -9,11 +9,13 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use adapters_gcp::{FirestoreConfig, FirestoreStore, GcpHttp, StaticTokenSource, TokenSource};
 use adapters_gmail::identity::{GoogleIdentity, GoogleIdentityConfig};
 use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
 use async_trait::async_trait;
+use domain::Tunables;
 use obs::Sensitive;
 use ports::{
     AppFolderStore, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
@@ -139,6 +141,21 @@ where
         ports,
         base.with_keys(Sensitive::new(rate_key), Sensitive::new(email_key)),
     ))
+}
+
+/// The e2e tunables (T-1112b). The production defaults, except that when
+/// `MT_E2E_UNSUB_DELAY_S` is set to a whole number of seconds it replaces
+/// `unsub_delay`, so a demo's undo window is seconds rather than the production
+/// five minutes. Unset, blank or unparsable keeps the production value.
+#[must_use]
+pub fn e2e_tunables(lookup: impl Fn(&str) -> Option<String>) -> Tunables {
+    let mut tunables = Tunables::default();
+    if let Some(secs) =
+        lookup("MT_E2E_UNSUB_DELAY_S").and_then(|raw| raw.trim().parse::<u64>().ok())
+    {
+        tunables.unsub_delay = Duration::from_secs(secs);
+    }
+    tunables
 }
 
 /// A loopback-only [`HttpEgress`]: it allows requests to exactly one socket,
