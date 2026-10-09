@@ -239,22 +239,6 @@ impl Ui {
         Ok(Self { client })
     }
 
-    /// Run a lookup script until it reports `true` or `FIND_TIMEOUT` passes. The scripts return `false` without side effects when
-    /// the control does not exist yet, so repeating them is safe.
-    async fn poll_script(&self, js: &str, args: Vec<Value>) -> Result<bool, E2eError> {
-        let deadline = Instant::now() + FIND_TIMEOUT;
-        loop {
-            let found = self.client.execute(js, args.clone()).await.map_err(wd)?;
-            if found.as_bool() == Some(true) {
-                return Ok(true);
-            }
-            if Instant::now() >= deadline {
-                return Ok(false);
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
     /// Click the `flt-semantics` control whose `aria-label` is `label`.
     ///
     /// The labelled node is first tagged in the DOM, then clicked through
@@ -300,15 +284,35 @@ impl Ui {
     }
 
     /// Type `text` into the labelled control.
+    ///
+    /// Flutter web's text fields ignore synthetic DOM `input` events, so the
+    /// field is focused with a real click and the text is sent as WebDriver key
+    /// events — the trusted input a user produces. Flutter exposes the field's
+    /// `aria-label` on its semantics `input` (or the editing element).
     pub async fn type_into(&self, label: &str, text: &str) -> Result<(), E2eError> {
-        let typed = self
-            .poll_script(TYPE_JS, vec![json!(label), json!(text)])
-            .await?;
-        if typed {
-            Ok(())
-        } else {
-            self.capture_failure(label).await;
-            Err(E2eError::NotFound(label.to_owned()))
+        let selector = format!(
+            "input[aria-label=\"{label}\"], textarea[aria-label=\"{label}\"], \
+             [data-semantics-role=\"text-field\"][aria-label=\"{label}\"]"
+        );
+        let deadline = Instant::now() + FIND_TIMEOUT;
+        loop {
+            if let Ok(field) = self.client.find(Locator::Css(&selector)).await {
+                // Focus the field; Flutter then routes typed keys to it.
+                let _ = field.click().await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let target = match self.client.active_element().await {
+                    Ok(active) => active,
+                    Err(_) => field,
+                };
+                if target.send_keys(text).await.is_ok() {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                self.capture_failure(label).await;
+                return Err(E2eError::NotFound(label.to_owned()));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
@@ -803,7 +807,10 @@ impl FakeGoogle {
     }
 
     /// The label set currently on `sub`'s message `id`, from the fake Gmail
-    /// control route (exact set, for undo-restores-labels assertions).
+    /// control route, with each label ID resolved to its display name (exact
+    /// set, for undo-restores-labels and filed-label assertions). A user label
+    /// is stored as `Label_<n>` on the message, so it must be mapped back to
+    /// the name the journey typed (SW-04 AC2).
     pub async fn message_labels(&self, sub: &str, id: &str) -> Result<Vec<String>, E2eError> {
         let email = self.account_email(sub)?;
         let url = endpoint(&self.base, &format!("/__fake/gmail/messages/{email}/{id}"));
@@ -816,15 +823,67 @@ impl FakeGoogle {
             .json()
             .await
             .map_err(http)?;
-        let labels = value
+        let label_ids = value
             .get("labelIds")
             .and_then(Value::as_array)
             .ok_or_else(|| E2eError::State("label response had no labelIds".to_owned()))?;
-        Ok(labels
+        let names = self.label_names(&email).await?;
+        Ok(label_ids
             .iter()
             .filter_map(Value::as_str)
-            .map(str::to_owned)
+            .map(|label_id| {
+                names
+                    .get(label_id)
+                    .cloned()
+                    .unwrap_or_else(|| label_id.to_owned())
+            })
             .collect())
+    }
+
+    /// Every label ID of `email`'s mailbox mapped to its name, read through the
+    /// fake Gmail `labels.list` API with a control-issued token (the app's own
+    /// label names live there; message label IDs are opaque).
+    async fn label_names(&self, email: &str) -> Result<HashMap<String, String>, E2eError> {
+        let token = self
+            .post(
+                "/__fake/tokens",
+                json!({
+                    "email": email,
+                    "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+                    "ttl_s": 3600,
+                }),
+            )
+            .await?
+            .get("access_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| E2eError::State("token response had no access_token".to_owned()))?;
+        let url = endpoint(&self.base, "/gmail/v1/users/me/labels");
+        let value: Value = self
+            .client
+            .get(&url)
+            .header("authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(http)?
+            .json()
+            .await
+            .map_err(http)?;
+        let mut names = HashMap::new();
+        for label in value
+            .get("labels")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(label_id), Some(name)) = (
+                label.get("id").and_then(Value::as_str),
+                label.get("name").and_then(Value::as_str),
+            ) {
+                names.insert(label_id.to_owned(), name.to_owned());
+            }
+        }
+        Ok(names)
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
@@ -911,7 +970,14 @@ const MARKED_SELECTOR: &str = "[data-e2e-tap]";
 const MARK_TAPPABLE_JS: &str = r#"
 const label = arguments[0];
 const matches = Array.from(document.querySelectorAll('flt-semantics, [role="button"], button'))
-  .filter(el => el.getAttribute('aria-label') === label || (el.textContent || '').trim() === label);
+  .filter(el => {
+    const aria = el.getAttribute('aria-label') || '';
+    // Flutter repeats a merged control's label ("Settings\nSettings") in its
+    // aria-label, so a whole-line match counts as well as an exact one.
+    return aria === label
+      || (el.textContent || '').trim() === label
+      || aria.split('\n').some(line => line === label);
+  });
 if (matches.length === 0) return false;
 document.querySelectorAll('[data-e2e-tap]').forEach(el => el.removeAttribute('data-e2e-tap'));
 matches.sort((a, b) => (b.hasAttribute('flt-tappable') ? 1 : 0) - (a.hasAttribute('flt-tappable') ? 1 : 0));
@@ -928,27 +994,6 @@ node.click();
 return true;
 "#;
 
-/// Type `arguments[1]` into the labelled control `arguments[0]`.
-const TYPE_JS: &str = r#"
-const [label, text] = arguments;
-const node = document.querySelector(`flt-semantics[aria-label="${label}"]`);
-if (!node) return false;
-const input = node.querySelector('input, textarea');
-if (!input) {
-  node.textContent = text;
-  node.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
-}
-input.focus();
-const proto = input.tagName === 'TEXTAREA'
-  ? HTMLTextAreaElement.prototype
-  : HTMLInputElement.prototype;
-const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-setter.call(input, text);
-input.dispatchEvent(new Event('input', { bubbles: true }));
-return true;
-"#;
-
 /// True when the page text or any `aria-label` contains `arguments[0]`.
 const TEXT_JS: &str = r#"
 const needle = arguments[0];
@@ -959,13 +1004,16 @@ return Array.from(document.querySelectorAll('[aria-label]'))
   .some(el => (el.getAttribute('aria-label') || '').includes(needle));
 "#;
 
-/// True when any Flutter semantics node's text contains `arguments[0]`. The
-/// card behind the focused one is wrapped in `ExcludeSemantics`, so it has no
-/// `flt-semantics` node and this sees only the card in focus.
+/// True when any Flutter semantics node carries `arguments[0]` in its text or
+/// its `aria-label`. Flutter web surfaces a merged card's content through the
+/// node's `aria-label` (its `textContent` stays empty), so both are checked.
+/// The card behind the focused one is wrapped in `ExcludeSemantics`, so it has
+/// no `flt-semantics` node and this sees only the card in focus.
 const SEMANTIC_TEXT_JS: &str = r#"
 const needle = arguments[0];
 return Array.from(document.querySelectorAll('flt-semantics'))
-  .some(el => (el.textContent || '').includes(needle));
+  .some(el => (el.textContent || '').includes(needle)
+           || (el.getAttribute('aria-label') || '').includes(needle));
 "#;
 
 /// Persisted browser state as a JSON string; completes asynchronously.

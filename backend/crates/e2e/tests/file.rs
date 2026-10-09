@@ -5,7 +5,7 @@
 //! Run only by `scripts/e2e.sh`. The filing sheet's "New category" path applies
 //! the provider label and the message leaves the inbox (S10 3.3).
 
-use e2e::{signed_in_user, EventLog, FakeGoogle, Stack, FEED_TIMEOUT, FILE_BUTTON, NEW_CATEGORY};
+use e2e::{signed_in_user, EventLog, FakeGoogle, Stack, FEED_TIMEOUT, FILE_BUTTON};
 
 /// A per-journey `sub` so journeys never see each other's mail.
 const SUB: &str = "sub-sw-04-a";
@@ -17,6 +17,8 @@ const SENDER: &str = "Acme Store";
 const CATEGORY: &str = "Receipts";
 /// The filed toast (S9 section 4).
 const FILED: &str = "Filed under Receipts.";
+/// The new-category name field's label/hint (S9 section 4).
+const CATEGORY_FIELD: &str = "Category name";
 
 #[tokio::test]
 #[ignore = "run by scripts/e2e.sh"]
@@ -38,11 +40,12 @@ async fn sw_04_ac2_e2e_file_applies_label_and_leaves_inbox(
     let ui = signed_in_user(&stack, SUB, EMAIL, &[]).await?;
     ui.wait_for_semantic_text(SENDER, FEED_TIMEOUT).await?;
 
-    // File -> New category -> name "Receipts" -> confirm.
+    // File: with no suggestion and an empty category cache the sheet goes
+    // straight to the name field (SW-04 AC3), so name the new category and
+    // confirm with the sheet's File button.
     ui.tap(FILE_BUTTON).await?;
-    ui.wait_for_text(NEW_CATEGORY, FEED_TIMEOUT).await?;
-    ui.tap(NEW_CATEGORY).await?;
-    ui.type_into("Category name", CATEGORY).await?;
+    ui.wait_for_text(CATEGORY_FIELD, FEED_TIMEOUT).await?;
+    ui.type_into(CATEGORY_FIELD, CATEGORY).await?;
     ui.tap(FILE_BUTTON).await?;
     ui.wait_for_text(FILED, FEED_TIMEOUT).await?;
 
