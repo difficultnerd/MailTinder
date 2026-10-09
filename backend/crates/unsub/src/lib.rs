@@ -18,6 +18,8 @@ pub mod one_click;
 pub mod quota;
 pub mod runner;
 pub mod sender;
+#[cfg(feature = "testkit")]
+pub mod startup_e2e;
 
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
