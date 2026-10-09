@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 300 lines of HCL plus tests | T-307, T-1102b, needs S11 |
+| M11 | sonnet | about 300 lines of HCL plus tests | T-307, T-1102b, T-1114, needs S11 |
 
 **Read only these spec sections:** S4 sections 1 ("Observability", cost paragraph), 4 (Reliability and Cost optimisation rows) and 5.7 (billing alerts bullet) (`docs/specs/S4-architecture.md`); S10 section 8 (`docs/specs/S10-test-strategy.md`); S6 section 7 (`docs/specs/S6-security.md`); register row V16.4.3 in `docs/security/asvs-l2-register.md`. Nothing else is needed.
 
