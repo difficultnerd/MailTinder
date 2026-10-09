@@ -1,8 +1,7 @@
-#![cfg(not(feature = "testkit"))]
 #![allow(clippy::pedantic)]
 
-//! ASVS V13.4.2 (S10 3.2): the test-only routes (`/internal/test/**`) are
-//! compiled only with the `testkit` feature and are absent from a release build.
+//! ASVS V13.4.2 (S10 3.2): the invite route requires both the testkit feature
+//! and runtime e2e mode. Advance-clock is not implemented by this task.
 //! The workspace's normal test run uses `--all-features`, so this is run
 //! separately without features: `cargo test -p api --test release_routes`.
 
@@ -27,8 +26,28 @@ fn fixture() -> Result<AppState, Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
+#[cfg(not(feature = "testkit"))]
 async fn asvs_v13_4_2_test_routes_absent_without_testkit_feature(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    std::env::set_var("MT_E2E", "1");
+    assert_invite_route(StatusCode::NOT_FOUND).await
+}
+
+#[tokio::test]
+#[cfg(feature = "testkit")]
+async fn asvs_v13_4_2_invite_route_requires_runtime_e2e_mode(
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::env::remove_var("MT_E2E");
+    assert_invite_route(StatusCode::NOT_FOUND).await?;
+    std::env::set_var("MT_E2E", "0");
+    assert_invite_route(StatusCode::NOT_FOUND).await?;
+    std::env::set_var("MT_E2E", "1");
+    assert_invite_route(StatusCode::CREATED).await?;
+    std::env::remove_var("MT_E2E");
+    Ok(())
+}
+
+async fn assert_invite_route(expected: StatusCode) -> Result<(), Box<dyn std::error::Error>> {
     let state = fixture()?;
     // A real anonymous session satisfies the CSRF layer, so a missing route
     // reaches the 404 fallback rather than being refused with 403 first.
@@ -41,19 +60,18 @@ async fn asvs_v13_4_2_test_routes_absent_without_testkit_feature(
         .to_str()?
         .split(';')
         .next()
-        .unwrap_or_default()
+        .ok_or("anonymous session cookie is empty")?
         .to_owned();
-    for uri in ["/internal/test/advance-clock", "/internal/test/invites"] {
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("cookie", &cookie)
-            .header("origin", "https://mailtinder.test")
-            .header("x-csrf-token", &record.record.csrf_token)
-            .body(Body::from(r#"{"email":"invitee@example.com"}"#))?;
-        let response = build_router(state.clone()).oneshot(request).await?;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "route {uri}");
-    }
+    let uri = "/internal/test/invites";
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("cookie", &cookie)
+        .header("origin", "https://mailtinder.test")
+        .header("x-csrf-token", &record.record.csrf_token)
+        .body(Body::from(r#"{"email":"invitee@example.com"}"#))?;
+    let response = build_router(state.clone()).oneshot(request).await?;
+    assert_eq!(response.status(), expected, "route {uri}");
     Ok(())
 }

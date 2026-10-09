@@ -3,10 +3,12 @@
 //! They let the e2e harness (`scripts/e2e.sh`) create an invite without an
 //! admin session or a real mailbox: the request goes through the same shared
 //! invite service the admin route uses, so the hash is stored and only the raw
-//! token is returned. `tests/release_routes.rs` proves they are absent without
-//! the feature. The router is merged after the security, CSRF and rate-limit
+//! token is returned. `tests/release_routes.rs` proves the invite route is absent
+//! without the feature or runtime `MT_E2E=1`, and returns 201 with both enabled.
+//! The router is merged after the security, CSRF and rate-limit
 //! layers, so a synthetic call needs no browser session; it is never part of a
-//! release build.
+//! production build. Advance-clock is not implemented here; its absence is not
+//! used as evidence for this control.
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,

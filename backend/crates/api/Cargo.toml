@@ -41,11 +41,6 @@ tokio = { workspace = true, features = ["signal"] }
 testkit = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
-# Compiles the test-only routes (`/internal/test/...`, S10 3.2). Never enabled
-# in a release build; `tests/release_routes.rs` proves they are absent.
-[features]
-testkit = []
-
 [dev-dependencies]
 testkit.workspace = true
 adapters-gcp.workspace = true

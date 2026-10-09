@@ -24,6 +24,7 @@ async fn au_03_ac1_e2e_invited_user_lands_on_feed() -> Result<(), Box<dyn std::e
     let control = TestControl::connect(&stack)?;
 
     google.reset().await?;
+    google.register_client(&stack).await?;
     google
         .seed_account("sub-invitee", "invitee@example.com", true)
         .await?;

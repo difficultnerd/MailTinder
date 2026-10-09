@@ -802,6 +802,7 @@ dependencies = [
  "base64 0.22.1",
  "fantoccini",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "testkit",
@@ -865,6 +866,7 @@ dependencies = [
 name = "fake-google"
 version = "0.1.0"
 dependencies = [
+ "adapters-gcp",
  "async-trait",
  "axum 0.8.9",
  "base64 0.22.1",

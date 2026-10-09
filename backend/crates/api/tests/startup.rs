@@ -161,6 +161,10 @@ async fn api_e2e_ports_serve_healthz() -> Result<(), Box<dyn std::error::Error>>
         "GOOGLE_OAUTH_CLIENT_ID" => Some("e2e-client".to_owned()),
         _ => None,
     })?;
+    // Standalone OAuth and Gmail/Drive must agree on token expiry; a frozen
+    // unit-test epoch makes freshly issued provider tokens immediately stale.
+    let provider_now = adapters_gcp::production_clock().now();
+    assert!((ports.clock.now() - provider_now).abs() < time::Duration::seconds(5));
     let state = api::app_state(Arc::new(ports), Arc::new(config));
     let response = api::build_router(state)
         .oneshot(

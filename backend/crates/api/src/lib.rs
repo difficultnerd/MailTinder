@@ -120,9 +120,13 @@ pub fn build_router_with_routes(
             request_id_layer,
         ));
     // Test-only routes are merged after the layers so a synthetic call needs no
-    // session; never present without the `testkit` feature (S10 3.2).
+    // session; require both the `testkit` feature and runtime e2e mode (S10 3.2).
     #[cfg(feature = "testkit")]
-    let app = app.merge(crate::routes::testkit::router());
+    let app = if startup::e2e_mode_enabled() {
+        app.merge(crate::routes::testkit::router())
+    } else {
+        app
+    };
     app.with_state(state)
 }
 

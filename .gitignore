@@ -1,6 +1,8 @@
 # Rust
 backend/target/
 backend/lcov.info
+# Local e2e process state and synthetic service logs.
+/target/
 
 # Dart / Flutter
 app/.dart_tool/

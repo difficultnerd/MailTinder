@@ -107,8 +107,17 @@ impl Ui {
     /// Start a new Chrome session and open `hash_path` on the app.
     pub async fn open(stack: &Stack, hash_path: &str) -> Result<Self, E2eError> {
         let url = webdriver_url()?;
+        // reqwest and fantoccini can enable different providers through feature
+        // unification; select one explicitly rather than panic at construction.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut capabilities = serde_json::Map::new();
+        capabilities.insert(
+            "goog:chromeOptions".to_owned(),
+            json!({ "args": ["--headless=new", "--disable-dev-shm-usage"] }),
+        );
         let client = fantoccini::ClientBuilder::rustls()
             .map_err(|e| E2eError::WebDriver(e.to_string()))?
+            .capabilities(capabilities)
             .connect(&url)
             .await
             .map_err(|e| E2eError::WebDriver(e.to_string()))?;
@@ -254,6 +263,20 @@ impl FakeGoogle {
         self.post("/__fake/reset", json!({})).await.map(|_| ())
     }
 
+    /// Register the harness OAuth client with its exact callback URI.
+    pub async fn register_client(&self, stack: &Stack) -> Result<(), E2eError> {
+        self.post(
+            "/__fake/identity/clients",
+            json!({
+                "client_id": "fake-e2e-client",
+                "client_secret": "test-only-not-a-secret",
+                "redirect_uris": [endpoint(&stack.app_url, "/api/v1/auth/google/callback")],
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Register a fake Google account and its mailbox.
     pub async fn seed_account(
         &self,
@@ -376,17 +399,6 @@ impl TestControl {
             .ok_or_else(|| E2eError::State("invite response had no token".to_owned()))
     }
 
-    /// Advance the fake scheduler's clock by `by`.
-    pub async fn advance_clock(&self, by: Duration) -> Result<(), E2eError> {
-        let seconds = i64::try_from(by.as_secs()).unwrap_or(i64::MAX);
-        self.post(
-            "/internal/test/advance-clock",
-            json!({ "seconds": seconds }),
-        )
-        .await
-        .map(|_| ())
-    }
-
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
         let response = self
             .client
@@ -408,7 +420,8 @@ impl TestControl {
 /// Click the semantics node whose `aria-label` is `arguments[0]`.
 const TAP_JS: &str = r#"
 const label = arguments[0];
-const node = document.querySelector(`flt-semantics[aria-label="${label}"]`);
+const node = Array.from(document.querySelectorAll('flt-semantics, [role="button"], button'))
+  .find(el => el.getAttribute('aria-label') === label || el.textContent.trim() === label);
 if (!node) return false;
 node.click();
 return true;

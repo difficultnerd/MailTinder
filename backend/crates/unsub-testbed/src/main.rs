@@ -15,18 +15,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "TESTBED_ADDR={http} TESTBED_HTTPS_ADDR={https}")?;
     out.flush()?;
     // scripts/e2e.sh may ask for the port in a file instead of parsing stdout.
-    if let Some(path) = port_file_arg() {
+    if let Some(path) = std::env::var_os("TESTBED_PORT_FILE") {
         std::fs::write(path, format!("{}\n", http.port()))?;
     }
     // Keep serving until the process is killed.
     std::future::pending::<()>().await;
     Ok(())
-}
-
-/// The value of an optional `--port-file <path>` argument.
-fn port_file_arg() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    args.iter()
-        .position(|arg| arg == "--port-file")
-        .and_then(|i| args.get(i + 1).cloned())
 }

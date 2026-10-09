@@ -108,9 +108,12 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:
           install_components: cloud-firestore-emulator,beta
-      # Prove the test-only routes are absent from a build without the feature;
-      # the workspace `rust` job uses --all-features, so this needs its own run.
-      - run: cargo test --locked -p api --test release_routes
+      # Production must compile without testkit; separately prove the real
+      # test route is absent and startup refuses MT_E2E in that build.
+      # The workspace `rust` job also proves feature + runtime gating.
+      - run: cargo build --release --locked -p api --no-default-features
+      - run: cargo test --locked -p api --no-default-features --test release_routes
+      - run: cargo test --locked -p api --no-default-features --test startup
       - run: flutter pub get
         working-directory: app
       - run: scripts/e2e.sh

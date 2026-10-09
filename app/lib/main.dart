@@ -20,6 +20,7 @@ const bool kE2eBuild = bool.fromEnvironment('MT_E2E');
 SemanticsHandle? _semanticsHandle;
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   if (kE2eBuild) {
     _semanticsHandle = SemanticsBinding.instance.ensureSemantics();
   }

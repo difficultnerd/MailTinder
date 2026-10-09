@@ -33,20 +33,46 @@ mkdir -p "$LOGS" "$RUN"
 # PATH.
 CHROMEDRIVER="${CHROMEWEBDRIVER:+$CHROMEWEBDRIVER/}chromedriver"
 
-# Kill every child on exit, on success or failure, or the runner hangs.
-PIDS=()
+# Services own process groups, including gcloud's Java and ChromeDriver's Chrome.
+PGIDS=()
 cleanup() {
-  local pid
-  for pid in "${PIDS[@]:-}"; do
-    if [[ -n "$pid" ]]; then
-      kill "$pid" 2>/dev/null || true
-    fi
+  local status=$? pgid remaining=0
+  trap - EXIT INT TERM
+  for pgid in "${PGIDS[@]}"; do
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+  done
+  sleep 3
+  for pgid in "${PGIDS[@]}"; do
+    kill -KILL -- "-$pgid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
+  # Ignore already-dead zombies; fail if any live member escaped termination.
+  for pgid in "${PGIDS[@]}"; do
+    if ps -eo pgid=,stat= | grep -E "^[[:space:]]*$pgid[[:space:]]+[^Z]" >/dev/null; then
+      echo "cleanup failed for process group $pgid" >&2
+      remaining=1
+    fi
+  done
+  if (( remaining )); then status=1; else echo "==> cleanup: no live service processes remain"; fi
+  exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 free_port() { python3 "$REPO/scripts/free_port.py"; }
+
+wait_http() {
+  local url="$1"
+  for _ in {1..60}; do
+    if curl -sf --max-time 2 "$url" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for service readiness" >&2
+  return 1
+}
 
 # Wait up to `max` seconds for a service's port file and echo its contents.
 wait_port_file() {
@@ -65,8 +91,9 @@ wait_port_file() {
 start_bg() { # <name> <logfile> <command...>
   local name="$1" log="$2"
   shift 2
-  "$@" >"$log" 2>&1 &
-  PIDS+=("$!")
+  setsid "$@" >"$log" 2>&1 &
+  PGIDS+=("$!")
+  printf '%s\n' "$!" >>"$RUN/service.pgids"
   echo "    started $name (log: $log)"
 }
 
@@ -79,26 +106,26 @@ echo "==> building services in test configuration"
 (cd backend && cargo build --locked -p fake-google -p unsub-testbed)
 
 echo "==> building the Flutter web app with the e2e define"
-(cd app && flutter build web --release --dart-define=MT_E2E=true)
+(cd app && flutter build web --release --no-web-resources-cdn --dart-define=MT_E2E=true)
 
 echo "==> Firestore emulator"
 FIRESTORE_PORT="$(free_port)"
 export FIRESTORE_EMULATOR_HOST="127.0.0.1:$FIRESTORE_PORT"
-gcloud emulators firestore start --host-port="$FIRESTORE_EMULATOR_HOST" --quiet \
-  >"$LOGS/firestore.log" 2>&1 &
-PIDS+=("$!")
+start_bg firestore "$LOGS/firestore.log" \
+  gcloud emulators firestore start --host-port="$FIRESTORE_EMULATOR_HOST" --quiet
+wait_http "http://$FIRESTORE_EMULATOR_HOST/"
 
 echo "==> fake-google"
 FAKE_PORT_FILE="$RUN/fake-google.port"
 start_bg fake-google "$LOGS/fake-google.jsonl" \
-  "$REPO/backend/target/debug/fake-google" --port-file "$FAKE_PORT_FILE"
+  env FAKE_GOOGLE_PORT_FILE="$FAKE_PORT_FILE" "$REPO/backend/target/debug/fake-google"
 FAKE_PORT="$(wait_port_file "$FAKE_PORT_FILE" 30)"
 export MT_E2E_FAKE_GOOGLE_URL="http://localhost:$FAKE_PORT"
 
 echo "==> unsub-testbed"
 TESTBED_PORT_FILE="$RUN/unsub-testbed.port"
 start_bg unsub-testbed "$LOGS/unsub-testbed.jsonl" \
-  "$REPO/backend/target/debug/unsub-testbed" --port-file "$TESTBED_PORT_FILE"
+  env TESTBED_PORT_FILE="$TESTBED_PORT_FILE" "$REPO/backend/target/debug/unsub-testbed"
 TESTBED_PORT="$(wait_port_file "$TESTBED_PORT_FILE" 30)"
 export MT_E2E_TESTBED_URL="http://localhost:$TESTBED_PORT"
 
@@ -120,9 +147,13 @@ start_bg unsub "$LOGS/unsub.jsonl" env \
 echo "==> api on 127.0.0.1:$API_PORT"
 start_bg api "$LOGS/api.jsonl" env \
   $(env_file "$REPO/scripts/e2e/api.env") \
+  MT_E2E=1 \
+  APP_ORIGIN="http://localhost:$HOST_PORT" \
+  FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
   PORT="$API_PORT" \
   FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
   "$REPO/backend/target/debug/api"
+wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
 echo "==> serving the web build on http://localhost:$HOST_PORT"
 HOST_PORT_FILE="$RUN/host.port"
@@ -139,6 +170,7 @@ export MT_E2E_API_URL="http://127.0.0.1:$API_PORT"
 
 echo "==> chromedriver on 127.0.0.1:$CD_PORT"
 start_bg chromedriver "$LOGS/chromedriver.log" "$CHROMEDRIVER" --port="$CD_PORT"
+wait_http "http://127.0.0.1:$CD_PORT/status"
 export MT_E2E_WEBDRIVER_URL="http://127.0.0.1:$CD_PORT"
 
 echo "==> journeys"
