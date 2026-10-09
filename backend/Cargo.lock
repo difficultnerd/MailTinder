@@ -43,6 +43,7 @@ dependencies = [
  "mailparse",
  "obs",
  "ports",
+ "proptest",
  "psl",
  "reqwest",
  "rfc2047-decoder",
