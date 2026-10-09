@@ -169,4 +169,11 @@ phase "demo.sh --check (T-1108a)"
 MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_script.py" \
   DemoScriptTest.test_demo_check_serves_page_and_health_then_cleans_up
 
+# The stub-tunnel phone test (T-1108c) also runs here, for the same reason: it
+# needs the stack, and the stub cloudflared means no real tunnel is created.
+# It starts and stops its own stack on free ports and reuses this job's build.
+phase "demo.sh --phone (T-1108c)"
+MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_phone.py" \
+  DemoPhoneStackTest.test_demo_phone_exposes_only_the_front_door
+
 phase "e2e passed"
