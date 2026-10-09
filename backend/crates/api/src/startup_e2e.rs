@@ -1,0 +1,263 @@
+//! e2e-mode wiring (T-500b), compiled only with the `testkit` feature.
+//!
+//! Switched on at run time by `MT_E2E=1`. Storage is the Firestore emulator;
+//! keys, system keys, secrets, the scheduler and the caller verifier stay the
+//! `testkit` fakes; Google (OAuth, Gmail, Drive) is the local `fake-google`
+//! server, reached through [`LoopbackEgress`], which allows exactly that one
+//! socket. The production egress policy is never weakened (T-306); e2e simply
+//! does not use it.
+
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use adapters_gcp::{FirestoreConfig, FirestoreStore, GcpHttp, StaticTokenSource, TokenSource};
+use adapters_gmail::identity::{GoogleIdentity, GoogleIdentityConfig};
+use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
+use async_trait::async_trait;
+use obs::Sensitive;
+use ports::{
+    AppFolderStore, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
+    IdentityProvider, InviteMailer, MailProvider, OneClickOutcome, Ports, Rng, SecretName,
+    ServerStore,
+};
+use url::Url;
+
+use crate::config::ApiConfig;
+use crate::startup::SetupError;
+
+/// The literal client secret for e2e. Never a real secret (S10 3.3).
+const CLIENT_SECRET: &str = "test-only-not-a-secret";
+/// The Firestore emulator project id.
+const E2E_PROJECT: &str = "demo-mailtinder";
+
+/// Build e2e ports from the process environment.
+///
+/// # Errors
+///
+/// Returns [`SetupError`] when a required variable is missing or malformed.
+pub fn build_e2e_from_env() -> Result<(Ports, ApiConfig), SetupError> {
+    let store = firestore_emulator_store(|name| std::env::var(name).ok())?;
+    build_e2e_ports(store, |name| std::env::var(name).ok())
+}
+
+/// Build the e2e Firestore store over the emulator, with a fixed `owner`
+/// token (the emulator ignores it).
+///
+/// # Errors
+///
+/// Returns [`SetupError`] when `FIRESTORE_EMULATOR_HOST` is missing, is not a
+/// `host:port`, or the HTTP client cannot be built.
+pub fn firestore_emulator_store(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Arc<FirestoreStore>, SetupError> {
+    let host = required(&lookup, "FIRESTORE_EMULATOR_HOST")?;
+    let addr: SocketAddr = host
+        .parse()
+        .map_err(|_| SetupError::Invalid("FIRESTORE_EMULATOR_HOST"))?;
+    let tokens: Arc<dyn TokenSource> =
+        Arc::new(StaticTokenSource(Sensitive::new("owner".to_owned())));
+    let http = Arc::new(GcpHttp::with_emulator(tokens, addr).map_err(|_| SetupError::Adapter)?);
+    Ok(Arc::new(FirestoreStore::new(
+        http,
+        FirestoreConfig::new(E2E_PROJECT),
+    )))
+}
+
+/// Build the e2e `Ports` and `ApiConfig`. Generic over the store so tests can
+/// pass an `InMemoryServerStore`; production e2e passes the emulator store.
+///
+/// Required variables: `FAKE_GOOGLE_URL`, `APP_ORIGIN` (loopback `http` is
+/// allowed here and nowhere else) and `GOOGLE_OAUTH_CLIENT_ID`.
+///
+/// # Errors
+///
+/// Returns [`SetupError`] for a missing/invalid variable or adapter.
+pub fn build_e2e_ports<S>(
+    store: Arc<S>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<(Ports, ApiConfig), SetupError>
+where
+    S: ServerStore + 'static,
+{
+    let base = ApiConfig::from_lookup(&lookup)?;
+    let fake_google_raw = required(&lookup, "FAKE_GOOGLE_URL")?;
+    let fake_google =
+        Url::parse(&fake_google_raw).map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+
+    let (mut ports, fakes) = testkit::fake_ports();
+    let clock = Arc::clone(&ports.clock);
+    let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(&fake_google)?);
+
+    // Random 32-byte HMAC keys from the injected `Rng`; the client secret is
+    // the literal e2e value.
+    let rate_key = random_key(&ports.rng);
+    let email_key = random_key(&ports.rng);
+    fakes.secrets.set(
+        SecretName::GoogleOAuthClientSecret,
+        CLIENT_SECRET.as_bytes(),
+    );
+    fakes
+        .secrets
+        .set(SecretName::LogPseudonymHmacKey, &rate_key);
+    fakes
+        .secrets
+        .set(SecretName::EmailLookupHmacKey, &email_key);
+
+    let identity: Arc<dyn IdentityProvider> = Arc::new(GoogleIdentity::new(
+        GoogleIdentityConfig {
+            client_id: base.google_client_id.clone(),
+            client_secret: Sensitive::new(CLIENT_SECRET.to_owned()),
+            auth_endpoint: join(&fake_google, "o/oauth2/v2/auth")?,
+            token_endpoint: join(&fake_google, "token")?,
+            revoke_endpoint: join(&fake_google, "revoke")?,
+            jwks_uri: join(&fake_google, "oauth2/v3/certs")?,
+        },
+        Arc::clone(&egress),
+        Arc::clone(&clock),
+    ));
+
+    let gmail_client = GmailHttp::new(
+        Arc::clone(&egress),
+        join(&fake_google, "gmail/v1/users/me")?,
+        Arc::clone(&clock),
+    );
+    let drive_client = GmailHttp::new(Arc::clone(&egress), fake_google.clone(), Arc::clone(&clock));
+    let gmail = Arc::new(GmailProvider::new(gmail_client));
+    let app_folder: Arc<dyn AppFolderStore> = Arc::new(DriveAppFolder::new(drive_client));
+
+    let store: Arc<dyn ServerStore> = store;
+    ports.store = store;
+    ports.egress = egress;
+    ports.identity = identity;
+    ports.gmail = Arc::clone(&gmail) as Arc<dyn MailProvider>;
+    ports.invite_mailer = Arc::clone(&gmail) as Arc<dyn InviteMailer>;
+    ports.app_folder = app_folder;
+
+    Ok((
+        ports,
+        base.with_keys(Sensitive::new(rate_key), Sensitive::new(email_key)),
+    ))
+}
+
+/// A loopback-only [`HttpEgress`]: it allows requests to exactly one socket,
+/// the configured `fake-google` address, and refuses everything else before
+/// any connection is opened.
+pub struct LoopbackEgress {
+    socket: SocketAddr,
+    client: reqwest::Client,
+}
+
+impl LoopbackEgress {
+    /// Build an egress pinned to the socket of `base`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetupError::Invalid`] when `base` has no literal IP host or
+    /// port, and [`SetupError::Adapter`] if the client cannot be built.
+    pub fn new(base: &Url) -> Result<Self, SetupError> {
+        let host = base
+            .host_str()
+            .ok_or(SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+        let ip: IpAddr = host
+            .parse()
+            .map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+        let port = base
+            .port_or_known_default()
+            .ok_or(SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| SetupError::Adapter)?;
+        Ok(Self {
+            socket: SocketAddr::new(ip, port),
+            client,
+        })
+    }
+
+    /// True only when the request targets exactly the allowed socket.
+    fn allowed(&self, url: &Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        let Ok(ip) = host.parse::<IpAddr>() else {
+            return false;
+        };
+        let Some(port) = url.port_or_known_default() else {
+            return false;
+        };
+        SocketAddr::new(ip, port) == self.socket
+    }
+}
+
+#[async_trait]
+impl HttpEgress for LoopbackEgress {
+    async fn one_click_post(&self, _url: &Url) -> Result<OneClickOutcome, EgressError> {
+        // The api service never sends one-click POSTs (`Service::Api`).
+        Err(EgressError::NotPermitted)
+    }
+
+    async fn call(&self, req: EgressRequest) -> Result<EgressResponse, EgressError> {
+        if !self.allowed(&req.url) {
+            return Err(EgressError::HostNotAllowed);
+        }
+        let method = match req.method {
+            HttpMethod::Get => reqwest::Method::GET,
+            HttpMethod::Post => reqwest::Method::POST,
+            HttpMethod::Put => reqwest::Method::PUT,
+            HttpMethod::Patch => reqwest::Method::PATCH,
+            HttpMethod::Delete => reqwest::Method::DELETE,
+        };
+        let mut builder = self
+            .client
+            .request(method, req.url.clone())
+            .timeout(req.timeout);
+        for (name, value) in &req.headers {
+            builder = builder.header(name.as_str(), value.expose());
+        }
+        if let Some(body) = req.body {
+            builder = builder.body(body);
+        }
+        let response = builder.send().await.map_err(|_| EgressError::Connect)?;
+        let status = response.status().as_u16();
+        let mut headers = Vec::new();
+        for (name, value) in response.headers() {
+            if let Ok(text) = value.to_str() {
+                headers.push((name.as_str().to_owned(), text.to_owned()));
+            }
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| EgressError::Connect)?
+            .to_vec();
+        Ok(EgressResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+}
+
+/// A required, non-empty e2e variable. Only the name is ever surfaced.
+fn required(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+) -> Result<String, SetupError> {
+    lookup(name)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or(SetupError::Missing(name))
+}
+
+/// Join a `fake-google` path onto its base URL.
+fn join(base: &Url, path: &str) -> Result<Url, SetupError> {
+    base.join(path)
+        .map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))
+}
+
+/// A random 32-byte HMAC key from the injected `Rng`.
+fn random_key(rng: &Arc<dyn Rng>) -> Vec<u8> {
+    let mut key = Vec::with_capacity(32);
+    key.extend_from_slice(rng.uuid_v4().as_bytes());
+    key.extend_from_slice(rng.uuid_v4().as_bytes());
+    key
+}
