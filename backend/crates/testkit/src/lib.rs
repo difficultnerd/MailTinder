@@ -22,6 +22,7 @@ pub mod corpus;
 pub mod egress;
 pub mod fake_caller;
 pub mod fake_classifier;
+pub mod fake_jev;
 pub mod fake_ports;
 pub mod fakes;
 pub mod identity;

@@ -20,11 +20,13 @@ use adapters_gmail::identity::{
     GOOGLE_REVOKE_ENDPOINT, GOOGLE_TOKEN_ENDPOINT,
 };
 use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
+use adapters_models::jev::{JevClassifier, JevConfig};
 use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{
-    AppFolderStore, CallerVerifier, HttpEgress, IdentityProvider, InviteMailer, JobScheduler,
-    KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore, SystemKeyService,
+    AppFolderStore, CallerVerifier, Classifier, HttpEgress, IdentityProvider, InviteMailer,
+    JobScheduler, KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore,
+    SystemKeyService,
 };
 use url::Url;
 
@@ -132,7 +134,13 @@ pub async fn run() -> Result<(), SetupError> {
     } else {
         build_production_ports().await?
     };
-    serve(ports, config).await
+    // The bake-off models are production-only: e2e drives them through fakes.
+    let classifiers = if e2e_requested() {
+        crate::classify::ClassifierSet::default()
+    } else {
+        build_classifiers(&ports).await
+    };
+    serve(ports, config, classifiers).await
 }
 
 #[cfg(feature = "testkit")]
@@ -271,10 +279,59 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
     Ok((ports, base.with_keys(rate_key, email_lookup_key)))
 }
 
+/// Build the bake-off classifiers from secrets read once at start-up. `api` is
+/// the only service that loads the Jev key (S4 5.7).
+async fn build_classifiers(ports: &Ports) -> crate::classify::ClassifierSet {
+    crate::classify::ClassifierSet {
+        gemini: None,
+        jev: build_jev(ports).await,
+    }
+}
+
+/// Build the Jev classifier. A missing or non-UTF-8 key leaves
+/// `ClassifierSet.jev = None` and logs `jev_key_missing` (no value).
+async fn build_jev(ports: &Ports) -> Option<Arc<dyn Classifier>> {
+    let Ok(config) = JevConfig::production() else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_config_invalid"
+        );
+        return None;
+    };
+    let Ok(key) = ports.secrets.get(SecretName::JevApiKey).await else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let Ok(key) = String::from_utf8(key.expose().clone()) else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let classifier: Arc<dyn Classifier> = Arc::new(JevClassifier::new(
+        config,
+        Arc::clone(&ports.egress),
+        Sensitive::new(key),
+    ));
+    Some(classifier)
+}
+
 /// Bind and serve the router with graceful shutdown on `SIGTERM` and `SIGINT`.
-async fn serve(ports: Ports, config: ApiConfig) -> Result<(), SetupError> {
+async fn serve(
+    ports: Ports,
+    config: ApiConfig,
+    classifiers: crate::classify::ClassifierSet,
+) -> Result<(), SetupError> {
     let listen = SocketAddr::new(config.bind_host, config.port);
-    let state = crate::app_state(Arc::new(ports), Arc::new(config));
+    let mut state = crate::app_state(Arc::new(ports), Arc::new(config));
+    state.classifiers = classifiers;
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|_| SetupError::Adapter)?;
