@@ -2,13 +2,13 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 250 lines of code plus tests | T-500b, T-500c, T-1101a |
+| M11 | sonnet | about 350 lines of code plus tests | T-500b, T-500c, T-1112, T-1101a |
 
 **Read only these spec sections:** `docs/backlog/T-1101a-e2e-harness-and-required-check.md` (the harness this task reuses), `docs/backlog/T-500b-api-binary-wiring-and-e2e-config.md` (e2e mode), S10 section 3.3. Nothing else is needed.
 
 ## Goal
 
-One command, `scripts/demo.sh`, starts the same local stack as `scripts/e2e.sh` (Firestore emulator, fake-google, unsub-testbed, `api` in e2e mode, the Flutter web build served by `scripts/e2e_host.py`), seeds a fake mailbox from the synthetic corpus, and leaves it running so a human can open the app in a browser and try it. It prints one URL and stops cleanly. This lets the owner use the product before any cloud environment exists.
+The app is a PHONE experience, so the demo must be usable from a phone browser as well as a laptop (owner requirement, 2026-10-09). One command, `scripts/demo.sh`, starts the same local stack as `scripts/e2e.sh` (Firestore emulator, fake-google, unsub-testbed, `api` in e2e mode, the Flutter web build served by `scripts/e2e_host.py`), seeds a fake mailbox from the synthetic corpus, and leaves it running so a human can open the app in a browser and try it. It prints one URL and stops cleanly. This lets the owner use the product before any cloud environment exists.
 
 ## Files
 
@@ -28,9 +28,17 @@ One command, `scripts/demo.sh`, starts the same local stack as `scripts/e2e.sh` 
 4. `--check` is the automated test: start, `GET` the invite URL's page and `/api/v1/healthz` through the proxy, assert 200 and the `firebase.json` security headers, then stop and assert no child process remains. It must finish in under 3 minutes on verify1.
 5. No real credentials: the same fake values as `scripts/e2e/*.env`.
 
+## Phone access (added 2026-10-09)
+
+6. `demo.sh --phone` additionally starts a **Cloudflare quick tunnel** (`cloudflared tunnel --url http://127.0.0.1:<front-door-port>`; the binary is expected on the PATH or at `~/bin/cloudflared`, otherwise the script prints how to install it) and prints an `https://...trycloudflare.com` URL for the phone. Nothing but the front door is exposed: the api, unsub, fakes and emulator stay on loopback.
+7. Because the tunnel is reachable by anyone who has the URL, `e2e_host.py --access-code <random>` enforces a login on EVERY request when `--phone` is used (HTTP Basic auth, user `demo`, a freshly generated 16-character code printed once by `demo.sh`); the demo data is synthetic and the testkit routes exist only in this e2e stack, but the front door must still refuse unauthenticated requests. The generated code is never written to a log or committed.
+8. The page must render well in a phone browser: the app already targets phones; the demo adds the standard viewport settings and verifies `GET /` returns a document that contains the viewport meta tag.
+9. `demo.sh stop` also stops the tunnel; `--phone` refuses to start if the access code could not be generated.
+
 ## Acceptance criteria
 
 - `demo_check_serves_app_and_api_then_cleans_up` (shell test run by `scripts/demo.sh --check`, wired into `tools/ci-local.sh --full` as `demo-smoke`).
+- `demo_phone_requires_access_code` (a request without the code gets 401, with it 200) and `demo_phone_exposes_only_the_front_door` (the api port answers only on loopback).
 - `demo_refuses_non_loopback_bind` (shell test: set a non-loopback host in the environment, expect a non-zero exit before anything starts).
 - `scripts/e2e.sh` still passes unchanged (its journey runs).
 
