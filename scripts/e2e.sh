@@ -176,4 +176,11 @@ phase "demo.sh --phone (T-1108c)"
 MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_phone.py" \
   DemoPhoneStackTest.test_demo_phone_exposes_only_the_front_door
 
+# The dev-mode acceptance test (T-1113) runs here for the same reason: it needs
+# Flutter and the stack. `demo.sh --check --dev` brings up the same stack with
+# `flutter run -d web-server` behind the front door (the relay venv is built on
+# the fly) and is the shell test `demo_dev_serves_app_and_api_through_one_origin`.
+phase "demo.sh --check --dev (T-1113)"
+bash "$REPO/scripts/demo.sh" --check --dev
+
 phase "e2e passed"

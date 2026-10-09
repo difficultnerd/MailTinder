@@ -37,17 +37,31 @@ ACCESS_CODE_FILE=""
 PUBLIC_URL=""
 TUNNEL_TARGET=""
 CLOUDFLARED_PIN="${DEMO_CLOUDFLARED_SHA256:-$REPO/scripts/demo/cloudflared.sha256}"
+# Dev mode (T-1113): `--dev` serves the app from `flutter run -d web-server`
+# behind the same front door, which proxies `/` and the dev server's websocket
+# to it. The dev server binds loopback; the relay needs a websocket library the
+# standard library does not have, pinned here and installed into target/demo/venv.
+DEV=0
+DEV_PORT=""
+DEV_PYTHON="python3"
+DEV_VENV="$STATE_DIR/venv"
+WEBSOCKETS_VERSION="15.0.1"
+FLUTTER_PID_FILE=""
 
 usage() {
   cat <<'EOF'
-demo.sh [start] [--host <loopback addr>] [--phone]   start and leave the stack running
+demo.sh [start] [--host <loopback addr>] [--phone] [--dev]   start and leave the stack running
 demo.sh stop                               stop and print the leak census
 demo.sh status                             is the stack running?
-demo.sh --check                            automatic start, fetch, stop
+demo.sh --check [--dev]                    automatic start, fetch, stop
 
 --phone exposes the front door through a cloudflared quick tunnel protected by
 a generated access code. cloudflared must be the pinned release on PATH or at
 ~/bin/cloudflared; --check and --phone cannot be combined.
+
+--dev serves the app from `flutter run -d web-server` (hot reload) behind the
+same front door, so a Dart edit shows within seconds via scripts/demo_reload.sh.
+It is slower than the release build and for look-and-feel iteration only.
 EOF
 }
 
@@ -58,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     status) COMMAND="status"; shift ;;
     --check) COMMAND="check"; shift ;;
     --phone) PHONE=1; shift ;;
+    --dev) DEV=1; shift ;;
     --host) DEMO_HOST="${2:?--host needs an address}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "demo.sh: unknown argument: $1" >&2; exit 2 ;;
@@ -401,21 +416,63 @@ PY
 
 # Build only what is missing, so `--check` reuses an e2e.sh build and stays
 # under the 3-minute budget; DEMO_FORCE_BUILD=1 rebuilds anyway.
-demo_build() {
-  if [[ "${DEMO_FORCE_BUILD:-0}" != "1" ]] \
-    && [[ -x "$REPO/backend/target/debug/api" ]] \
-    && [[ -x "$REPO/backend/target/debug/unsub" ]] \
-    && [[ -x "$REPO/backend/target/debug/fake-google" ]] \
-    && [[ -x "$REPO/backend/target/debug/unsub-testbed" ]] \
-    && [[ -f "$REPO/app/build/web/index.html" ]]; then
-    phase "reusing the existing build"
-    return 0
-  fi
+build_services() {
   phase "building services in test configuration"
   (cd backend && cargo build --locked -p api -p unsub --features api/testkit,unsub/testkit)
   (cd backend && cargo build --locked -p fake-google -p unsub-testbed)
+}
+services_built() {
+  [[ -x "$REPO/backend/target/debug/api" ]] \
+    && [[ -x "$REPO/backend/target/debug/unsub" ]] \
+    && [[ -x "$REPO/backend/target/debug/fake-google" ]] \
+    && [[ -x "$REPO/backend/target/debug/unsub-testbed" ]]
+}
+demo_build() {
+  if [[ "${DEMO_FORCE_BUILD:-0}" != "1" ]] && services_built \
+    && { (( DEV )) || [[ -f "$REPO/app/build/web/index.html" ]]; }; then
+    phase "reusing the existing build"
+    return 0
+  fi
+  build_services
+  # Dev mode serves the app from `flutter run -d web-server`, so it never needs
+  # the release web build (T-1113).
+  if (( DEV )); then
+    return 0
+  fi
   phase "building the Flutter web app with the e2e define"
   (cd app && flutter build web --release --no-web-resources-cdn --dart-define=MT_E2E=true)
+}
+
+# Dev mode needs a websocket relay and the standard library has none, so one
+# pinned, well-known package is installed into a virtualenv under target/demo
+# (T-1113); e2e_host.py imports it only in dev mode.
+demo_venv() {
+  if [[ -x "$DEV_VENV/bin/python" ]] \
+    && "$DEV_VENV/bin/python" -c "import websockets" >/dev/null 2>&1; then
+    DEV_PYTHON="$DEV_VENV/bin/python"
+    return 0
+  fi
+  phase "installing the websocket relay (websockets==$WEBSOCKETS_VERSION)"
+  python3 -m venv "$DEV_VENV"
+  "$DEV_VENV/bin/pip" install --quiet --disable-pip-version-check \
+    "websockets==$WEBSOCKETS_VERSION"
+  DEV_PYTHON="$DEV_VENV/bin/python"
+  "$DEV_PYTHON" -c "import websockets" >/dev/null 2>&1 \
+    || { echo "demo.sh: websockets is not importable from $DEV_VENV" >&2; return 1; }
+}
+
+# `flutter run -d web-server` on loopback for dev mode. It has no access control
+# of its own, so it is reachable only through the front door. --pid-file lets
+# scripts/demo_reload.sh hot reload it (SIGUSR1); stdin is /dev/null so it never
+# reads the caller's terminal.
+start_dev_server() {
+  local log="$LOGS/flutter-dev.log"
+  phase "Flutter dev server with hot reload on 127.0.0.1:$DEV_PORT"
+  start_bg flutter-dev "$log" \
+    bash -c "cd '$REPO/app' && exec flutter run -d web-server \
+      --web-hostname 127.0.0.1 --web-port '$DEV_PORT' \
+      --dart-define=MT_E2E=true --pid-file '$FLUTTER_PID_FILE' </dev/null"
+  wait_http "http://127.0.0.1:$DEV_PORT/" 300
 }
 
 demo_start() {
@@ -436,7 +493,15 @@ demo_start() {
   # (read back from host.port) disagree with the loopback port the tunnel was
   # actually pointed at (chosen a moment earlier) - the CI-only front-door
   # mismatch (T-1108c).
-  rm -f "$RUN/service.pgids" "$STATE" "$RUN"/*.port
+  rm -f "$RUN/service.pgids" "$STATE" "$RUN"/*.port "$RUN/flutter.pid"
+
+  if (( DEV )); then
+    # The relay venv and the dev server's ports first, so a failure costs
+    # nothing built or started.
+    demo_venv
+    DEV_PORT="$(free_port)"
+    FLUTTER_PID_FILE="$RUN/flutter.pid"
+  fi
 
   demo_build
 
@@ -509,27 +574,33 @@ demo_start() {
   fi
   wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
-  phase "serving the web build on http://$(url_host):$HOST_PORT"
-  HOST_PORT_FILE="$RUN/host.port"
-  if (( PHONE )); then
-    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
-      --root "$REPO/app/build/web" \
-      --firebase-json "$REPO/firebase.json" \
-      --host "$DEMO_HOST" \
-      --api "http://127.0.0.1:$API_PORT" \
-      --port "$HOST_PORT" \
-      --port-file "$HOST_PORT_FILE" \
-      --fake-google "http://127.0.0.1:$FAKE_PORT" \
-      --access-code-file "$ACCESS_CODE_FILE"
-  else
-    start_bg e2e-host "$LOGS/e2e-host.log" python3 "$REPO/scripts/e2e_host.py" \
-      --root "$REPO/app/build/web" \
-      --firebase-json "$REPO/firebase.json" \
-      --host "$DEMO_HOST" \
-      --api "http://127.0.0.1:$API_PORT" \
-      --port "$HOST_PORT" \
-      --port-file "$HOST_PORT_FILE"
+  # Dev mode starts the Flutter dev server first so the front door has an
+  # upstream to proxy `/` to (T-1113).
+  if (( DEV )); then
+    start_dev_server
+    echo "demo: DEV MODE - the Flutter dev server is slower than the release build"
+    echo "      and is for look-and-feel iteration only; scripts/demo_reload.sh reloads"
   fi
+
+  phase "serving the app on http://$(url_host):$HOST_PORT"
+  HOST_PORT_FILE="$RUN/host.port"
+  local front_door=(
+    --root "$REPO/app/build/web"
+    --firebase-json "$REPO/firebase.json"
+    --host "$DEMO_HOST"
+    --api "http://127.0.0.1:$API_PORT"
+    --port "$HOST_PORT"
+    --port-file "$HOST_PORT_FILE"
+  )
+  if (( PHONE )); then
+    front_door+=(--fake-google "http://127.0.0.1:$FAKE_PORT" --access-code-file "$ACCESS_CODE_FILE")
+  fi
+  if (( DEV )); then
+    # The front door proxies `/` and the dev server's websocket to it; /api/**
+    # keeps going to the api through the same origin (T-1113).
+    front_door+=(--dev-upstream "http://127.0.0.1:$DEV_PORT")
+  fi
+  start_bg e2e-host "$LOGS/e2e-host.log" "$DEV_PYTHON" "$REPO/scripts/e2e_host.py" "${front_door[@]}"
   HOST_PORT="$(wait_port_file "$HOST_PORT_FILE" 30)"
 
   write_state
@@ -610,6 +681,18 @@ demo_check() {
   trap 'demo_stop >/dev/null 2>&1 || true' EXIT
 
   demo_start
+  if (( DEV )); then
+    demo_dev_serves_app_and_api_through_one_origin
+  else
+    demo_check_serves_page_and_health
+  fi
+
+  phase "stopping"
+  demo_stop
+  echo "demo: check ok - stack stopped, nothing left"
+}
+
+demo_check_serves_page_and_health() {
   local url
   url="$(state_url)"
   mkdir -p "$STATE_DIR"
@@ -623,10 +706,32 @@ demo_check() {
 
   phase "fetching the health route"
   curl -sf --max-time 15 "$url/api/v1/healthz" -o "$STATE_DIR/check-health.json"
+}
 
-  phase "stopping"
-  demo_stop
-  echo "demo: check ok - page and health served, stack stopped, nothing left"
+# The dev-mode shell acceptance test (T-1113): `demo.sh --check --dev` brings
+# the stack up, then this proves the app (from the `flutter run -d web-server`
+# upstream) and the api are both served through the one front-door origin.
+demo_dev_serves_app_and_api_through_one_origin() {
+  local url
+  url="$(state_url)"
+  mkdir -p "$STATE_DIR"
+
+  phase "fetching the app through the front door (dev mode)"
+  curl -sf --max-time 20 "$url/" -o "$STATE_DIR/check-page.html"
+  if ! grep -qi '<html' "$STATE_DIR/check-page.html"; then
+    echo "demo: the dev page did not look like the app" >&2
+    return 1
+  fi
+  # The dev server serves the Flutter bootstrap; a page without it was not
+  # proxied to the dev upstream.
+  if ! grep -qi 'flutter_bootstrap\.js' "$STATE_DIR/check-page.html"; then
+    echo "demo: the page was not served by the Flutter dev server" >&2
+    return 1
+  fi
+
+  phase "fetching the health route through the same origin"
+  curl -sf --max-time 20 "$url/api/v1/healthz" -o "$STATE_DIR/check-health.json"
+  echo "demo: dev check ok - app and api served through one origin"
 }
 
 case "$COMMAND" in
