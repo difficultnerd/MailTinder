@@ -164,6 +164,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1108b](T-1108b-demo-seed.md) | Demo seed: fake mailbox and invite URL | M11 | sonnet | T-1108a |
 | [T-1108c](T-1108c-demo-phone-access.md) | demo --phone: HTTPS tunnel and access code | M11 | sonnet | T-1108a |
 | [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108a, T-1108c |
+| [T-1114](T-1114-emit-swipe-undo-metric-events.md) | Emit the swipe, undo and unrecoverable-action metric events | M11 | sonnet | T-307, T-1101b |
 | [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.
