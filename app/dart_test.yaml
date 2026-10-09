@@ -1,0 +1,7 @@
+# Declares the `golden` tag used by `app/test/golden/screens_golden_test.dart`
+# (T-1111) so the test runner does not warn about an undeclared tag.
+#
+# The tag is not excluded: goldens run in the default `flutter test` sweep, and
+# `tools/update_goldens.sh` selects them explicitly with `--tags golden`.
+tags:
+  golden:
