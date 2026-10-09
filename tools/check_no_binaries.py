@@ -11,7 +11,8 @@ Rules (a path listed in tools/binary_allowlist.txt is exempt from all of them; t
   2. Any other file containing a NUL byte must be an allowed asset type (images, fonts, pdf).
   3. No tracked file over 1 MB (lock files excepted).
   4. No path inside a hidden tool/install directory (tools/.cargo-mutants/, tools/.bin/, .venv*, node_modules/, target/).
-Exit 0 ok, 1 violations (printed as FAILED lines), 2 usage error. Never modifies anything.
+Exit 0 ok, 1 violations (printed as FAILED lines), 2 the check could not run (git failed / empty tree): CI treats that as a failure, the local hook fails open.
+Never modifies anything.
 """
 import fnmatch
 import os
@@ -25,8 +26,16 @@ EXEC_MAGIC = (b"\x7fELF", b"MZ", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xc
 BAD_DIRS = (".cargo-mutants", ".bin", ".venv", ".venv-semgrep", "node_modules", "target")
 
 
+class GitError(Exception):
+    pass
+
+
 def git(repo, *args):
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False).stdout
+    """stdout of a git command; a failing git is an ERROR (exit 2), never an empty file list that reads as 'OK, 0 files'."""
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise GitError(f"git {' '.join(args[:2])} failed in {repo}: {r.stderr.strip()[:200]}")
+    return r.stdout
 
 
 def allowlist(repo):
@@ -66,9 +75,12 @@ def main():
     if "--repo" in args:
         repo = args[args.index("--repo") + 1]
     if staged:
-        paths = [p for p in git(repo, "diff", "--cached", "--name-only", "--diff-filter=AM", "-z").split("\0") if p]
+        # --no-renames: a rename is reported as delete + add, so the NEW path is always scanned (a `git mv` into tools/.bin/ used to slip by)
+        paths = [p for p in git(repo, "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=ACMT", "-z").split("\0") if p]
     else:
         paths = [p for p in git(repo, "ls-files", "-z").split("\0") if p]
+    if not staged and not paths:
+        raise GitError("git ls-files returned no files; refusing to report a clean tree")
     allow = allowlist(repo)
     bad = []
     for p in paths:
@@ -96,4 +108,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except GitError as e:
+        print(f"ERROR binary-policy: {e}")
+        sys.exit(2)

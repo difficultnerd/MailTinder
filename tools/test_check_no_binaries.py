@@ -82,5 +82,24 @@ class BinaryPolicyTest(unittest.TestCase):
         self.assertEqual(self.run_check("--staged")[0], 0)
 
 
+    def test_rename_into_a_tool_directory_is_caught_when_staged(self):
+        self.put("tools/helper.txt", b"hello\n")
+        self.git("commit", "-q", "-m", "base")
+        os.makedirs(os.path.join(self.repo, "tools", ".bin"), exist_ok=True)
+        self.git("mv", "tools/helper.txt", "tools/.bin/helper.txt")
+        rc, out = self.run_check("--staged")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("tool/install/cache directory", out)
+
+    def test_git_failure_is_an_error_not_a_clean_pass(self):
+        r = subprocess.run([sys.executable, CHECK, "--tree", "--repo", os.path.join(self.repo, "does-not-exist")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertNotIn("binary policy OK", r.stdout)
+
+    def test_empty_tree_is_an_error(self):
+        rc, out = self.run_check("--tree")
+        self.assertEqual(rc, 2, out)
+
+
 if __name__ == "__main__":
     unittest.main()
