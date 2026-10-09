@@ -1,0 +1,2 @@
+# Paths exempt from tools/check_no_binaries.py. A path here is an explicit, REVIEWED exception (a built executable, an unusual
+# binary asset or a file over 1 MB). The file changes only through a reviewed pull request. One glob per line; empty is the normal state.
