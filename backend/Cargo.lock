@@ -230,6 +230,8 @@ dependencies = [
  "tower",
  "tower-http 0.5.2",
  "tracing",
+ "unsub",
+ "unsub-testbed",
  "url",
  "uuid",
  "zeroize",

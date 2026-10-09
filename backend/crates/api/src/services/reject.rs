@@ -295,21 +295,49 @@ fn undo_payload(
     }
 }
 
-/// The plaintext sealed as the job target: the method name, then the target
-/// parts, joined with `\n`. A one-click URL is `one_click\n<url>`; a mailto is
-/// `mailto\n<to>\n<subject>\n<body>` with empty strings for absent parts (the
-/// `MailtoTarget` constructor refuses a newline in any part). T-701 splits on
-/// `\n` to read it back.
+/// The plaintext sealed as the job target: exactly what `unsub`'s sender
+/// expects (T-701 says `ClaimedJob.target` is "an https URL or a mailto URI").
+/// A one-click job seals the bare https URL; a mailto seals a `mailto:` URI.
+/// The method is already `job.method`, so it is not repeated here; the senders
+/// re-parse the value with `parse_target`/`MailtoTarget::parse`.
 fn target_string(target: &UnsubscribeTarget) -> String {
     match target {
-        UnsubscribeTarget::OneClick(url) => format!("one_click\n{url}"),
-        UnsubscribeTarget::Mailto(m) => format!(
-            "mailto\n{}\n{}\n{}",
-            m.to(),
-            m.subject().unwrap_or_default(),
-            m.body().unwrap_or_default()
-        ),
+        UnsubscribeTarget::OneClick(url) => url.as_str().to_owned(),
+        UnsubscribeTarget::Mailto(m) => {
+            let mut uri = format!("mailto:{}", m.to());
+            let mut separator = '?';
+            if let Some(subject) = m.subject() {
+                uri.push(separator);
+                separator = '&';
+                uri.push_str("subject=");
+                uri.push_str(&percent_encode_field(subject));
+            }
+            if let Some(body) = m.body() {
+                uri.push(separator);
+                uri.push_str("body=");
+                uri.push_str(&percent_encode_field(body));
+            }
+            uri
+        }
     }
+}
+
+/// Percent-encode one `mailto:` field value so `MailtoTarget::parse` decodes it
+/// back unchanged: every byte outside the RFC 3986 unreserved set becomes
+/// `%XX` (RFC 6068, no form `+`).
+fn percent_encode_field(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0F)]));
+        }
+    }
+    out
 }
 
 /// Seal one field under the user's key with the AAD `{user, scope, field}`.

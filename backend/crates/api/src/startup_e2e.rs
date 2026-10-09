@@ -18,13 +18,14 @@ use async_trait::async_trait;
 use domain::Tunables;
 use obs::Sensitive;
 use ports::{
-    AppFolderStore, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
-    IdentityProvider, InviteMailer, MailProvider, OneClickOutcome, Ports, Rng, SecretName,
-    ServerStore,
+    AppFolderStore, Clock, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
+    IdentityProvider, InviteMailer, JobScheduler, MailProvider, OneClickOutcome, Ports, Rng,
+    SecretName, ServerStore,
 };
 use url::Url;
 
 use crate::config::{ApiConfig, Mode};
+use crate::local_runner::{LocalJobRunner, LocalJobRunnerConfig};
 use crate::startup::SetupError;
 
 /// The literal client secret for e2e. Never a real secret (S10 3.3).
@@ -140,10 +141,63 @@ where
     ports.invite_mailer = Arc::clone(&gmail) as Arc<dyn InviteMailer>;
     ports.app_folder = app_folder;
 
+    // T-1112c: when e2e is pointed at a loopback `unsub` (both `UNSUB_BASE_URL`
+    // and `UNSUB_E2E_CALLER_TOKEN` set), deliver due jobs with the local runner
+    // instead of the fake scheduler; otherwise behaviour is exactly as before.
+    if let Some(runner) = e2e_local_runner(&lookup, Arc::clone(&ports.clock))? {
+        let running = Arc::clone(&runner);
+        tokio::spawn(async move { running.run().await });
+        ports.scheduler = runner as Arc<dyn JobScheduler>;
+    }
+
     Ok((
         ports,
         base.with_keys(Sensitive::new(rate_key), Sensitive::new(email_key)),
     ))
+}
+
+/// The local job runner to use in e2e (T-1112c), or `None` to keep the testkit
+/// fake scheduler.
+///
+/// The runner is built only when both `UNSUB_BASE_URL` and
+/// `UNSUB_E2E_CALLER_TOKEN` are set to non-blank values, so with either unset
+/// behaviour is exactly today's (Behaviour 1). `clock` is the api's own clock,
+/// so the runner shares the api's notion of time; `MT_E2E_TIME_SCALE` scales
+/// the waits it owns (default `1.0`).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when `UNSUB_BASE_URL` is not a URL, or its
+/// host is not a loopback IP literal (the runner refuses anything else).
+pub fn e2e_local_runner(
+    lookup: &impl Fn(&str) -> Option<String>,
+    clock: Arc<dyn Clock>,
+) -> Result<Option<Arc<LocalJobRunner>>, SetupError> {
+    let (Some(base), Some(caller_token)) = (
+        nonblank(lookup, "UNSUB_BASE_URL"),
+        nonblank(lookup, "UNSUB_E2E_CALLER_TOKEN"),
+    ) else {
+        return Ok(None);
+    };
+    let unsub_base = Url::parse(&base).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
+    let time_scale = lookup("MT_E2E_TIME_SCALE")
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .unwrap_or(1.0);
+    let runner = LocalJobRunner::new(
+        LocalJobRunnerConfig {
+            unsub_base,
+            caller_token,
+            time_scale,
+        },
+        clock,
+    )
+    .map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
+    Ok(Some(Arc::new(runner)))
+}
+
+/// A non-blank variable from `lookup`, if present.
+fn nonblank(lookup: &impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    lookup(name).filter(|value| !value.trim().is_empty())
 }
 
 /// The e2e tunables (T-1112b). The production defaults, except that when

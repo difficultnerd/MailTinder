@@ -94,6 +94,19 @@ enum State {
     Failed,
 }
 
+/// The delivery state of a tracked job, surfaced for the e2e proof (T-1112c).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryState {
+    /// Waiting for its `due_at`.
+    Pending,
+    /// Being delivered.
+    Running,
+    /// Delivered with a 2xx.
+    Done,
+    /// A 4xx, or the back-off table exhausted.
+    Failed,
+}
+
 /// One tracked job.
 struct Entry {
     job: JobId,
@@ -258,6 +271,26 @@ impl LocalJobRunner {
             .send()
             .await?;
         Ok(response.status().as_u16())
+    }
+
+    /// The delivery state of `job`, or `None` when it is not tracked (never
+    /// scheduled, or cancelled and removed). Observability for the e2e proof
+    /// (T-1112c); the delivery loop uses the private state directly.
+    #[must_use]
+    pub fn delivery_state(&self, job: &JobId) -> Option<DeliveryState> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .jobs
+            .get(&TaskName::for_job(job))
+            .map(|entry| match entry.state {
+                State::Pending => DeliveryState::Pending,
+                State::Running => DeliveryState::Running,
+                State::Done => DeliveryState::Done,
+                State::Failed => DeliveryState::Failed,
+            })
     }
 }
 
