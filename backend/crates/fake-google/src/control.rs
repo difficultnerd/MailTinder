@@ -159,8 +159,17 @@ async fn seed_corpus(
         return Err(Json(json!({ "error": "mailbox not found" })));
     }
     let corpus = testkit::corpus::load().map_err(|e| Json(json!({ "error": e })))?;
+    // Deterministic ordering: the corpus's first case is the newest, each next
+    // case one second older. `now` is read once so the whole corpus shares one
+    // wall-clock base and the sequence never depends on how long the loop runs
+    // (the Feed sorts by `internal_date` at millisecond resolution, so a fresh
+    // `now_utc()` per case made the first card depend on timing). The demo Feed
+    // therefore always opens on the same seeded sender, the corpus's first
+    // case, which the e2e journey waits for (T-1108b).
+    let now = OffsetDateTime::now_utc();
     let mut ids = Vec::new();
-    for cs in &corpus.cases {
+    for (index, cs) in corpus.cases.iter().enumerate() {
+        let age = i64::try_from(index).unwrap_or(i64::MAX);
         let id = st.next_message_id(&body.email);
         let mb = st.mailboxes.get_mut(&body.email).unwrap();
         mb.messages.insert(
@@ -169,7 +178,7 @@ async fn seed_corpus(
                 id: id.clone(),
                 raw: cs.eml.clone(),
                 labels: BTreeSet::from(["INBOX".to_owned()]),
-                internal_date: OffsetDateTime::now_utc(),
+                internal_date: now - time::Duration::seconds(age),
             },
         );
         ids.push(id);
