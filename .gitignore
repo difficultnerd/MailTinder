@@ -39,6 +39,11 @@ __pycache__/
 # Local check tooling (not committed)
 tools/.bin/
 tools/.venv-semgrep/
+# Mutation-testing tool installed under the checkout during local runs; the
+# prebuilt binary and its install metadata must never be committed (T-1112a F1).
+tools/.cargo-mutants/
+# Mutation-run scratch output (T-1112a F1): never commit build debris.
+/target/
 # Terraform provider cache and state (never commit these).
 # A single Google provider binary is ~114 MB and GitHub hard-rejects
 # anything over 100 MB — the T-607b push died on exactly that.
