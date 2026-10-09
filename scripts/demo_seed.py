@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_EMAIL = "invitee@example.com"
@@ -28,8 +29,35 @@ CLIENT_ID = "fake-e2e-client"
 CLIENT_SECRET = "test-only-not-a-secret"
 
 
+def is_loopback(host: str) -> bool:
+    """True for a loopback host: `localhost`, `::1` or a 127.0.0.0/8 quad."""
+    if host in ("localhost", "::1"):
+        return True
+    parts = host.split(".")
+    if len(parts) != 4 or parts[0] != "127":
+        return False
+    return all(part.isdigit() and int(part) <= 255 for part in parts)
+
+
+def validate_url(url: str) -> str:
+    """Return `url` when it is an http URL on a loopback host.
+
+    Every request this script makes targets a local fake stack, so anything
+    that is not loopback http (a `file:` URL, a remote host, a DNS name that
+    merely starts with `127.`) is refused before `urlopen` sees it.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "http":
+        raise ValueError(f"refusing non-http URL: {url!r}")
+    host = parts.hostname
+    if host is None or not is_loopback(host):
+        raise ValueError(f"refusing non-loopback URL: {url!r}")
+    return url
+
+
 def post_json(url: str, payload: dict) -> dict:
     """POST a JSON body and return the decoded JSON response."""
+    validate_url(url)
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -37,6 +65,10 @@ def post_json(url: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json"},
     )
     try:
+        # The URL was checked by validate_url (loopback http only) before the
+        # request was built, so a dynamic value here cannot reach file:// or a
+        # remote host.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected, python.lang.security.audit.dynamic-urllib-use-detected
         with urllib.request.urlopen(request, timeout=30) as response:
             body = response.read().decode()
     except urllib.error.HTTPError as error:
