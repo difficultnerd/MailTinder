@@ -5,9 +5,11 @@ Why this exists (AAR 3.89, CASE-STUDY lesson 20): the first phone-demo URL faile
 sign-in through the public front door: credential-less requests were counted as bad guesses, and the OAuth client was registered for the local origin so
 "Continue with Google" returned invalid_request. Run this BEFORE any demo link is handed to anyone, and in CI against the stub-tunnel stack.
 
-    scripts/demo_smoke.py --url URL --code CODE --invite-token TOKEN [--origin ORIGIN] [--no-redeem]
+    scripts/demo_smoke.py --url URL --code-file PATH --invite-token TOKEN [--origin ORIGIN] [--no-redeem]
 
   --url           where to connect (the public tunnel URL, or the loopback front door)
+  --code-file     file holding the access code (the demo's own policy: the code never goes on a command line or in /proc/<pid>/cmdline;
+                  `demo.sh --phone` writes it to target/demo/run/access-code, mode 600; the file must not be group/world readable)
   --origin        the app origin the api expects in `Origin` and in redirect_uri (default: --url); in CI the connection is loopback but the origin is the
                   tunnel's public URL
   --no-redeem     stop after the authorise step so the invite is not redeemed. WARNING: the authorise step still consumes fake Google's single-use
@@ -27,6 +29,7 @@ import argparse
 import base64
 import http.client
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -146,12 +149,20 @@ def run(args) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", required=True)
-    ap.add_argument("--code", required=True)
+    ap.add_argument("--code-file", required=True)
     ap.add_argument("--invite-token", required=True)
     ap.add_argument("--origin")
     ap.add_argument("--no-redeem", action="store_true")
     args = ap.parse_args()
     try:
+        st = os.stat(args.code_file)
+        if st.st_mode & 0o077:
+            print(f"FAIL: {args.code_file} is readable by group/others; chmod 600 it")
+            return 1
+        args.code = open(args.code_file, encoding="utf-8").read().strip()
+        if not args.code:
+            print("FAIL: the code file is empty")
+            return 1
         run(args)
     except Fail as e:
         print(f"FAIL: {e}")

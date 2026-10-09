@@ -459,13 +459,16 @@ class DemoPhoneStackTest(unittest.TestCase):
         code = re.search(r"access code[^:]*: (\S+)", proc.stdout)
         token = re.search(r"#/invite\?t=([A-Za-z0-9_-]+)", proc.stdout)
         self.assertTrue(local and code and token, proc.stdout)
+        code_file = self.tmp / "smoke-access-code"
+        code_file.write_text(code.group(1) + "\n")
+        os.chmod(code_file, 0o600)   # the access code is never put on a command line (T-1108c F1)
         journey = subprocess.run(
             [
                 sys.executable,
                 str(ROOT / "scripts" / "demo_smoke.py"),
                 "--url", local.group(1),
                 "--origin", self.PUBLIC_URL,
-                "--code", code.group(1),
+                "--code-file", str(code_file),
                 "--invite-token", token.group(1),
             ],
             capture_output=True,
