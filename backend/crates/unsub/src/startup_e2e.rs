@@ -391,6 +391,11 @@ impl HttpEgress for LoopbackEgress {
 
 /// The accepted token: present, non-blank and at least [`MIN_TOKEN_LEN`] bytes.
 /// A blank or absent value is `Missing`; a short one is `Invalid`.
+///
+/// Demo-grade (S10 3.3): the value need not be high entropy, because e2e is a
+/// testkit-only build and the listener is loopback-only (see [`E2eConfig`]),
+/// so this token guards a local fake, never a production boundary. The
+/// 16-byte floor is the spec's minimum.
 pub fn accepted_token(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> Result<Sensitive<String>, E2eError> {

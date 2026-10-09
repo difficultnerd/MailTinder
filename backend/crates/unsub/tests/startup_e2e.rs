@@ -1,6 +1,6 @@
 //! T-1112a: tests for the `unsub` e2e start-up wiring.
 //!
-//! The process test runs the real binary with a cleared environment. `#![allow]`
+//! The process tests run the real binary with a cleared environment. `#![allow]`
 //! is deliberately absent: the crate lints apply here too.
 
 #[cfg(not(feature = "testkit"))]
@@ -69,6 +69,10 @@ mod no_testkit {
             "MT_E2E in a build without the testkit feature must exit non-zero"
         );
         let text = combined(&output);
+        // The refusal is the only quick, non-panicking exit available from this
+        // environment: the proxy points at a never-answered socket, so if the
+        // guard were missing, production wiring would block past the deadline
+        // and `run_within_5s` would already have failed above.
         assert!(
             text.contains("\"outcome\":\"failure\""),
             "start-up must log its failure through tracing"
@@ -85,17 +89,21 @@ mod no_testkit {
 
 #[cfg(feature = "testkit")]
 mod e2e {
-    use std::net::{IpAddr, SocketAddr};
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, SocketAddr, TcpStream};
+    use std::process::{Child, Command, Stdio};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use axum::body::Body;
     use axum::http::{header, Request, StatusCode};
     use obs::Sensitive;
-    use ports::CallerVerifier;
+    use ports::{CallerVerifier, EgressError, EgressRequest, HttpEgress, HttpMethod};
     use testkit::InMemoryServerStore;
     use tower::ServiceExt;
     use unsub::runner::UnsubState;
-    use unsub::startup_e2e::{self, E2eConfig, E2eError, StaticTokenVerifier};
+    use unsub::startup_e2e::{self, E2eConfig, E2eError, LoopbackEgress, StaticTokenVerifier};
+    use url::Url;
 
     /// A token of exactly the accepted minimum length.
     const TOKEN: &str = "test-caller-token-0123456789";
@@ -131,6 +139,95 @@ mod e2e {
         }
         let response = router.clone().oneshot(builder.body(Body::empty())?).await?;
         Ok(response.status())
+    }
+
+    /// An ephemeral loopback port, released before the caller binds it.
+    fn free_port() -> Result<u16, Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        Ok(listener.local_addr()?.port())
+    }
+
+    /// One `GET` egress request with no body.
+    fn get(url: Url) -> EgressRequest {
+        EgressRequest {
+            method: HttpMethod::Get,
+            url,
+            headers: Vec::new(),
+            body: None,
+            timeout: Duration::from_secs(2),
+        }
+    }
+
+    /// A loopback server answering `200` on every path; returns its address and
+    /// the task handle so the caller can abort it.
+    async fn spawn_ok_server(
+    ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "ok" }));
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok((addr, handle))
+    }
+
+    /// Send one HTTP/1.1 request to `addr`, closing after one response, and
+    /// return the status code. `None` when the connect or read fails (the
+    /// server may not be listening yet).
+    fn http_status(addr: SocketAddr, request: &str) -> Option<u16> {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(200)).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok()?;
+        stream.write_all(request.as_bytes()).ok()?;
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf);
+        text.lines()
+            .next()?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<u16>()
+            .ok()
+    }
+
+    /// Kills and reaps the child on drop, so a failing assertion never leaks a
+    /// running server.
+    struct ChildGuard(Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Wait for `child` to exit, killing it once `timeout` passes.
+    fn wait_with_deadline(
+        mut child: Child,
+        timeout: Duration,
+    ) -> Result<std::process::Output, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if child.try_wait()?.is_some() {
+                return Ok(child.wait_with_output()?);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("process did not exit within the deadline".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Both streams, as lossy text.
+    fn combined(output: &std::process::Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
     }
 
     /// Behaviour 1: e2e binds loopback only and serves its health route.
@@ -243,11 +340,213 @@ mod e2e {
         Ok(())
     }
 
-    /// Behaviour 3: a testkit build without `MT_E2E=1` never enables e2e, so
-    /// production wiring stays the only path.
+    /// A non-loopback endpoint, or a hostname that is not a loopback IP
+    /// literal, is refused at construction — before any connection exists.
     #[test]
-    fn unsub_testkit_build_without_e2e_env_behaves_as_production() {
-        std::env::remove_var("MT_E2E");
-        assert!(!startup_e2e::e2e_mode_enabled());
+    fn unsub_e2e_egress_rejects_non_loopback_endpoint() -> Result<(), Box<dyn std::error::Error>> {
+        let empty: &[(&'static str, Url)] = &[];
+        assert!(
+            matches!(LoopbackEgress::new(empty), Err(E2eError::Invalid(_))),
+            "an empty allow-list must be refused"
+        );
+
+        let public = Url::parse("http://93.184.216.34:80/")?;
+        assert!(
+            matches!(
+                LoopbackEgress::new(&[("FAKE_GOOGLE_URL", public)]),
+                Err(E2eError::Invalid("FAKE_GOOGLE_URL"))
+            ),
+            "a public IP endpoint must be refused"
+        );
+
+        let hostname = Url::parse("http://example.com:80/")?;
+        assert!(
+            matches!(
+                LoopbackEgress::new(&[("UNSUB_TESTBED_URL", hostname)]),
+                Err(E2eError::Invalid("UNSUB_TESTBED_URL"))
+            ),
+            "a hostname endpoint must be refused"
+        );
+
+        // The loopback literals, IPv4 and bracketed IPv6, are accepted.
+        assert!(
+            LoopbackEgress::new(&[("FAKE_GOOGLE_URL", Url::parse("http://127.0.0.1:9/")?)]).is_ok()
+        );
+        assert!(
+            LoopbackEgress::new(&[("UNSUB_TESTBED_URL", Url::parse("http://[::1]:9/")?)]).is_ok()
+        );
+        Ok(())
+    }
+
+    /// Behaviour 3: the loopback allow-list opens only the configured socket.
+    /// Any other host, port or hostname is refused before a connection.
+    #[tokio::test]
+    async fn unsub_e2e_egress_allows_only_configured_socket(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (addr, server) = spawn_ok_server().await?;
+        let allowed = Url::parse(&format!("http://{addr}/"))?;
+        let egress = LoopbackEgress::new(&[("FAKE_GOOGLE_URL", allowed.clone())])?;
+
+        // The configured socket is reachable and answered.
+        let response = egress.call(get(allowed)).await?;
+        assert_eq!(response.status, 200, "the allowed socket must be reachable");
+
+        // A different port on the same loopback address is not in the list.
+        let other_port = if addr.port() == 2 { 3 } else { 2 };
+        let other = Url::parse(&format!("http://127.0.0.1:{other_port}/"))?;
+        assert!(
+            matches!(
+                egress.call(get(other)).await,
+                Err(EgressError::HostNotAllowed)
+            ),
+            "a port that is not configured must be refused"
+        );
+
+        // The hostname form of the same address is never resolved against the
+        // allow-list, so it is refused even though it names the same socket.
+        let named = Url::parse(&format!("http://localhost:{}/", addr.port()))?;
+        assert!(
+            matches!(
+                egress.call(get(named)).await,
+                Err(EgressError::HostNotAllowed)
+            ),
+            "a hostname must not be resolved against the allow-list"
+        );
+
+        // A public IP is refused.
+        let public = Url::parse("http://93.184.216.34/")?;
+        assert!(
+            matches!(
+                egress.call(get(public)).await,
+                Err(EgressError::HostNotAllowed)
+            ),
+            "a public IP must be refused"
+        );
+
+        server.abort();
+        Ok(())
+    }
+
+    /// Behaviour 3: a redirect is returned as-is, never followed, so the
+    /// allow-list cannot be escaped by a `Location` header.
+    #[tokio::test]
+    async fn unsub_e2e_egress_does_not_follow_redirects() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = axum::Router::new().route(
+            "/redirect",
+            axum::routing::get(|| async {
+                (
+                    StatusCode::FOUND,
+                    [(header::LOCATION, "http://93.184.216.34/after")],
+                )
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let base = Url::parse(&format!("http://{addr}/"))?;
+        let egress = LoopbackEgress::new(&[("FAKE_GOOGLE_URL", base.clone())])?;
+        let response = egress.call(get(base.join("redirect")?)).await?;
+        assert_eq!(
+            response.status, 302,
+            "a redirect must be returned, not followed"
+        );
+
+        server.abort();
+        Ok(())
+    }
+
+    /// F2: the real testkit binary, started with `MT_E2E=1`, boots, serves
+    /// `/healthz` with 200 and answers an unauthenticated caller with 401.
+    #[test]
+    fn unsub_e2e_binary_serves_health_and_rejects_without_token(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let port = free_port()?;
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let child = Command::new(env!("CARGO_BIN_EXE_unsub"))
+            .env_clear()
+            .env("MT_E2E", "1")
+            .env("UNSUB_E2E_CALLER_TOKEN", "process-test-caller-token")
+            .env("FAKE_GOOGLE_URL", "http://127.0.0.1:9")
+            .env("UNSUB_TESTBED_URL", "http://127.0.0.1:8")
+            .env("FIRESTORE_EMULATOR_HOST", "127.0.0.1:8080")
+            .env("PORT", port.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut child = ChildGuard(child);
+
+        let health_request = format!(
+            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            startup_e2e::E2E_HEALTH_PATH
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut health = None;
+        while Instant::now() < deadline {
+            if child.0.try_wait()?.is_some() {
+                break;
+            }
+            health = http_status(addr, &health_request);
+            if health == Some(200) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let unauth_request = format!(
+            "POST /internal/v1/unsubscribe-jobs/{}/run HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            uuid::Uuid::nil()
+        );
+        let unauth = http_status(addr, &unauth_request);
+
+        assert_eq!(
+            health,
+            Some(200),
+            "the e2e binary must serve /healthz with 200"
+        );
+        assert_eq!(unauth, Some(401), "an unauthenticated caller must get 401");
+        Ok(())
+    }
+
+    /// Behaviour 3: a testkit build without `MT_E2E=1` takes the production
+    /// wiring. The environment here is a *complete, valid e2e environment* but
+    /// with an incomplete production config: if `main` wrongly took the e2e
+    /// path, the server would boot and stay up (the deadline would trip), so a
+    /// quick non-zero failure with no success log proves production was chosen.
+    #[test]
+    fn unsub_testkit_build_without_e2e_env_behaves_as_production(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let child = Command::new(env!("CARGO_BIN_EXE_unsub"))
+            .env_clear()
+            .env("UNSUB_E2E_CALLER_TOKEN", "process-test-caller-token")
+            .env("FAKE_GOOGLE_URL", "http://127.0.0.1:9")
+            .env("UNSUB_TESTBED_URL", "http://127.0.0.1:8")
+            .env("FIRESTORE_EMULATOR_HOST", "127.0.0.1:8080")
+            .env("PORT", "0")
+            // Present but not enough: production config also needs UNSUB_AUDIENCE.
+            .env("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output = wait_with_deadline(child, Duration::from_secs(5))?;
+        let text = combined(&output);
+
+        assert!(
+            !output.status.success(),
+            "an incomplete production environment must fail to start"
+        );
+        assert!(
+            text.contains("\"outcome\":\"failure\""),
+            "start-up must log its failure through tracing"
+        );
+        assert!(
+            !text.contains("\"outcome\":\"success\""),
+            "MT_E2E unset must never reach a running state: {text}"
+        );
+        assert!(!text.contains("panicked"), "startup must not panic");
+        Ok(())
     }
 }
