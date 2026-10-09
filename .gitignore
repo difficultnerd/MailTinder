@@ -1,6 +1,8 @@
 # Rust
 backend/target/
 backend/lcov.info
+# Coverage build debris; never commit it.
+*.profraw
 
 # Dart / Flutter
 app/.dart_tool/
