@@ -84,6 +84,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-406](T-406-dkim-header-coverage-check.md) | DKIM header coverage check | M4 | strong | T-401, T-404 |
 | [T-500](T-500-api-skeleton-router-errors-headers-rate-limits.md) | api service skeleton: router, errors, headers, rate limits | M5 | sonnet | T-202a, T-202b, T-307 |
 | [T-500b](T-500b-api-binary-wiring-and-e2e-config.md) | api binary: production wiring and the end-to-end test configuration | M5 | strong | T-500, T-701, T-205a, T-205b, T-206, T-301 |
+| [T-500c](T-500c-api-startup-hardening.md) | api start-up hardening: follow-ups from the T-500b reviews | M5 | sonnet | T-500b |
 | [T-501](T-501-sessions-cookie-and-csrf.md) | Sessions, cookie and CSRF | M5 | strong | T-201b, T-202a, T-301, T-302, T-500 |
 | [T-502a](T-502a-google-identity-adapter.md) | Google identity adapter (OAuth code flow, ID token validation, refresh, revoke) | M5 | strong | T-201a, T-206, T-305, T-306 |
 | [T-502b](T-502b-google-sign-in-and-invite-redemption.md) | Google sign-in and invite redemption (API-AUTH-1, API-AUTH-2) | M5 | strong | T-107, T-206, T-501, T-502a, T-503 |
@@ -152,7 +153,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1105](T-1105-staging-smoke-tests-and-zap.md) | Staging smoke tests and the ZAP baseline | M11 | sonnet | T-301, T-302, T-304, T-1104 |
 | [T-1106](T-1106-nightly-live-gmail-contract-run.md) | Nightly live Gmail contract run | M11 | sonnet | T-203, T-401, T-403, T-1103 |
 | [T-1107](T-1107-budget-monitoring-and-alerts.md) | Budget, monitoring and alerts | M11 | sonnet | T-307, T-1102b, needs S11 |
-| [T-1108](T-1108-demo-mode.md) | Demo mode: run the whole app locally and click through it | M11 | sonnet | T-500b, T-1101a |
+| [T-1108](T-1108-demo-mode.md) | Demo mode: run the whole app locally and click through it | M11 | sonnet | T-500b, T-500c, T-1101a |
 | [T-1109](T-1109-mutation-testing-pilot.md) | Mutation testing pilot | M11 | sonnet | T-004, T-104, T-105a, T-109 |
 | [T-1110](T-1110-property-tests-hostile-input.md) | Property tests for every parser of hostile input | M11 | sonnet | T-102, T-306, T-406, T-701 |
 | [T-1111](T-1111-visual-and-accessibility-regression.md) | Screenshot and accessibility regression tests | M11 | sonnet | T-1001a, T-1002b, T-1003, T-1005, T-1006a |
