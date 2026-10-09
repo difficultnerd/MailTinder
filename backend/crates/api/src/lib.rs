@@ -7,6 +7,8 @@ pub mod error;
 pub mod experiments;
 pub mod http;
 pub mod limits;
+#[cfg(feature = "testkit")]
+pub mod local_runner;
 pub mod routes;
 pub mod sealed;
 pub mod services;
