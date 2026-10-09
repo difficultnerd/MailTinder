@@ -11,6 +11,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::match_same_arms,
+    clippy::module_name_repetitions,
     clippy::needless_pass_by_value,
     clippy::redundant_pattern_matching,
     clippy::redundant_closure,
@@ -23,6 +24,7 @@ pub mod classifier_switches;
 pub mod crypto;
 pub mod firestore;
 pub mod gcp_http;
+pub mod gemini;
 pub mod oidc_caller;
 pub mod os_rng;
 pub mod secrets;
@@ -36,6 +38,7 @@ pub use crypto::kms::{CloudKms, KmsApi};
 pub use crypto::system::KmsSystemKeyService;
 pub use firestore::{FirestoreConfig, FirestoreStore};
 pub use gcp_http::{GcpError, GcpHttp, PLATFORM_HOSTS};
+pub use gemini::{GcpTokenSource, GeminiClassifier, GeminiConfig, PROD_BASE_URL};
 pub use oidc_caller::GoogleCallerVerifier;
 pub use os_rng::OsRng;
 pub use secrets::{SecretManagerSecrets, SecretsConfig};
