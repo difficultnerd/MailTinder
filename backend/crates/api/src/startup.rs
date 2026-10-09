@@ -20,6 +20,7 @@ use adapters_gmail::identity::{
     GOOGLE_REVOKE_ENDPOINT, GOOGLE_TOKEN_ENDPOINT,
 };
 use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
+use adapters_models::jev::{JevClassifier, JevConfig};
 use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{
@@ -131,38 +132,18 @@ pub async fn run() -> Result<(), SetupError> {
     .map_err(|_| SetupError::Obs)?;
     obs::register_http_routes(crate::ROUTE_TEMPLATES);
 
-    let (ports, config, classifiers) = if e2e_requested() {
-        let (ports, config) = e2e_startup()?;
-        (ports, config, crate::classify::ClassifierSet::default())
+    let (ports, config) = if e2e_requested() {
+        e2e_startup()?
     } else {
-        let (ports, config) = build_production_ports().await?;
-        let classifiers = production_classifiers(&ports)?;
-        (ports, config, classifiers)
+        build_production_ports().await?
+    };
+    // The bake-off models are production-only: e2e drives them through fakes.
+    let classifiers = if e2e_requested() {
+        crate::classify::ClassifierSet::default()
+    } else {
+        build_classifiers(&ports).await?
     };
     serve(ports, config, classifiers).await
-}
-
-/// Build the bake-off models for production: today the Gemini classifier on
-/// Vertex AI (T-904). The service-account token comes from the metadata server;
-/// no key exists (S4 5.7).
-///
-/// # Errors
-///
-/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
-fn production_classifiers(ports: &Ports) -> Result<crate::classify::ClassifierSet, SetupError> {
-    let project = env("GOOGLE_CLOUD_PROJECT")?;
-    let model = env("GEMINI_MODEL").unwrap_or_else(|_| GEMINI_MODEL.to_owned());
-    let tokens: Arc<dyn GcpTokenSource> =
-        Arc::new(MetadataTokenSource::new(Arc::clone(&ports.clock)));
-    let gemini: Arc<dyn Classifier> = Arc::new(GeminiClassifier::new(
-        GeminiConfig::new(project, model),
-        Arc::clone(&ports.egress),
-        tokens,
-    ));
-    Ok(crate::classify::ClassifierSet {
-        gemini: Some(gemini),
-        jev: None,
-    })
 }
 
 #[cfg(feature = "testkit")]
@@ -299,6 +280,73 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
     };
 
     Ok((ports, base.with_keys(rate_key, email_lookup_key)))
+}
+
+/// Build the bake-off classifiers: the Gemini classifier on Vertex AI (T-904)
+/// and the Jev classifier from the secret read once at start-up. `api` is the
+/// only service that loads the Jev key (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+async fn build_classifiers(ports: &Ports) -> Result<crate::classify::ClassifierSet, SetupError> {
+    Ok(crate::classify::ClassifierSet {
+        gemini: Some(build_gemini(ports)?),
+        jev: build_jev(ports).await,
+    })
+}
+
+/// Build the Gemini classifier. The service-account token comes from the
+/// metadata server; no key exists (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+fn build_gemini(ports: &Ports) -> Result<Arc<dyn Classifier>, SetupError> {
+    let project = env("GOOGLE_CLOUD_PROJECT")?;
+    let model = env("GEMINI_MODEL").unwrap_or_else(|_| GEMINI_MODEL.to_owned());
+    let tokens: Arc<dyn GcpTokenSource> =
+        Arc::new(MetadataTokenSource::new(Arc::clone(&ports.clock)));
+    Ok(Arc::new(GeminiClassifier::new(
+        GeminiConfig::new(project, model),
+        Arc::clone(&ports.egress),
+        tokens,
+    )))
+}
+
+/// Build the Jev classifier. A missing or non-UTF-8 key leaves
+/// `ClassifierSet.jev = None` and logs `jev_key_missing` (no value).
+async fn build_jev(ports: &Ports) -> Option<Arc<dyn Classifier>> {
+    let Ok(config) = JevConfig::production() else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_config_invalid"
+        );
+        return None;
+    };
+    let Ok(key) = ports.secrets.get(SecretName::JevApiKey).await else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let Ok(key) = String::from_utf8(key.expose().clone()) else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let classifier: Arc<dyn Classifier> = Arc::new(JevClassifier::new(
+        config,
+        Arc::clone(&ports.egress),
+        Sensitive::new(key),
+    ));
+    Some(classifier)
 }
 
 /// Bind and serve the router with graceful shutdown on `SIGTERM` and `SIGINT`.

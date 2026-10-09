@@ -296,15 +296,30 @@ fn blocked(prompt_feedback: Option<&serde_json::Value>) -> bool {
 /// probabilities of the tokens overlapping the `class` value and exponentiate.
 #[allow(clippy::cast_possible_truncation)]
 fn class_confidence(tokens: &[TokenLogprob], output: &str) -> Result<f32, ClassifierError> {
+    // The chosen tokens must rebuild the output text exactly. A drifted,
+    // truncated or shifted logprob run is not evidence of confidence: without
+    // this check a run that misses the class span sums to 0.0 and
+    // `exp(0) = 1.0` would fabricate a maximal confidence (task step 7).
+    let rebuilt: String = tokens.iter().map(|token| token.token.as_str()).collect();
+    if rebuilt != output {
+        return Err(ClassifierError::InvalidOutput);
+    }
     let (start, end) = class_value_span(output).ok_or(ClassifierError::InvalidOutput)?;
     let mut sum = 0.0_f64;
     let mut position = 0_usize;
+    let mut overlapping = 0_usize;
     for token in tokens {
         let token_start = position;
         position += token.token.len();
         if position > start && token_start < end {
             sum += token.log_probability;
+            overlapping += 1;
         }
+    }
+    // At least one token must overlap the class value, else there is nothing
+    // to read a confidence from.
+    if overlapping == 0 {
+        return Err(ClassifierError::InvalidOutput);
     }
     let confidence = sum.exp();
     if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
@@ -428,6 +443,28 @@ mod tests {
         ];
         if class_confidence(&positive, output).is_ok() {
             return Err("a sum above 0 must be rejected".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Tokens that do not rebuild the output (a drifted or truncated run) must
+    /// not be read as confidence, even when they would sum to a plausible
+    /// value: `exp(0) = 1.0` from no evidence is the F1 case.
+    #[test]
+    fn gemini_confidence_rejects_tokens_that_do_not_rebuild_output() -> Result<(), String> {
+        let output = "{\"class\":\"list\",\"bulk_score\":42}";
+        // A truncated prefix: the run never reaches the class value.
+        let short = [token("{\"class\":\"", -0.01), token("li", -0.05)];
+        if class_confidence(&short, output).is_ok() {
+            return Err("tokens that miss the class span must be rejected".to_owned());
+        }
+        // Tokens that rebuild some other text are rejected too.
+        let drifted = [
+            token("{\"class\":\"", -0.01),
+            token("bulk_no_header\",\"bulk_score\":42}", -0.02),
+        ];
+        if class_confidence(&drifted, output).is_ok() {
+            return Err("tokens that do not rebuild the output must be rejected".to_owned());
         }
         Ok(())
     }

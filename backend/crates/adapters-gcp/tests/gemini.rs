@@ -158,6 +158,10 @@ async fn bake_4_gemini_failure_scenarios() -> Result<(), String> {
         (Scenario::Score101, Some(ClassifierError::InvalidOutput)),
         (Scenario::LogprobNan, Some(ClassifierError::InvalidOutput)),
         (Scenario::LogprobInf, Some(ClassifierError::InvalidOutput)),
+        (
+            Scenario::LogprobsDoNotCoverClass,
+            Some(ClassifierError::InvalidOutput),
+        ),
         (Scenario::MissingField, Some(ClassifierError::InvalidOutput)),
         (Scenario::Safety, Some(ClassifierError::InvalidOutput)),
         (

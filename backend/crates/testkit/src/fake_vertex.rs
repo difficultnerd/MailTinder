@@ -34,7 +34,9 @@ pub const CLASS_ENUM: [&str; 5] = ["list", "bulk_no_header", "notice", "personal
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Scenario {
     Valid,
-    Delay { ms: u64 },
+    Delay {
+        ms: u64,
+    },
     TooManyRequests,
     ServerError,
     ServiceUnavailable,
@@ -48,6 +50,9 @@ pub enum Scenario {
     Score101,
     LogprobNan,
     LogprobInf,
+    /// The chosen logprob tokens do not rebuild the answer text, so they never
+    /// cover the class value (F1): a malformed run must not read as confidence.
+    LogprobsDoNotCoverClass,
     MissingField,
     Safety,
     EmptyCandidates,
@@ -226,6 +231,13 @@ async fn generate(
             let text = valid_text();
             let tokens = tokens_for_lps(&text, ["-0.01", "1e400", "-0.05", "-0.02"]);
             answer(ok_body(&text, MODEL_VERSION, Some(&tokens)))
+        }
+        Scenario::LogprobsDoNotCoverClass => {
+            let text = valid_text();
+            // The chosen tokens are a truncated prefix and never reach the
+            // class value, so no token can supply its log probability.
+            let tokens = r#"[{"token":"{\"class\":\"","logProbability":-0.01},{"token":"li","logProbability":-0.05}]"#;
+            answer(ok_body(&text, MODEL_VERSION, Some(tokens)))
         }
         Scenario::MissingField => {
             let text = "{\"class\":\"list\"}".to_owned();

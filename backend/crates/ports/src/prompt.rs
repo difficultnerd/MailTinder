@@ -2,9 +2,11 @@
 //!
 //! T-903 owns the question text and the input rendering; both the Gemini
 //! adapter (`adapters-gcp`) and the Jev adapter (`adapters-models`) must send
-//! byte-identical bytes, so the module lives beside [`crate::ClassifierInput`]
-//! and every classifier reaches it through `ports`.
-use crate::ClassifierInput;
+//! byte-identical bytes, so the module lives beside
+//! [`crate::classifier::ClassifierInput`] and every classifier reaches it
+//! through `ports`. It is re-exported by `api::classify::prompt`.
+
+use crate::classifier::ClassifierInput;
 
 pub const QUESTION_VERSION: &str = "1";
 pub const CLASS_OPTIONS: [(&str, &str); 5] = [

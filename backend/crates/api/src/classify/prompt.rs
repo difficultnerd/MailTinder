@@ -1,5 +1,7 @@
-//! T-903's fixed questions and one byte-identical rendering of a classifier
-//! input. The implementation is shared with the model adapters as
-//! [`ports::prompt`] so Gemini and Jev receive identical bytes (CR-01 1.1);
-//! this module keeps the historical `classify::prompt` path working.
-pub use ports::prompt::*;
+//! The shared model prompt. It lives in `ports` (see `ports::prompt`) so the
+//! API and both model adapters render byte-identical text and ask identical
+//! questions; this module re-exports it for existing callers.
+
+pub use ports::prompt::{
+    render_model_text, BULK_QUESTION, CLASS_OPTIONS, CLASS_QUESTION, QUESTION_VERSION,
+};
