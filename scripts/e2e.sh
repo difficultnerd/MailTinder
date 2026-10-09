@@ -19,7 +19,6 @@ cd "$REPO"
 # Per-phase timing: a cold CI runner is far slower than a warm developer machine,
 # so every step prints how long it has taken so far.
 START_S=$SECONDS
-phase() { printf '==> [%3ss] %s\n' "$((SECONDS - START_S))" "$*"; }
 
 JOURNEY=""
 while [[ $# -gt 0 ]]; do
@@ -70,50 +69,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-free_port() { python3 "$REPO/scripts/free_port.py"; }
-
-wait_http() {
-  local url="$1" waited=0
-  while (( waited < 60 )); do
-    if curl -sf --max-time 2 "$url" >/dev/null; then
-      echo "    ready after ${waited}s: $url" >&2
-      return 0
-    fi
-    sleep 1
-    waited=$((waited + 1))
-  done
-  echo "timed out after ${waited}s waiting for $url" >&2
-  return 1
-}
-
-# Wait up to `max` seconds for a service's port file and echo its contents.
-wait_port_file() {
-  local file="$1" max="${2:-30}" waited=0
-  while [[ ! -s "$file" ]]; do
-    if (( waited >= max )); then
-      echo "timed out waiting for $file" >&2
-      return 1
-    fi
-    sleep 1
-    waited=$((waited + 1))
-  done
-  # Timing goes to stderr: stdout is the port value the caller captures.
-  echo "    $file ready after ${waited}s" >&2
-  tr -d '[:space:]' < "$file"
-}
-
-start_bg() { # <name> <logfile> <command...>
-  local name="$1" log="$2"
-  shift 2
-  setsid "$@" >"$log" 2>&1 &
-  PGIDS+=("$!")
-  printf '%s\n' "$!" >>"$RUN/service.pgids"
-  echo "    started $name (log: $log)"
-}
-
-# The .env files hold values only; drop comments and blank lines and let env
-# consume the rest as KEY=VALUE.
-env_file() { grep -vE '^[[:space:]]*(#|$)' "$1" | xargs; }
+# Shared start/stop helpers (T-1108a); also used by scripts/demo.sh. Sourcing
+# keeps this file's behaviour identical to when the helpers were inline.
+# shellcheck source=scripts/e2e/lib.sh
+source "$REPO/scripts/e2e/lib.sh"
 
 phase "building services in test configuration"
 (cd backend && cargo build --locked -p api -p unsub --features api/testkit,unsub/testkit)
