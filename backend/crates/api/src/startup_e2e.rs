@@ -22,13 +22,15 @@ use ports::{
 };
 use url::Url;
 
-use crate::config::ApiConfig;
+use crate::config::{ApiConfig, Mode};
 use crate::startup::SetupError;
 
 /// The literal client secret for e2e. Never a real secret (S10 3.3).
 const CLIENT_SECRET: &str = "test-only-not-a-secret";
 /// The Firestore emulator project id.
 const E2E_PROJECT: &str = "demo-mailtinder";
+/// The maximum response body [`LoopbackEgress`] will accept, 1 MiB.
+const MAX_BODY: usize = 1024 * 1024;
 
 /// Build e2e ports from the process environment.
 ///
@@ -79,7 +81,7 @@ pub fn build_e2e_ports<S>(
 where
     S: ServerStore + 'static,
 {
-    let base = ApiConfig::from_lookup(&lookup)?;
+    let base = ApiConfig::from_lookup(&lookup, Mode::E2e)?;
     let fake_google_raw = required(&lookup, "FAKE_GOOGLE_URL")?;
     let fake_google =
         Url::parse(&fake_google_raw).map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
@@ -148,19 +150,22 @@ pub struct LoopbackEgress {
 }
 
 impl LoopbackEgress {
-    /// Build an egress pinned to the socket of `base`.
+    /// Build an egress pinned to the socket of `base`. The host must be a
+    /// loopback literal: IPv4 `127.0.0.0/8` or IPv6 `::1` (the bracketed
+    /// `[::1]` URL form included).
     ///
     /// # Errors
     ///
-    /// Returns [`SetupError::Invalid`] when `base` has no literal IP host or
-    /// port, and [`SetupError::Adapter`] if the client cannot be built.
+    /// Returns [`SetupError::Invalid`] when `base` has no literal loopback IP
+    /// host or port, and [`SetupError::Adapter`] if the client cannot be built.
     pub fn new(base: &Url) -> Result<Self, SetupError> {
         let host = base
             .host_str()
             .ok_or(SetupError::Invalid("FAKE_GOOGLE_URL"))?;
-        let ip: IpAddr = host
-            .parse()
-            .map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+        let ip = host_ip(host).ok_or(SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+        if !ip.is_loopback() {
+            return Err(SetupError::Invalid("FAKE_GOOGLE_URL"));
+        }
         let port = base
             .port_or_known_default()
             .ok_or(SetupError::Invalid("FAKE_GOOGLE_URL"))?;
@@ -179,7 +184,7 @@ impl LoopbackEgress {
         let Some(host) = url.host_str() else {
             return false;
         };
-        let Ok(ip) = host.parse::<IpAddr>() else {
+        let Some(ip) = host_ip(host) else {
             return false;
         };
         let Some(port) = url.port_or_known_default() else {
@@ -225,17 +230,35 @@ impl HttpEgress for LoopbackEgress {
                 headers.push((name.as_str().to_owned(), text.to_owned()));
             }
         }
+        if let Some(len) = response.content_length() {
+            if len > MAX_BODY as u64 {
+                return Err(EgressError::ResponseTooLarge);
+            }
+        }
         let body = response
             .bytes()
             .await
             .map_err(|_| EgressError::Connect)?
             .to_vec();
+        if body.len() > MAX_BODY {
+            return Err(EgressError::ResponseTooLarge);
+        }
         Ok(EgressResponse {
             status,
             headers,
             body,
         })
     }
+}
+
+/// Parse a URL host as an IP literal, unwrapping the bracketed IPv6 form
+/// (`[::1]` → `::1`).
+fn host_ip(host: &str) -> Option<IpAddr> {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse().ok()
 }
 
 /// A required, non-empty e2e variable. Only the name is ever surfaced.
