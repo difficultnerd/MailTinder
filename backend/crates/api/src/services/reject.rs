@@ -669,3 +669,76 @@ fn apply(s: &mut UserState, w: &Writes) {
     s.totals.triaged = s.totals.triaged.saturating_add(1);
     s.totals.cleared = s.totals.cleared.saturating_add(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use domain::{MailtoError, MailtoTarget};
+
+    use super::{percent_encode_field, target_string, UnsubscribeTarget, Url};
+
+    /// F1: `percent_encode_field` keeps the RFC 3986 unreserved set and encodes
+    /// every other byte as `%XX` — `+` included (RFC 6068 has no form `+`, so a
+    /// decoded plus stays a plus) and multi-byte UTF-8 one byte at a time.
+    #[test]
+    fn reject_percent_encode_field_keeps_unreserved_and_encodes_the_rest() {
+        assert_eq!(percent_encode_field("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(percent_encode_field("a b"), "a%20b");
+        assert_eq!(percent_encode_field("&&=="), "%26%26%3D%3D");
+        assert_eq!(percent_encode_field("a+b"), "a%2Bb");
+        assert_eq!(percent_encode_field("100%"), "100%25");
+        assert_eq!(percent_encode_field("café"), "caf%C3%A9");
+    }
+
+    /// F1: a one-click target is sealed as the bare URL, exactly what the
+    /// sender re-parses, and never percent-encoded.
+    #[test]
+    fn reject_one_click_target_string_is_the_bare_url() -> Result<(), Box<dyn std::error::Error>> {
+        let url = Url::parse("https://news.example.com/u/one-click?a=1&b=2")?;
+        assert_eq!(
+            target_string(&UnsubscribeTarget::OneClick(url.clone())),
+            url.as_str()
+        );
+        Ok(())
+    }
+
+    /// F1: the mailto branch of `target_string` percent-encodes each field so
+    /// `MailtoTarget::parse` decodes it back unchanged. The subject and body
+    /// carry the bytes that would otherwise end the URI or split the query
+    /// (`&`, `=`, `?`, `#`, `%`), a literal `+` and a non-ASCII character; the
+    /// address itself is left unencoded.
+    #[test]
+    fn reject_mailto_target_string_round_trips_through_parse(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let original = MailtoTarget::new(
+            "unsub+lists@example.org",
+            Some("Re: unsubscribe & confirm? #1"),
+            Some("please remove me + café 100%"),
+        )?;
+        let uri = target_string(&UnsubscribeTarget::Mailto(original.clone()));
+        assert!(
+            uri.starts_with("mailto:unsub+lists@example.org?"),
+            "the address must not be encoded: {uri}"
+        );
+        let parsed = MailtoTarget::parse(&uri)?;
+        assert_eq!(
+            parsed, original,
+            "the mailto target must round-trip unchanged"
+        );
+        Ok(())
+    }
+
+    /// F1: a tab is allowed by `MailtoTarget::new` but the encoder emits it as
+    /// `%09`, which `parse` decodes back to a control character and therefore
+    /// refuses: a control character can never reach the sender.
+    #[test]
+    fn reject_mailto_target_string_refuses_a_control_character_on_parse(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let original = MailtoTarget::new("unsub@example.org", Some("tab\there"), None)?;
+        let uri = target_string(&UnsubscribeTarget::Mailto(original));
+        assert_eq!(
+            MailtoTarget::parse(&uri),
+            Err(MailtoError::ControlCharacter)
+        );
+        Ok(())
+    }
+}

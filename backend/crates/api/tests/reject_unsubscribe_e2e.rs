@@ -21,7 +21,7 @@
 )]
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 use api::local_runner::DeliveryState;
@@ -556,5 +556,114 @@ async fn api_e2e_without_unsub_env_uses_the_fake_scheduler() -> TestResult {
         _ => None,
     };
     let _ports = api::startup_e2e::build_e2e_ports(store, lookup)?;
+    Ok(())
+}
+
+/// The request lines recorded by [`start_request_recorder`], oldest first.
+type RecordedRequests = Arc<Mutex<Vec<String>>>;
+
+/// A minimal loopback HTTP recorder: it records the request line of every
+/// request and answers `200`, so a test can observe the local runner's internal
+/// POST without standing up the real `unsub`.
+fn start_request_recorder(
+) -> Result<(SocketAddr, RecordedRequests), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    let seen: RecordedRequests = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let _recorder = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 8192];
+            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let text = String::from_utf8_lossy(&buf[..n]);
+            if let Some(line) = text.lines().next() {
+                if let Ok(mut lines) = sink.lock() {
+                    lines.push(line.to_owned());
+                }
+            }
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    Ok((addr, seen))
+}
+
+/// F2: the wiring in `build_e2e_ports` itself — not only the `e2e_local_runner`
+/// helper — selects the local runner when `UNSUB_BASE_URL` and
+/// `UNSUB_E2E_CALLER_TOKEN` are set: a due job scheduled through the returned
+/// `Ports.scheduler` is delivered to the configured `unsub`. With the variables
+/// unset the fake scheduler stays and no job is delivered.
+#[tokio::test]
+async fn api_e2e_build_wires_the_scheduler_from_the_unsub_env() -> TestResult {
+    let (addr, seen) = start_request_recorder()?;
+
+    // Both variables set: `build_e2e_ports` must replace the fake scheduler
+    // with the local runner, whose delivery loop POSTs a due job here. Deleting
+    // `ports.scheduler = runner` or the `tokio::spawn(run())` makes this fail.
+    let base = format!("http://{addr}");
+    let wired = |name: &str| match name {
+        "FAKE_GOOGLE_URL" => Some("http://127.0.0.1:1".to_owned()),
+        "APP_ORIGIN" => Some("http://127.0.0.1:8080".to_owned()),
+        "GOOGLE_OAUTH_CLIENT_ID" => Some("e2e-client".to_owned()),
+        "UNSUB_BASE_URL" => Some(base.clone()),
+        "UNSUB_E2E_CALLER_TOKEN" => Some(TOKEN.to_owned()),
+        _ => None,
+    };
+    let (ports, _config) =
+        api::startup_e2e::build_e2e_ports(Arc::new(InMemoryServerStore::new()), wired)?;
+    let job = JobId(Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888));
+    // Time comes only from the `Clock` port (S10 1 rule 2): schedule a job that
+    // is already due at the runner's own clock instant.
+    ports.scheduler.schedule(&job, ports.clock.now()).await?;
+    let expected = format!(
+        "POST /internal/v1/unsubscribe-jobs/{}/run HTTP/1.1",
+        job.0.simple()
+    );
+    let delivered = wait_for(
+        || {
+            seen.lock()
+                .map(|lines| lines.iter().any(|line| line == &expected))
+                .unwrap_or(false)
+        },
+        StdDuration::from_secs(5),
+    )
+    .await;
+    assert!(
+        delivered,
+        "build_e2e_ports did not wire the local runner (saw {:?})",
+        seen.lock().map(|lines| lines.clone()).unwrap_or_default()
+    );
+
+    // Neither variable set: the fake scheduler stays, so a due job is never
+    // delivered anywhere.
+    let unwired = |name: &str| match name {
+        "FAKE_GOOGLE_URL" => Some("http://127.0.0.1:1".to_owned()),
+        "APP_ORIGIN" => Some("http://127.0.0.1:8080".to_owned()),
+        "GOOGLE_OAUTH_CLIENT_ID" => Some("e2e-client".to_owned()),
+        _ => None,
+    };
+    let (fake_ports, _config) =
+        api::startup_e2e::build_e2e_ports(Arc::new(InMemoryServerStore::new()), unwired)?;
+    let fake_job = JobId(Uuid::from_u128(0x9999_8888_7777_4444_3333_2222_1111_0000));
+    fake_ports
+        .scheduler
+        .schedule(&fake_job, fake_ports.clock.now())
+        .await?;
+    tokio::time::sleep(StdDuration::from_millis(300)).await;
+    let leaked = seen
+        .lock()
+        .map(|lines| {
+            lines
+                .iter()
+                .any(|line| line.contains(&fake_job.0.simple().to_string()))
+        })
+        .unwrap_or(false);
+    assert!(
+        !leaked,
+        "a job scheduled without the unsub env was delivered"
+    );
     Ok(())
 }
