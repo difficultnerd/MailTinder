@@ -11,6 +11,9 @@ pub mod routes;
 pub mod sealed;
 pub mod services;
 pub mod session;
+pub mod startup;
+#[cfg(feature = "testkit")]
+pub mod startup_e2e;
 pub mod state;
 pub mod text;
 pub mod tokens;
@@ -169,9 +172,9 @@ async fn default_limit_layer(State(state): State<AppState>, req: Request, next: 
     }
 }
 
-/// A plain 204 for Cloud Run probes.
+/// A plain 200 for Cloud Run probes.
 async fn healthz() -> StatusCode {
-    StatusCode::NO_CONTENT
+    StatusCode::OK
 }
 
 /// Any unmatched path or method returns a generic 404 problem.
