@@ -27,15 +27,18 @@ Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a he
 
 All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts and corpus fixtures from T-204 only.
 
-3. **Journey 4, reject then undo** (SW-05 AC2): seed one one-click list message (DKIM covers both headers) pointing at the testbed's one-click 200 route. Tap "Reject"; wait for "Trashed. Unsubscribing in 5 minutes."; tap "Undo"; wait for the card again. `advance_clock(6 minutes)`; then the testbed has received zero requests on that route, and fake-google shows the message back in INBOX with its exact label set.
-4. **Journey 5, reject and let it run** (UN-01 AC1, UN-02 AC1, UN-01 AC3): same seed; tap "Reject"; `advance_clock(6 minutes)`; poll the testbed up to 10 s: exactly one POST, body exactly `List-Unsubscribe=One-Click`, no `Cookie`, no `Authorization`. Pull to refresh the Feed (collects the outcome), open Settings, History, filter "Unsubscribes": one entry with outcome "Sent". Advance the clock again and refresh: still exactly one request (runs once).
-6. **Events** (S10 8): each journey takes `EventLog::mark()` at start and asserts the events the services actually emit: journey 5 exactly one `unsub_outcome` with outcome `sent`; journey 4 no `unsub_outcome` (read the log only after the 6-minute clock advance and the testbed zero-request check, so the negative assertion cannot pass vacuously). Do NOT assert `swipe` or `undo` events: the services do not emit them (ADR 0002); the swipe, undo and filing effects are already proven by the testbed and fake-google assertions above. Event field names come from T-307; if they differ from `event_type` and `outcome`, use T-307's.
+1. **Journey 4, reject then undo** (SW-05 AC2): seed one one-click list message (DKIM covers both headers) pointing at the testbed's one-click 200 route. Tap "Reject"; wait for "Trashed. Unsubscribing in 5 minutes."; tap "Undo"; wait for the card again. `advance_clock(6 minutes)`; then the testbed has received zero requests on that route, and fake-google shows the message back in INBOX with its exact label set.
+2. **Journey 5, reject and let it run** (UN-01 AC1, UN-02 AC1, UN-01 AC3): same seed; tap "Reject"; `advance_clock(6 minutes)`; poll the testbed up to 10 s: exactly one POST, body exactly `List-Unsubscribe=One-Click`, no `Cookie`, no `Authorization`. Pull to refresh the Feed (collects the outcome), open Settings, History, filter "Unsubscribes": one entry with outcome "Sent". Advance the clock again and refresh: still exactly one request (runs once).
+3. **Events** (S10 8): each journey takes `EventLog::mark()` at start and asserts the events the services actually emit: journey 5 exactly one `unsub_outcome` with outcome `sent`; journey 4 no `unsub_outcome` (read the log only after the 6-minute clock advance and the testbed zero-request check, so the negative assertion cannot pass vacuously). Do NOT assert `swipe` or `undo` events: the services do not emit them (ADR 0002); the swipe, undo and filing effects are already proven by the testbed and fake-google assertions above. Event field names come from T-307; if they differ from `event_type` and `outcome`, use T-307's.
 
 ## Acceptance criteria
 
 | ID | Behaviour (one line) |
 | --- | --- |
-
+| SW-05 AC2 | Undo before the due time cancels the job: no request ever reaches the testbed |
+| UN-01 AC1 | A queued unsubscribe runs exactly once after its due time |
+| UN-01 AC3 | The outcome appears in History after the next Feed load |
+| UN-02 AC1 | The one-click POST has the fixed body and no cookies or credentials |
 
 ## Tests that must pass
 

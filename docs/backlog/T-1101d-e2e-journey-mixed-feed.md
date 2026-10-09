@@ -26,13 +26,14 @@ Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a he
 
 All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts and corpus fixtures from T-204 only.
 
-2. **Journey 3, mixed Feed** (FD-02 AC1, AC2): seed mailbox A with fixtures at times t1 and t3 and mailbox B at t2 (fake-google control). Sign in with A; Settings, Connected accounts, "Add Gmail"; Confirm it's you appears: switch to the popup, fake-google re-authenticates A; back in the main window the link starts; fake-google selects B; return to Connected accounts. Go to the Feed and read three cards in turn by tapping "Keep": order t3 (A), t2 (B), t1 (A), each showing its mailbox address.
+1. **Journey 3, mixed Feed** (FD-02 AC1, AC2): seed mailbox A with fixtures at times t1 and t3 and mailbox B at t2 (fake-google control). Sign in with A; Settings, Connected accounts, "Add Gmail"; Confirm it's you appears: switch to the popup, fake-google re-authenticates A; back in the main window the link starts; fake-google selects B; return to Connected accounts. Go to the Feed and read three cards in turn by tapping "Keep": order t3 (A), t2 (B), t1 (A), each showing its mailbox address.
 
 ## Acceptance criteria
 
 | ID | Behaviour (one line) |
 | --- | --- |
-
+| FD-02 AC1 | The Feed interleaves two mailboxes by received time, newest first |
+| FD-02 AC2 | Each card shows its mailbox |
 
 ## Tests that must pass
 

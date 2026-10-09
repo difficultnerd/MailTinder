@@ -26,13 +26,13 @@ Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a he
 
 All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts and corpus fixtures from T-204 only.
 
-5. **Journey 6, file** (SW-04 AC2): seed one message; tap "File"; tap "New category", type "Receipts", confirm; wait for "Filed under Receipts."; fake-google shows a label named "Receipts" on the message and no INBOX label.
+1. **Journey 6, file** (SW-04 AC2): seed one message; tap "File"; tap "New category", type "Receipts", confirm; wait for "Filed under Receipts."; fake-google shows a label named "Receipts" on the message and no INBOX label.
 
 ## Acceptance criteria
 
 | ID | Behaviour (one line) |
 | --- | --- |
-
+| SW-04 AC2 | Filing applies the label and the message leaves the inbox |
 
 ## Tests that must pass
 
