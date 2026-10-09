@@ -39,7 +39,7 @@ T-500 promised `backend/crates/api/src/main.rs` ("load config and secrets, build
 ## Acceptance criteria
 
 - `api_exits_nonzero_without_required_config` (process test, `env!("CARGO_BIN_EXE_api")`, empty environment): exits non-zero within 5 s; stdout and stderr contain no `panicked`, and none of the values given in a second run where `GOOGLE_OAUTH_CLIENT_ID` is set to `canary-client-id-123` and another variable is left missing (the canary string must not appear).
-- `api_config_rejects_bad_app_origin` (unit, `ApiConfig::from_lookup`): trailing slash, a path, `http` for a non-loopback host and an empty string are all `Invalid("APP_ORIGIN")`.
+- `api_config_rejects_bad_app_origin` (unit, `ApiConfig::from_lookup`): trailing slash, a path and `http` for a non-loopback host are `Invalid("APP_ORIGIN")`. (An empty value is `Missing("APP_ORIGIN")`, not `Invalid`: absence and emptiness are the `Missing` case; only a present but malformed origin is `Invalid`.)
 - `api_config_reads_port_default_and_override`: unset gives 8080; `PORT=9000` gives 9000; `PORT=abc` is `Invalid("PORT")`.
 - `api_e2e_env_refused_without_testkit_build` (`#[cfg(not(feature = "testkit"))]`, process test): `MT_E2E=1` makes the binary exit non-zero.
 - `api_e2e_ports_serve_healthz` (`#[cfg(feature = "testkit")]`): `build_e2e_ports` is generic over the store, so the test passes `InMemoryServerStore`; build the router from it and `GET /api/v1/healthz` returns 200 with the standard security headers.
