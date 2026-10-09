@@ -534,10 +534,15 @@ demo_start() {
 
   write_state
   phase "seeding the demo mailbox and invite (T-1108b)"
+  # The fake OAuth client's redirect_uri must be the origin the BROWSER uses: the public tunnel URL in --phone mode (the api builds redirect_uri
+  # from APP_ORIGIN = that URL), the local address otherwise. Registering the local one in phone mode made "Continue with Google" fail with
+  # invalid_request on the first real phone sign-in (AAR 3.89).
+  local seed_origin="http://$(url_host):$HOST_PORT"
+  if (( PHONE )); then seed_origin="$PUBLIC_URL"; fi
   python3 "$REPO/scripts/demo_seed.py" \
     --fake-google-url "http://127.0.0.1:$FAKE_PORT" \
     --api-url "http://127.0.0.1:$API_PORT" \
-    --app-origin "http://$(url_host):$HOST_PORT"
+    --app-origin "$seed_origin"
   echo "demo: running at http://$(url_host):$HOST_PORT"
   if (( PHONE )); then
     # Printed once, to the terminal only; never logged or committed.

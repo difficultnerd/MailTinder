@@ -21,7 +21,7 @@ Phone mode (T-1108c, `demo.sh --phone`) adds two things:
   never shows in the process list) and compared in constant time. More than five
   failed attempts within 60 s, counted globally -- behind the tunnel every
   request arrives from the loopback tunnel process, so a per-address key is
-  meaningless -- answer `429` for five minutes (review finding N2).
+  meaningless -- answer `429` for a minute (review finding N2; 60 s so a typo cannot lock the owner out for long).
 * `--fake-google <loopback url>` proxies EXACTLY `GET
   /fake-google/o/oauth2/v2/auth` (query string included) to fake-google on
   loopback: that is the one server-to-server path the browser needs for the
@@ -74,7 +74,7 @@ VIEWPORT_META = b'<meta name="viewport" content="width=device-width, initial-sca
 # Rate-limit tunables (Behaviour 2, review finding N2).
 MAX_FAILURES = 5
 FAILURE_WINDOW_S = 60.0
-BLOCK_SECONDS = 300.0
+BLOCK_SECONDS = 60.0
 
 
 def load_headers(config_path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
@@ -151,10 +151,14 @@ class AccessControl:
                 return "blocked"
             if self._valid(header):
                 return "ok"
+            if not header:
+                # No credentials at all is a browser's normal first request (and its icon requests) before it shows the prompt. It is not a guess, and
+                # counting it locked the right code out for everyone on the first real phone visit (AAR 3.88).
+                return "unauthorized"
             self._failures = [t for t in self._failures if now - t <= self._window]
             self._failures.append(now)
             if len(self._failures) > self._max:
-                # More than five failures in the window: block for five minutes.
+                # More than five failures in the window: block for BLOCK_SECONDS (60 s).
                 self._blocked_until = now + self._block
                 self._failures = []
                 return "blocked"
