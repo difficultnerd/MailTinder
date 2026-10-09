@@ -264,30 +264,38 @@ impl Ui {
     /// `click()` remains the fallback for a node WebDriver cannot interact
     /// with (for example an element its hit test finds covered).
     pub async fn tap(&self, label: &str) -> Result<(), E2eError> {
-        let marked = self
-            .poll_script(MARK_TAPPABLE_JS, vec![json!(label)])
-            .await?;
-        if !marked {
-            self.capture_failure(label).await;
-            return Err(E2eError::NotFound(label.to_owned()));
-        }
-        let clicked_natively = match self.client.find(Locator::Css(MARKED_SELECTOR)).await {
-            Ok(element) => element.click().await.is_ok(),
-            Err(_) => false,
-        };
-        if clicked_natively {
-            return Ok(());
-        }
-        let clicked = self
-            .client
-            .execute(CLICK_MARKED_JS, vec![])
-            .await
-            .map_err(wd)?;
-        if clicked.as_bool() == Some(true) {
-            Ok(())
-        } else {
-            self.capture_failure(label).await;
-            Err(E2eError::NotFound(label.to_owned()))
+        // Flutter web rebuilds its semantics tree while the page settles (slower on a cold CI runner): a node can be found and tagged,
+        // then replaced before the click lands, and a miss at any step used to be fatal. Retry the whole find -> tag -> click sequence
+        // until it succeeds or FIND_TIMEOUT passes; every step is a no-op on a miss, so repeating it is safe.
+        let deadline = Instant::now() + FIND_TIMEOUT;
+        loop {
+            let marked = self
+                .client
+                .execute(MARK_TAPPABLE_JS, vec![json!(label)])
+                .await
+                .map_err(wd)?;
+            if marked.as_bool() == Some(true) {
+                let clicked_natively = match self.client.find(Locator::Css(MARKED_SELECTOR)).await {
+                    Ok(element) => element.click().await.is_ok(),
+                    Err(_) => false,
+                };
+                if clicked_natively {
+                    return Ok(());
+                }
+                let clicked = self
+                    .client
+                    .execute(CLICK_MARKED_JS, vec![])
+                    .await
+                    .map_err(wd)?;
+                if clicked.as_bool() == Some(true) {
+                    return Ok(());
+                }
+            }
+            if Instant::now() >= deadline {
+                self.capture_failure(label).await;
+                return Err(E2eError::NotFound(label.to_owned()));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
