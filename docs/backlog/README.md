@@ -159,6 +159,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1112a](T-1112a-unsub-e2e-startup-mode.md) | unsub service e2e start-up mode | M11 | strong | T-500b, T-500c, T-701, T-708 |
 | [T-1112b](T-1112b-local-job-runner.md) | Local job runner for e2e mode | M11 | strong | T-500b, T-500c |
 | [T-1112c](T-1112c-reject-reaches-unsubscribe.md) | Wire the runner; reject -> unsubscribe proof | M11 | strong | T-1112a, T-1112b |
+| [T-1112d](T-1112d-unsub-no-testkit-ci-gate.md) | Run the unsub no-testkit start-up refusal test in CI | M11 | sonnet | T-1112a |
 | [T-1108a](T-1108a-demo-start-stop-check.md) | demo.sh start, stop, status, check | M11 | sonnet | T-500b, T-500c, T-1101a |
 | [T-1108b](T-1108b-demo-seed.md) | Demo seed: fake mailbox and invite URL | M11 | sonnet | T-1108a |
 | [T-1108c](T-1108c-demo-phone-access.md) | demo --phone: HTTPS tunnel and access code | M11 | sonnet | T-1108a |
