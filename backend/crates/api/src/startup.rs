@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use adapters_gcp::{
     production_clock, production_rng, CloudKms, CloudTasksScheduler, EnvelopeKeyService,
-    FirestoreConfig, FirestoreStore, GcpHttp, GoogleCallerVerifier, KmsSystemKeyService,
-    MetadataTokenSource, SecretManagerSecrets, SecretsConfig, SystemClock, TasksConfig,
-    TokenSource,
+    FirestoreConfig, FirestoreStore, GcpHttp, GcpTokenSource, GeminiClassifier, GeminiConfig,
+    GoogleCallerVerifier, KmsSystemKeyService, MetadataTokenSource, SecretManagerSecrets,
+    SecretsConfig, SystemClock, TasksConfig, TokenSource,
 };
 use adapters_gmail::identity::{
     GoogleIdentity, GoogleIdentityConfig, GOOGLE_AUTH_ENDPOINT, GOOGLE_JWKS_URI,
@@ -23,8 +23,9 @@ use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
 use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{
-    AppFolderStore, CallerVerifier, HttpEgress, IdentityProvider, InviteMailer, JobScheduler,
-    KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore, SystemKeyService,
+    AppFolderStore, CallerVerifier, Classifier, HttpEgress, IdentityProvider, InviteMailer,
+    JobScheduler, KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore,
+    SystemKeyService,
 };
 use url::Url;
 
@@ -47,6 +48,9 @@ const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GOOGLEAPIS_ROOT: &str = "https://www.googleapis.com";
 /// The Cloud Tasks queue for unsubscribe jobs.
 const QUEUE_ID: &str = "unsubscribe";
+/// The default pinned Gemini Flash-Lite model version (T-904). Never an alias
+/// like `-latest`; override only with a pinned version through `GEMINI_MODEL`.
+const GEMINI_MODEL: &str = "gemini-2.0-flash-lite-001";
 
 /// A start-up failure. Nothing is printed through the print macros; the
 /// process logs one line through `tracing` and exits non-zero.
@@ -127,12 +131,38 @@ pub async fn run() -> Result<(), SetupError> {
     .map_err(|_| SetupError::Obs)?;
     obs::register_http_routes(crate::ROUTE_TEMPLATES);
 
-    let (ports, config) = if e2e_requested() {
-        e2e_startup()?
+    let (ports, config, classifiers) = if e2e_requested() {
+        let (ports, config) = e2e_startup()?;
+        (ports, config, crate::classify::ClassifierSet::default())
     } else {
-        build_production_ports().await?
+        let (ports, config) = build_production_ports().await?;
+        let classifiers = production_classifiers(&ports)?;
+        (ports, config, classifiers)
     };
-    serve(ports, config).await
+    serve(ports, config, classifiers).await
+}
+
+/// Build the bake-off models for production: today the Gemini classifier on
+/// Vertex AI (T-904). The service-account token comes from the metadata server;
+/// no key exists (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+fn production_classifiers(ports: &Ports) -> Result<crate::classify::ClassifierSet, SetupError> {
+    let project = env("GOOGLE_CLOUD_PROJECT")?;
+    let model = env("GEMINI_MODEL").unwrap_or_else(|_| GEMINI_MODEL.to_owned());
+    let tokens: Arc<dyn GcpTokenSource> =
+        Arc::new(MetadataTokenSource::new(Arc::clone(&ports.clock)));
+    let gemini: Arc<dyn Classifier> = Arc::new(GeminiClassifier::new(
+        GeminiConfig::new(project, model),
+        Arc::clone(&ports.egress),
+        tokens,
+    ));
+    Ok(crate::classify::ClassifierSet {
+        gemini: Some(gemini),
+        jev: None,
+    })
 }
 
 #[cfg(feature = "testkit")]
@@ -272,9 +302,13 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
 }
 
 /// Bind and serve the router with graceful shutdown on `SIGTERM` and `SIGINT`.
-async fn serve(ports: Ports, config: ApiConfig) -> Result<(), SetupError> {
+async fn serve(
+    ports: Ports,
+    config: ApiConfig,
+    classifiers: crate::classify::ClassifierSet,
+) -> Result<(), SetupError> {
     let listen = SocketAddr::new(config.bind_host, config.port);
-    let state = crate::app_state(Arc::new(ports), Arc::new(config));
+    let state = crate::app_state_with_classifiers(Arc::new(ports), Arc::new(config), classifiers);
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|_| SetupError::Adapter)?;
