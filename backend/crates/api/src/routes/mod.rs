@@ -15,6 +15,8 @@ pub mod rules;
 pub mod session;
 pub mod stats;
 pub mod swipes;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 
 use axum::routing::{delete, get, patch, post};
 use axum::Router;

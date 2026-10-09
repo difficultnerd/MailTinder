@@ -77,6 +77,28 @@ where
         }
     }
 
+    // Binary content (a sealed ciphertext, not text) round-trips byte-for-byte.
+    // A text-only transport that lossily decodes the body corrupts it here.
+    {
+        let t = make().await;
+        let payload: Vec<u8> = vec![
+            0x00, 0xff, 0xfe, 0x9c, 0x80, 0xc3, 0x28, 0xa0, 0x01, 0x7f, 0xed, 0x0a, 0xd9,
+        ];
+        let _ = t
+            .store
+            .write(&t.ctx, &payload, None)
+            .await
+            .map_err(|e| format!("write: {e:?}"))?;
+        let read = t
+            .store
+            .read(&t.ctx)
+            .await
+            .map_err(|e| format!("read: {e:?}"))?;
+        if read.as_ref().map(|(bytes, _)| bytes.as_slice()) != Some(payload.as_slice()) {
+            return Err("binary content should round-trip byte-for-byte".into());
+        }
+    }
+
     // user_deletes_file -> read None, write(Some(old)) Conflict.
     {
         let t = make().await;

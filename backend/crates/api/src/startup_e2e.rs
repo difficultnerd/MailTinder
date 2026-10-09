@@ -89,6 +89,9 @@ where
         Url::parse(&fake_google_raw).map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
 
     let (mut ports, fakes) = testkit::fake_ports();
+    // Standalone services share real time: fake-google checks provider-token
+    // expiry against it, and OAuth claims must agree with the API clock.
+    ports.clock = adapters_gcp::production_clock();
     let clock = Arc::clone(&ports.clock);
     let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(&fake_google)?);
 
