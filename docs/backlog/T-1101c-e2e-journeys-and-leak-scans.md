@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 400 lines of code plus tests | T-006, T-1005, T-1101b |
+| M11 | sonnet | about 400 lines of code plus tests | T-006, T-1005, T-1101b, T-1101d, T-1101e, T-1101f |
 
 **Read only these spec sections:** S10 sections 3.3, 6.3 (rows "Disconnect cancels", "Account deletion order"), 7.2 (row "CSP compatibility") and 7.3 (`docs/specs/S10-test-strategy.md`); S5 "Logs and telemetry", "Browser" and the LOG-1 row of "Deletion tests" (`docs/specs/S5-data-inventory.md`); S2 NA-01 AC2, AU-05 AC1, AU-06 AC1, FD-01 AC3, XC-01; S3 INV-1. Nothing else is needed.
 
