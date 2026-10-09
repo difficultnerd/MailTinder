@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b |
 
-**Read only these spec sections:** S10 sections 3.3 (journey list), 6.2 (one-click route group), 6.3 (rows "Reject queues job", "Undo before due time", "Every outcome recorded") and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 AU-07 AC1, FD-02 AC1 and AC2, SW-04 AC2, SW-05 AC2, UN-01 AC1 and AC3, UN-02 AC1. Nothing else is needed.
+**Read only these spec sections:** S10 sections 3.3 (journey list) and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 FD-02 AC1 and AC2. Nothing else is needed.
 
 **Split from T-1101b (2026-10-09):** the original task bundled five journeys and failed repeatedly on the per-run budget; each journey is now its own task so they can be built in parallel. Helpers in `backend/crates/e2e/src/lib.rs` come from T-1101b.
 
@@ -20,7 +20,7 @@ One browser journey on the T-1101a harness: a Feed that interleaves two connecte
 
 ## Types and signatures
 
-Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a helper to `lib.rs` only if the journey needs one, keeping existing signatures.
+Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); extract the add-second-mailbox flow (Settings, Connected accounts, Add Gmail, the Confirm-it's-you popup, fake-google selecting the second mailbox, return) as a named helper in `lib.rs`: `pub async fn connect_second_mailbox(ui: &mut Ui, stack: &Stack, email: &str) -> Result<(), E2eError>`; T-1101c journey 8 reuses it. End the journey with `finish_journey`.
 
 ## Algorithm
 
@@ -47,6 +47,8 @@ All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts 
 - Read events only after the mark, so earlier journeys' lines do not count.
 - No real hosts, no real mail.
 - The Add Gmail flow uses a popup window; switch to it, finish the fake-google re-authentication, switch back; allow the app time to start the link.
+
+- Events (S10 8): journey 3 emits no metric event today, so no event assertion applies here; if one appears, the test must fail and name it.
 
 ## Out of scope
 

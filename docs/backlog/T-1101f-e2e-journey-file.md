@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b |
 
-**Read only these spec sections:** S10 sections 3.3 (journey list), 6.2 (one-click route group), 6.3 (rows "Reject queues job", "Undo before due time", "Every outcome recorded") and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 AU-07 AC1, FD-02 AC1 and AC2, SW-04 AC2, SW-05 AC2, UN-01 AC1 and AC3, UN-02 AC1. Nothing else is needed.
+**Read only these spec sections:** S10 sections 3.3 (journey list) and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 SW-04 AC2. Nothing else is needed.
 
 **Split from T-1101b (2026-10-09):** the original task bundled five journeys and failed repeatedly on the per-run budget; each journey is now its own task so they can be built in parallel. Helpers in `backend/crates/e2e/src/lib.rs` come from T-1101b.
 
@@ -20,7 +20,7 @@ One browser journey: tapping File, creating the category Receipts and confirming
 
 ## Types and signatures
 
-Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a helper to `lib.rs` only if the journey needs one, keeping existing signatures.
+Use the helpers from T-1101b (`EventLog`, `signed_in_user`, `finish_journey`); add a helper to `lib.rs` only if the journey needs one, keeping existing signatures.
 
 ## Algorithm
 
@@ -40,12 +40,12 @@ All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts 
 
 ## Edge cases and traps
 
-- Advance the virtual clock through `TestControl`; never `sleep` for minutes. Poll with a short timeout only for asynchronous delivery.
-- The testbed listens on loopback; `unsub` runs with the test egress policy that allows exactly the testbed socket (S10 6.2). Do not loosen the production policy.
 - Each journey seeds its own accounts with unique `sub` values so tests do not see each other's mail.
 - Read events only after the mark, so earlier journeys' lines do not count.
 - No real hosts, no real mail.
 - Wait for the confirmation text "Filed under Receipts."; the field is a web text input, type into it through the harness's native input helper.
+
+- Events (S10 8): the `swipe` assertion is deferred to T-1114 (ADR 0002); journey 6 emits no other metric event today, so assert none appears after the mark.
 
 ## Out of scope
 

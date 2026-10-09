@@ -31,6 +31,9 @@ impl EventLog {
 }
 pub struct MetricEvent { pub event_type: String, pub outcome: Option<String> } // field names from T-307's schema
 
+/// Ends every journey: `save_browser_dump` then `assert_no_csp_violation`. `Ui` runs this in its teardown (Drop or an explicit `finish()` that every journey must call and that the harness fails the test without), so no journey can omit the T-1101c scan inputs.
+pub async fn finish_journey(ui: Ui) -> Result<(), E2eError>;
+
 /// Signs a seeded account in through the UI and returns a ready Ui on the Feed.
 pub async fn signed_in_user(stack: &Stack, sub: &str, email: &str, fixtures: &[&str]) -> Result<Ui, E2eError>;
 ```
@@ -39,6 +42,7 @@ pub async fn signed_in_user(stack: &Stack, sub: &str, email: &str, fixtures: &[&
 
 All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts and corpus fixtures from T-204 only.
 
+0. **Helpers.** Implement the helpers above, including `finish_journey` (calls `save_browser_dump` and `assert_no_csp_violation`; T-1101c supplies the scanning, this task supplies the call so every journey in b, d, e and f gets it). The sessions journey calls it.
 1. **Journey 2, sign in again** (AU-07 AC1): sign in as user A in browser session 1; open browser session 2 and sign in as the same account; in session 1 tap "Keep" (or pull to refresh): the app gets `401`, wipes and shows the Sign-in default ("Continue with Google" visible, no card text).
 
 ## Acceptance criteria

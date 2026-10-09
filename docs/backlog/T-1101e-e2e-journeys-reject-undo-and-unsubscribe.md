@@ -21,7 +21,7 @@ Two browser journeys: rejecting a one-click list message and undoing before the 
 
 ## Types and signatures
 
-Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a helper to `lib.rs` only if the journey needs one, keeping existing signatures.
+Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a helper to `lib.rs` only if the journey needs one, keeping existing signatures. End each journey with `finish_journey`.
 
 ## Algorithm
 
