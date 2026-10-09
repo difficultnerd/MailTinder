@@ -17,6 +17,8 @@ T-1101b step 6 asked journeys 4 to 6 to assert `swipe` and `undo` metric events.
 
 ## Consequence
 
-The allowlist in `backend/crates/obs/src/registry.rs` names events that nothing emits yet; that gap is real and is owned by T-1114. Ratified by the owner on 2026-10-09. T-1114 must land before any trial relies on A1.
+The allowlist in `backend/crates/obs/src/registry.rs` names events that nothing emits yet; that gap is real and is owned by T-1114. Ratified by the owner on 2026-10-09 (owner's reply in the on-call session, ~19:55 UTC: "ADR0002 accepted"; recorded by the on-call agent at the owner's instruction, and the owner may additionally approve this PR). T-1114 must land before any trial relies on A1.
 
 T-1101b step 6 is amended. Revisit if swipe/undo telemetry is added later (then restore the assertions in the same change).
+
+Enforcement: T-1107 (the budget, monitoring and alert task that builds the `unrecoverable_actions` metric behind alert A1) now depends on T-1114, so the alert cannot be built or go live before the events it watches are emitted.

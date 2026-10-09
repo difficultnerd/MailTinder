@@ -152,7 +152,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1104](T-1104-build-and-deploy-pipeline.md) | Build and deploy pipeline | M11 | sonnet | T-006, T-1103, needs S11 |
 | [T-1105](T-1105-staging-smoke-tests-and-zap.md) | Staging smoke tests and the ZAP baseline | M11 | sonnet | T-301, T-302, T-304, T-1104 |
 | [T-1106](T-1106-nightly-live-gmail-contract-run.md) | Nightly live Gmail contract run | M11 | sonnet | T-203, T-401, T-403, T-1103 |
-| [T-1107](T-1107-budget-monitoring-and-alerts.md) | Budget, monitoring and alerts | M11 | sonnet | T-307, T-1102b, needs S11 |
+| [T-1107](T-1107-budget-monitoring-and-alerts.md) | Budget, monitoring and alerts | M11 | sonnet | T-307, T-1102b, T-1114, needs S11 |
 | [T-1109](T-1109-mutation-testing-pilot.md) | Mutation testing pilot | M11 | sonnet | T-004, T-104, T-105a, T-109 |
 | [T-1110](T-1110-property-tests-hostile-input.md) | Property tests for every parser of hostile input | M11 | sonnet | T-102, T-306, T-406, T-701 |
 | [T-1111](T-1111-visual-and-accessibility-regression.md) | Screenshot and accessibility regression tests | M11 | sonnet | T-1001a, T-1002b, T-1003, T-1005, T-1006a |
