@@ -153,12 +153,16 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1105](T-1105-staging-smoke-tests-and-zap.md) | Staging smoke tests and the ZAP baseline | M11 | sonnet | T-301, T-302, T-304, T-1104 |
 | [T-1106](T-1106-nightly-live-gmail-contract-run.md) | Nightly live Gmail contract run | M11 | sonnet | T-203, T-401, T-403, T-1103 |
 | [T-1107](T-1107-budget-monitoring-and-alerts.md) | Budget, monitoring and alerts | M11 | sonnet | T-307, T-1102b, needs S11 |
-| [T-1108](T-1108-demo-mode.md) | Demo mode: run the whole app locally and click through it | M11 | sonnet | T-500b, T-500c, T-1112, T-1101a |
 | [T-1109](T-1109-mutation-testing-pilot.md) | Mutation testing pilot | M11 | sonnet | T-004, T-104, T-105a, T-109 |
 | [T-1110](T-1110-property-tests-hostile-input.md) | Property tests for every parser of hostile input | M11 | sonnet | T-102, T-306, T-406, T-701 |
 | [T-1111](T-1111-visual-and-accessibility-regression.md) | Screenshot and accessibility regression tests | M11 | sonnet | T-1001a, T-1002b, T-1003, T-1005, T-1006a |
-| [T-1112](T-1112-unsub-e2e-config-and-local-job-runner.md) | unsub test configuration and a local job runner (reject -> unsubscribe works in the demo) | M11 | strong | T-500b, T-500c, T-701, T-702, T-703, T-708 |
-| [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108 |
+| [T-1112a](T-1112a-unsub-e2e-startup-mode.md) | unsub service e2e start-up mode | M11 | strong | T-500b, T-500c, T-701, T-708 |
+| [T-1112b](T-1112b-local-job-runner.md) | Local job runner for e2e mode | M11 | strong | T-500b, T-500c |
+| [T-1112c](T-1112c-reject-reaches-unsubscribe.md) | Wire the runner; reject -> unsubscribe proof | M11 | strong | T-1112a, T-1112b |
+| [T-1108a](T-1108a-demo-start-stop-check.md) | demo.sh start, stop, status, check | M11 | sonnet | T-500b, T-500c, T-1101a |
+| [T-1108b](T-1108b-demo-seed.md) | Demo seed: fake mailbox and invite URL | M11 | sonnet | T-1108a |
+| [T-1108c](T-1108c-demo-phone-access.md) | demo --phone: HTTPS tunnel and access code | M11 | sonnet | T-1108a |
+| [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108a, T-1108c |
 | [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.

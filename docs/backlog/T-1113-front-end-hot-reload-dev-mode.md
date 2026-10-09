@@ -2,9 +2,9 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 150 lines of code plus tests | T-1108 |
+| M11 | sonnet | about 150 lines of code plus tests | T-1108a, T-1108c |
 
-**Read only these spec sections:** `docs/backlog/T-1108-demo-mode.md`, `scripts/e2e_host.py`, `scripts/demo.sh`. Nothing else is needed.
+**Read only these spec sections:** `docs/backlog/T-1108a-demo-start-stop-check.md`, `scripts/e2e_host.py`, `scripts/demo.sh`. Nothing else is needed.
 
 ## Goal
 
@@ -14,7 +14,7 @@
 
 1. `--dev` starts the same backend stack as `demo.sh` but serves the app from `flutter run -d web-server --web-hostname 127.0.0.1 --web-port <free port>` (hot reload and hot restart enabled); `e2e_host.py` gains a `--dev-upstream http://127.0.0.1:<port>` option that proxies `/` and the dev server's websocket to it and keeps proxying `/api/**` to the api, adding the same security headers and the same access control as normal demo mode.
 2. Edits are made in the demo worktree; a small helper `scripts/demo_reload.sh` triggers a hot reload by sending `r` to the dev server's stdin (or the documented Flutter mechanism), so a coding agent can change a file and refresh the view without restarting anything.
-3. Phone access and the access code work exactly as in T-1108 (`--phone`); a warning in the output states that the dev server is slower than the release build and is for look-and-feel iteration only.
+3. Phone access and the access code work exactly as in T-1108c (`--phone`); a warning in the output states that the dev server is slower than the release build and is for look-and-feel iteration only.
 
 ## Acceptance criteria
 
