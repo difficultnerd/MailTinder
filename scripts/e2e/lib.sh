@@ -17,10 +17,11 @@
 # Print a free TCP port on loopback (scripts/free_port.py; stdlib only).
 free_port() { python3 "$REPO/scripts/free_port.py"; }
 
-# Wait until an HTTP URL answers, up to 60 s. Timing goes to stderr.
+# Wait until an HTTP URL answers, up to `max` seconds (default 60). Timing goes
+# to stderr. Dev mode passes a larger max because `flutter run` recompiles.
 wait_http() {
-  local url="$1" waited=0
-  while (( waited < 60 )); do
+  local url="$1" max="${2:-60}" waited=0
+  while (( waited < max )); do
     if curl -sf --max-time 2 "$url" >/dev/null; then
       echo "    ready after ${waited}s: $url" >&2
       return 0
