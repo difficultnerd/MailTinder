@@ -21,6 +21,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import platform
 import socketserver
 import subprocess
@@ -170,6 +171,17 @@ class E2eHostPhoneTest(unittest.TestCase):
         status, body = http_get(host.port, "/", auth=auth_header(CODE))
         self.assertEqual(status, 200, "with the code the page is served")
         self.assertIn(b"<html", body.lower())
+
+    def test_demo_credentialless_requests_never_lock_out_the_right_code(self) -> None:
+        """A browser's first request, favicon and icon requests carry no credentials; they are the challenge step, not guesses (AAR 3.88)."""
+        code_file = write_code_file(self.tmp)
+        host = _HostServer(self.tmp, ["--access-code-file", str(code_file)])
+        self.addCleanup(host.close)
+        for _ in range(25):
+            status, _ = http_get(host.port, "/favicon.ico")
+            self.assertEqual(status, 401, "credential-less requests are refused with 401, never 429")
+        status, _ = http_get(host.port, "/", auth=auth_header(CODE))
+        self.assertEqual(status, 200, "the right code still works after a burst of credential-less requests")
 
     def test_demo_page_has_viewport_meta(self) -> None:
         # The temp index.html deliberately has no viewport meta; the front door
@@ -358,6 +370,24 @@ class DemoPhoneGuardTest(unittest.TestCase):
                 self.assertIn(needle.lower(), combined)
 
     @unittest.skipUnless(ARCH, f"unsupported test architecture {platform.machine()}")
+    def test_demo_never_executes_cloudflared_before_its_hash_is_verified(self) -> None:
+        """Security review N1: a binary whose SHA-256 does not match the pin must not be run at all, not even with --version."""
+        marker = self.tmp / "was-executed"
+        stub = self.tmp / "cloudflared-trap"
+        stub.write_text(f'#!/usr/bin/env bash\ntouch "{marker}"\necho "cloudflared version 2026.10.0 (trap)"\n')
+        os.chmod(stub, 0o500)
+        proc = self._run(
+            {
+                "DEMO_CLOUDFLARED": str(stub),
+                "DEMO_CLOUDFLARED_SHA256": str(self._pin(stub, sha="0" * 64)),
+            }
+        )
+        combined = (proc.stdout + proc.stderr).lower()
+        self.assertNotEqual(proc.returncode, 0, combined)
+        self.assertIn("sha-256 mismatch", combined)
+        self.assertFalse(marker.exists(), "an unverified cloudflared was executed")
+
+    @unittest.skipUnless(ARCH, f"unsupported test architecture {platform.machine()}")
     def test_demo_refuses_non_loopback_tunnel_target(self) -> None:
         stub = self._stub()
         pin = self._pin(stub)
@@ -413,6 +443,40 @@ class DemoPhoneStackTest(unittest.TestCase):
         )
         os.chmod(stub, 0o500)
         return stub
+
+    def test_demo_phone_signin_journey_through_the_front_door(self) -> None:
+        """The headline user story on the PHONE path: credential-less requests, then sign in through the front door using the public origin.
+        Runs the real api + fake-google + seed (not a stub of Google): fails if the fake OAuth client is registered for the wrong origin (invalid_request)."""
+        stub = self._stub()
+        pin = self.tmp / "cloudflared.sha256"
+        digest = hashlib.sha256(stub.read_bytes()).hexdigest()
+        pin.write_text(f"version 2026.10.0\nsha256 linux-amd64 {digest}\nsha256 linux-arm64 {digest}\n")
+        env = dict(os.environ)
+        env.update({"DEMO_CLOUDFLARED": str(stub), "DEMO_CLOUDFLARED_SHA256": str(pin)})
+        proc = subprocess.run(["bash", str(DEMO), "--phone"], cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=180)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        local = re.search(r"demo: running at (http://\S+)", proc.stdout)
+        code = re.search(r"access code[^:]*: (\S+)", proc.stdout)
+        token = re.search(r"#/invite\?t=([A-Za-z0-9_-]+)", proc.stdout)
+        self.assertTrue(local and code and token, proc.stdout)
+        code_file = self.tmp / "smoke-access-code"
+        code_file.write_text(code.group(1) + "\n")
+        os.chmod(code_file, 0o600)   # the access code is never put on a command line (T-1108c F1)
+        journey = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "demo_smoke.py"),
+                "--url", local.group(1),
+                "--origin", self.PUBLIC_URL,
+                "--code-file", str(code_file),
+                "--invite-token", token.group(1),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(journey.returncode, 0, journey.stdout + journey.stderr)
+        self.assertIn("PASS", journey.stdout)
 
     def test_demo_phone_exposes_only_the_front_door(self) -> None:
         stub = self._stub()

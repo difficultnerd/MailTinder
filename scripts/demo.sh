@@ -187,10 +187,12 @@ pinned_sha() {
   awk -v a="$1" '$1 == "sha256" && $2 == a {print $3; exit}' "$CLOUDFLARED_PIN" 2>/dev/null || true
 }
 
-# Check the binary's --version and SHA-256 against the pin BEFORE it is run
-# (behaviour: the version and hash are checked before cloudflared is started).
+# Verify cloudflared against the pin BEFORE it is ever executed, and run exactly the bytes that were verified.
+# Order (security review N1/N2): (1) copy the candidate into a private mode-700 file, (2) check the SHA-256 of THAT COPY, (3) only then run the
+# copy with --version, (4) remember the copy as CLOUDFLARED_VERIFIED; start_tunnel executes only that path. The original path is never
+# executed, so it cannot be swapped between verification and use, and an unverified binary is never run.
 verify_cloudflared() {
-  local bin arch expected_version expected_sha version actual_sha
+  local bin arch expected_version expected_sha version actual_sha copy
   if ! bin="$(cloudflared_bin)"; then
     echo "demo.sh: --phone needs cloudflared on PATH or at ~/bin/cloudflared" >&2
     exit 2
@@ -205,16 +207,24 @@ verify_cloudflared() {
     echo "demo.sh: refusing cloudflared: no pin for $arch in $CLOUDFLARED_PIN" >&2
     exit 2
   fi
-  version="$("$bin" --version 2>/dev/null || true)"
-  if [[ "$version" != *"$expected_version"* ]]; then
-    echo "demo.sh: refusing cloudflared: expected version $expected_version, got '${version:-none}'" >&2
-    exit 2
-  fi
-  actual_sha="$(sha256sum "$bin" | awk '{print $1}')"
+  mkdir -p "$RUN"
+  copy="$RUN/cloudflared"
+  rm -f -- "$copy"
+  ( umask 077; cp -- "$bin" "$copy" ) || { echo "demo.sh: refusing cloudflared: cannot copy it for verification" >&2; exit 2; }
+  chmod 700 "$copy"
+  actual_sha="$(sha256sum "$copy" | awk '{print $1}')"
   if [[ "$actual_sha" != "$expected_sha" ]]; then
+    rm -f -- "$copy"
     echo "demo.sh: refusing cloudflared: SHA-256 mismatch for $arch" >&2
     exit 2
   fi
+  version="$("$copy" --version 2>/dev/null || true)"
+  if [[ "$version" != *"$expected_version"* ]]; then
+    rm -f -- "$copy"
+    echo "demo.sh: refusing cloudflared: expected version $expected_version, got '${version:-none}'" >&2
+    exit 2
+  fi
+  CLOUDFLARED_VERIFIED="$copy"
 }
 
 # 16 characters from [A-Za-z0-9] from the OS random source (>= 95 bits).
@@ -262,7 +272,11 @@ phone_prepare() {
 # prints. The target is whatever phone_prepare/demo_start computed.
 start_tunnel() {
   local log="$LOGS/cloudflared.log" bin waited=0
-  bin="$(cloudflared_bin)"
+  bin="${CLOUDFLARED_VERIFIED:-}"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    echo "demo.sh: refusing to start the tunnel: no verified cloudflared (internal error)" >&2
+    return 1
+  fi
   start_bg cloudflared "$log" "$bin" tunnel --url "$TUNNEL_TARGET" --no-autoupdate
   while (( waited < 60 )); do
     PUBLIC_URL="$(grep -Eom1 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null || true)"
@@ -707,10 +721,15 @@ demo_start() {
 
   write_state
   phase "seeding the demo mailbox and invite (T-1108b)"
+  # The fake OAuth client's redirect_uri must be the origin the BROWSER uses: the public tunnel URL in --phone mode (the api builds redirect_uri
+  # from APP_ORIGIN = that URL), the local address otherwise. Registering the local one in phone mode made "Continue with Google" fail with
+  # invalid_request on the first real phone sign-in (AAR 3.89).
+  local seed_origin="http://$(url_host):$HOST_PORT"
+  if (( PHONE )); then seed_origin="$PUBLIC_URL"; fi
   python3 "$REPO/scripts/demo_seed.py" \
     --fake-google-url "http://127.0.0.1:$FAKE_PORT" \
     --api-url "http://127.0.0.1:$API_PORT" \
-    --app-origin "http://$(url_host):$HOST_PORT"
+    --app-origin "$seed_origin"
   echo "demo: running at http://$(url_host):$HOST_PORT"
   if (( DEV )); then
     echo "demo: dev mode - the app is served by 'flutter run' (hot reload); it is slower than the release build and is for look-and-feel iteration only"

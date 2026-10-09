@@ -49,6 +49,10 @@ tokio = { workspace = true, features = ["test-util"] }
 aes-gcm = { workspace = true, features = ["aes", "zeroize"] }
 zeroize.workspace = true
 async-trait.workspace = true
+# T-1112c: the reject -> unsubscribe proof drives the real `unsub` e2e router
+# and the `unsub-testbed`, in process, on free loopback ports.
+unsub = { workspace = true, features = ["testkit"] }
+unsub-testbed.workspace = true
 
 [lints]
 workspace = true

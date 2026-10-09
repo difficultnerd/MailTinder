@@ -77,3 +77,15 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+
+
+  # Binary policy (2026-10-09): never commit a built executable, an unknown binary, a file over 1 MB or a tool/cache directory.
+  - repo: local
+    hooks:
+      - id: no-binaries
+        name: binary policy (tools/check_no_binaries.py)
+        entry: python3 tools/check_no_binaries.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
