@@ -17,6 +17,7 @@ obs.workspace = true
 svc-common.workspace = true
 adapters-gcp.workspace = true
 adapters-gmail.workspace = true
+adapters-models.workspace = true
 egress.workspace = true
 serde.workspace = true
 serde_json.workspace = true

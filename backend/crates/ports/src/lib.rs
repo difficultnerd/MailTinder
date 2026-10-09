@@ -15,6 +15,7 @@ pub mod invite_mailer;
 pub mod keys;
 pub mod mail;
 pub mod ports;
+pub mod prompt;
 pub mod rng;
 pub mod scheduler;
 pub mod secrets;
