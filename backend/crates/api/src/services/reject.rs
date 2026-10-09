@@ -295,21 +295,49 @@ fn undo_payload(
     }
 }
 
-/// The plaintext sealed as the job target: the method name, then the target
-/// parts, joined with `\n`. A one-click URL is `one_click\n<url>`; a mailto is
-/// `mailto\n<to>\n<subject>\n<body>` with empty strings for absent parts (the
-/// `MailtoTarget` constructor refuses a newline in any part). T-701 splits on
-/// `\n` to read it back.
+/// The plaintext sealed as the job target: exactly what `unsub`'s sender
+/// expects (T-701 says `ClaimedJob.target` is "an https URL or a mailto URI").
+/// A one-click job seals the bare https URL; a mailto seals a `mailto:` URI.
+/// The method is already `job.method`, so it is not repeated here; the senders
+/// re-parse the value with `parse_target`/`MailtoTarget::parse`.
 fn target_string(target: &UnsubscribeTarget) -> String {
     match target {
-        UnsubscribeTarget::OneClick(url) => format!("one_click\n{url}"),
-        UnsubscribeTarget::Mailto(m) => format!(
-            "mailto\n{}\n{}\n{}",
-            m.to(),
-            m.subject().unwrap_or_default(),
-            m.body().unwrap_or_default()
-        ),
+        UnsubscribeTarget::OneClick(url) => url.as_str().to_owned(),
+        UnsubscribeTarget::Mailto(m) => {
+            let mut uri = format!("mailto:{}", m.to());
+            let mut separator = '?';
+            if let Some(subject) = m.subject() {
+                uri.push(separator);
+                separator = '&';
+                uri.push_str("subject=");
+                uri.push_str(&percent_encode_field(subject));
+            }
+            if let Some(body) = m.body() {
+                uri.push(separator);
+                uri.push_str("body=");
+                uri.push_str(&percent_encode_field(body));
+            }
+            uri
+        }
     }
+}
+
+/// Percent-encode one `mailto:` field value so `MailtoTarget::parse` decodes it
+/// back unchanged: every byte outside the RFC 3986 unreserved set becomes
+/// `%XX` (RFC 6068, no form `+`).
+fn percent_encode_field(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0F)]));
+        }
+    }
+    out
 }
 
 /// Seal one field under the user's key with the AAD `{user, scope, field}`.
@@ -640,4 +668,77 @@ fn apply(s: &mut UserState, w: &Writes) {
     }
     s.totals.triaged = s.totals.triaged.saturating_add(1);
     s.totals.cleared = s.totals.cleared.saturating_add(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use domain::{MailtoError, MailtoTarget};
+
+    use super::{percent_encode_field, target_string, UnsubscribeTarget, Url};
+
+    /// F1: `percent_encode_field` keeps the RFC 3986 unreserved set and encodes
+    /// every other byte as `%XX` — `+` included (RFC 6068 has no form `+`, so a
+    /// decoded plus stays a plus) and multi-byte UTF-8 one byte at a time.
+    #[test]
+    fn reject_percent_encode_field_keeps_unreserved_and_encodes_the_rest() {
+        assert_eq!(percent_encode_field("AZaz09-._~"), "AZaz09-._~");
+        assert_eq!(percent_encode_field("a b"), "a%20b");
+        assert_eq!(percent_encode_field("&&=="), "%26%26%3D%3D");
+        assert_eq!(percent_encode_field("a+b"), "a%2Bb");
+        assert_eq!(percent_encode_field("100%"), "100%25");
+        assert_eq!(percent_encode_field("café"), "caf%C3%A9");
+    }
+
+    /// F1: a one-click target is sealed as the bare URL, exactly what the
+    /// sender re-parses, and never percent-encoded.
+    #[test]
+    fn reject_one_click_target_string_is_the_bare_url() -> Result<(), Box<dyn std::error::Error>> {
+        let url = Url::parse("https://news.example.com/u/one-click?a=1&b=2")?;
+        assert_eq!(
+            target_string(&UnsubscribeTarget::OneClick(url.clone())),
+            url.as_str()
+        );
+        Ok(())
+    }
+
+    /// F1: the mailto branch of `target_string` percent-encodes each field so
+    /// `MailtoTarget::parse` decodes it back unchanged. The subject and body
+    /// carry the bytes that would otherwise end the URI or split the query
+    /// (`&`, `=`, `?`, `#`, `%`), a literal `+` and a non-ASCII character; the
+    /// address itself is left unencoded.
+    #[test]
+    fn reject_mailto_target_string_round_trips_through_parse(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let original = MailtoTarget::new(
+            "unsub+lists@example.org",
+            Some("Re: unsubscribe & confirm? #1"),
+            Some("please remove me + café 100%"),
+        )?;
+        let uri = target_string(&UnsubscribeTarget::Mailto(original.clone()));
+        assert!(
+            uri.starts_with("mailto:unsub+lists@example.org?"),
+            "the address must not be encoded: {uri}"
+        );
+        let parsed = MailtoTarget::parse(&uri)?;
+        assert_eq!(
+            parsed, original,
+            "the mailto target must round-trip unchanged"
+        );
+        Ok(())
+    }
+
+    /// F1: a tab is allowed by `MailtoTarget::new` but the encoder emits it as
+    /// `%09`, which `parse` decodes back to a control character and therefore
+    /// refuses: a control character can never reach the sender.
+    #[test]
+    fn reject_mailto_target_string_refuses_a_control_character_on_parse(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let original = MailtoTarget::new("unsub@example.org", Some("tab\there"), None)?;
+        let uri = target_string(&UnsubscribeTarget::Mailto(original));
+        assert_eq!(
+            MailtoTarget::parse(&uri),
+            Err(MailtoError::ControlCharacter)
+        );
+        Ok(())
+    }
 }
