@@ -75,8 +75,10 @@ if [ ! -x "$BIN/cargo-mutants" ]; then
     echo "  cargo-mutants $("$BIN/cargo-mutants" --version)"
   else
     echo "No prebuilt cargo-mutants for $ARCH; building pinned $CM_VER with cargo..."
-    cargo install cargo-mutants --version "${CM_VER#v}" --locked --root "$ROOT/tools/.cargo-mutants"
-    ln -sf "$ROOT/tools/.cargo-mutants/bin/cargo-mutants" "$BIN/cargo-mutants"
+    # Install under tools/.bin (git-ignored), never under a tracked path: an earlier fallback root of tools/.cargo-mutants was swept into a
+    # commit by `git add -A` and put a 9.5 MB executable on main (AAR 3.79).
+    cargo install cargo-mutants --version "${CM_VER#v}" --locked --root "$BIN/cargo-mutants-root"
+    ln -sf "$BIN/cargo-mutants-root/bin/cargo-mutants" "$BIN/cargo-mutants"
     echo "  cargo-mutants $("$BIN/cargo-mutants" --version)"
   fi
 else
