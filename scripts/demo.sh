@@ -315,14 +315,21 @@ pgid_is_ours() {
 }
 
 demo_running() {
-  local url pgid start code_file
+  local url pgid start code_file code
   url="$(state_url)" || return 1
   [[ -n "$url" ]] || return 1
   # Phone mode puts the whole front door behind the access code, so a bare curl
   # is answered 401; authenticate from the mode-600 file when it is recorded.
+  # The code is fed to curl over stdin through `--config -`, never as an
+  # argument: `-u "demo:$(cat ...)"` would put the only credential protecting
+  # the public tunnel into /proc/<pid>/cmdline for the length of every status or
+  # start check (T-1108c F1). `printf` is a shell builtin, so the code never
+  # reaches any process's argv on the way in either.
   code_file="$(state_field access_code_file)"
   if [[ -n "$code_file" && -r "$code_file" ]]; then
-    curl -sf --max-time 2 -u "demo:$(cat "$code_file")" "$url/" >/dev/null 2>&1 || return 1
+    code="$(<"$code_file")"
+    printf 'user = "demo:%s"\n' "$code" \
+      | curl -sf --max-time 2 --config - "$url/" >/dev/null 2>&1 || return 1
   else
     curl -sf --max-time 2 "$url/" >/dev/null 2>&1 || return 1
   fi
