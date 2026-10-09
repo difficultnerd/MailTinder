@@ -64,6 +64,12 @@ enum SetupError {
     Missing(&'static str),
     #[error("invalid value for {0}")]
     Invalid(&'static str),
+    #[error("e2e mode requires a testkit build")]
+    #[allow(dead_code)]
+    E2eNeedsTestkit,
+    #[error("e2e start-up failed")]
+    #[allow(dead_code)]
+    E2e,
     #[error("adapter")]
     Adapter,
     #[error("obs")]
@@ -81,11 +87,18 @@ async fn main() -> ExitCode {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// True when the process was asked for e2e mode (`MT_E2E=1`). Read at run time
+/// and independently of the build: a build without the `testkit` feature uses
+/// it to refuse e2e outright instead of silently starting as production
+/// (S10 3.3).
+fn e2e_requested() -> bool {
+    std::env::var("MT_E2E").is_ok_and(|v| v == "1")
+}
+
+/// Select the start-up wiring once: e2e only when `MT_E2E=1`, otherwise the
+/// production wiring exactly as before. Observability is initialised first so
+/// a refusal (or a failure) is always logged.
 async fn run() -> Result<(), SetupError> {
-    let config = UnsubConfig::from_env().map_err(SetupError::Config)?;
-    let clock = production_clock();
-    let rng = production_rng();
     obs::init(
         "unsub",
         Arc::new(obs::StdoutSink) as Arc<dyn obs::LogSink>,
@@ -93,6 +106,35 @@ async fn run() -> Result<(), SetupError> {
     )
     .map_err(|_| SetupError::Obs)?;
     obs::register_http_routes(ROUTE_TEMPLATES);
+
+    if e2e_requested() {
+        return e2e_startup().await;
+    }
+    production_run().await
+}
+
+/// e2e start-up (T-1112a). Reachable only when the crate is built with the
+/// `testkit` feature.
+#[cfg(feature = "testkit")]
+async fn e2e_startup() -> Result<(), SetupError> {
+    unsub::startup_e2e::run_e2e()
+        .await
+        .map_err(|_| SetupError::E2e)
+}
+
+/// e2e was requested but this build has no `testkit` feature: refuse to start
+/// rather than run production wiring under an e2e environment (S10 3.3).
+#[cfg(not(feature = "testkit"))]
+#[allow(clippy::unused_async)]
+async fn e2e_startup() -> Result<(), SetupError> {
+    Err(SetupError::E2eNeedsTestkit)
+}
+
+#[allow(clippy::too_many_lines)]
+async fn production_run() -> Result<(), SetupError> {
+    let config = UnsubConfig::from_env().map_err(SetupError::Config)?;
+    let clock = production_clock();
+    let rng = production_rng();
 
     let project = env("GOOGLE_CLOUD_PROJECT")?;
     let unsub_base =
