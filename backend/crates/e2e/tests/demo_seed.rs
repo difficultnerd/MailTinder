@@ -150,8 +150,8 @@ async fn demo_check_feed_shows_seeded_sender() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .ok_or("the invite URL carries no token")?;
 
-    // The Feed shows the newest card first. The fake allocates message ids in
-    // corpus order and the Feed orders equal timestamps by id, so the first
+    // The Feed shows the newest card first. The fake stamps the seeded corpus
+    // with descending internal dates (its first case newest), so the first
     // corpus case's sender is the one on the first card.
     let corpus = testkit::corpus::load()?;
     let sender = corpus
