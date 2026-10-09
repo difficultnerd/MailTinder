@@ -389,6 +389,33 @@ impl Ui {
         }
     }
 
+    /// Poll until `text` appears in the *semantics tree* (not merely the page
+    /// text). The Feed shows the next card behind the focused one, excluded
+    /// from semantics (FD-01 AC1), so this distinguishes the card in focus from
+    /// the one behind it when a journey reads a card's sender in turn.
+    pub async fn wait_for_semantic_text(
+        &self,
+        text: &str,
+        timeout: Duration,
+    ) -> Result<(), E2eError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = self
+                .client
+                .execute(SEMANTIC_TEXT_JS, vec![json!(text)])
+                .await
+                .map_err(wd)?;
+            if found.as_bool() == Some(true) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                self.capture_failure(text).await;
+                return Err(E2eError::Timeout(format!("semantics to show {text}")));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// Best-effort capture of everything a failing step needs: a screenshot, the
     /// visible text and page source (each truncated to 200 KB), the semantics
     /// tree, the browser console log, the current URL and the tail of the
@@ -503,6 +530,26 @@ impl Ui {
             .last()
             .ok_or_else(|| E2eError::State("no browser window".to_owned()))?;
         self.client.switch_to_window(last).await.map_err(wd)
+    }
+
+    /// Switch back to the first (main) window after a popup.
+    pub async fn switch_to_main(&self) -> Result<(), E2eError> {
+        let handles = self.client.windows().await.map_err(wd)?;
+        let first = handles
+            .into_iter()
+            .next()
+            .ok_or_else(|| E2eError::State("no browser window".to_owned()))?;
+        self.client.switch_to_window(first).await.map_err(wd)
+    }
+
+    /// Reload the app: a fresh Feed load, which is how the api collects stored
+    /// unsubscribe outcomes into History (UN-01 AC3).
+    pub async fn reload(&self) -> Result<(), E2eError> {
+        self.client
+            .execute("location.reload(); return true;", vec![])
+            .await
+            .map(|_| ())
+            .map_err(wd)
     }
 
     /// Persisted browser state: `localStorage`, `sessionStorage`, IndexedDB
@@ -657,6 +704,129 @@ impl FakeGoogle {
         Ok(())
     }
 
+    /// The email address recorded for a seeded `sub`, or an error.
+    fn account_email(&self, sub: &str) -> Result<String, E2eError> {
+        self.accounts
+            .lock()
+            .map_err(|_| E2eError::State("accounts poisoned".to_owned()))?
+            .get(sub)
+            .map(|(email, _)| email.clone())
+            .ok_or_else(|| E2eError::State(format!("no seeded account for {sub}")))
+    }
+
+    /// Seed the named corpus cases into `sub`'s mailbox at explicit offsets, in
+    /// minutes after the harness base time. Lets a journey interleave two
+    /// mailboxes by received time (FD-02 AC1) without reading the wall clock.
+    pub async fn seed_messages_at(
+        &self,
+        sub: &str,
+        fixtures: &[(&str, i64)],
+    ) -> Result<(), E2eError> {
+        let email = self.account_email(sub)?;
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        for (id, minutes) in fixtures {
+            let case = corpus
+                .cases
+                .iter()
+                .find(|c| c.spec.id == *id)
+                .ok_or_else(|| E2eError::State(format!("no corpus case {id}")))?;
+            self.seed_case(&email, &case.eml, *minutes, &["INBOX"])
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Seed one one-click corpus message whose `List-Unsubscribe` URL is
+    /// rewritten to `one_click`, and return the fake message id. The fake does
+    /// not verify the DKIM signature body, so only the URL changes.
+    pub async fn seed_one_click_message(
+        &self,
+        sub: &str,
+        fixture_id: &str,
+        one_click: &Url,
+        labels: &[&str],
+    ) -> Result<String, E2eError> {
+        let email = self.account_email(sub)?;
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        let case = corpus
+            .cases
+            .iter()
+            .find(|c| c.spec.id == fixture_id)
+            .ok_or_else(|| E2eError::State(format!("no corpus case {fixture_id}")))?;
+        let eml = rewrite_list_unsubscribe(&case.eml, one_click)?;
+        self.seed_case(&email, &eml, 1, labels).await
+    }
+
+    /// Seed one corpus case into `sub`'s mailbox with its `INBOX` label and
+    /// return the fake message id.
+    pub async fn seed_message(&self, sub: &str, fixture_id: &str) -> Result<String, E2eError> {
+        let email = self.account_email(sub)?;
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        let case = corpus
+            .cases
+            .iter()
+            .find(|c| c.spec.id == fixture_id)
+            .ok_or_else(|| E2eError::State(format!("no corpus case {fixture_id}")))?;
+        self.seed_case(&email, &case.eml, 1, &["INBOX"]).await
+    }
+
+    /// POST one message to the fake Gmail mailbox and return its id.
+    async fn seed_case(
+        &self,
+        email: &str,
+        eml: &[u8],
+        minutes: i64,
+        labels: &[&str],
+    ) -> Result<String, E2eError> {
+        let received = time::OffsetDateTime::from_unix_timestamp(BASE_UNIX_SECONDS)
+            .map_err(|e| E2eError::State(format!("base timestamp: {e}")))?
+            + time::Duration::minutes(minutes);
+        let received = received
+            .format(&Rfc3339)
+            .map_err(|e| E2eError::State(format!("rfc3339: {e}")))?;
+        let value = self
+            .post(
+                "/__fake/gmail/messages",
+                json!({
+                    "email": email,
+                    "eml_base64": base64::engine::general_purpose::STANDARD.encode(eml),
+                    "labels": labels,
+                    "internal_date": received,
+                }),
+            )
+            .await?;
+        value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| E2eError::State("seed message returned no id".to_owned()))
+    }
+
+    /// The label set currently on `sub`'s message `id`, from the fake Gmail
+    /// control route (exact set, for undo-restores-labels assertions).
+    pub async fn message_labels(&self, sub: &str, id: &str) -> Result<Vec<String>, E2eError> {
+        let email = self.account_email(sub)?;
+        let url = endpoint(&self.base, &format!("/__fake/gmail/messages/{email}/{id}"));
+        let value: Value = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(http)?
+            .json()
+            .await
+            .map_err(http)?;
+        let labels = value
+            .get("labelIds")
+            .and_then(Value::as_array)
+            .ok_or_else(|| E2eError::State("label response had no labelIds".to_owned()))?;
+        Ok(labels
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect())
+    }
+
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
         let response = self
             .client
@@ -700,6 +870,17 @@ impl TestControl {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| E2eError::State("invite response had no token".to_owned()))
+    }
+
+    /// Advance the api's virtual job clock by `by` (testkit only). Journeys use
+    /// this instead of sleeping for minutes (S10 6.3).
+    pub async fn advance_clock(&self, by: Duration) -> Result<(), E2eError> {
+        self.post(
+            "/internal/test/advance-clock",
+            json!({ "seconds": by.as_secs() }),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
@@ -778,6 +959,15 @@ return Array.from(document.querySelectorAll('[aria-label]'))
   .some(el => (el.getAttribute('aria-label') || '').includes(needle));
 "#;
 
+/// True when any Flutter semantics node's text contains `arguments[0]`. The
+/// card behind the focused one is wrapped in `ExcludeSemantics`, so it has no
+/// `flt-semantics` node and this sees only the card in focus.
+const SEMANTIC_TEXT_JS: &str = r#"
+const needle = arguments[0];
+return Array.from(document.querySelectorAll('flt-semantics'))
+  .some(el => (el.textContent || '').includes(needle));
+"#;
+
 /// Persisted browser state as a JSON string; completes asynchronously.
 const STORAGE_JS: &str = r#"
 const done = arguments[arguments.length - 1];
@@ -823,3 +1013,300 @@ const out = nodes.slice(0, 400).map(el => {
 });
 return JSON.stringify({ count: nodes.length, nodes: out });
 "#;
+
+// ---------------------------------------------------------------------------
+// T-1101b helpers: the unsubscribe testbed, the metric-event log, and the
+// sign-in preamble shared by the triage and unsubscribe journeys.
+// ---------------------------------------------------------------------------
+
+/// Copy shown on the Sign-in screen while an invite is being redeemed
+/// (S2 AU-03 AC1; `Copy.invited`).
+pub const INVITED_COPY: &str =
+    "You've been invited. Continue with the Google account the invite was sent to.";
+/// The Google button's Semantics label (XC-03).
+pub const CONTINUE_WITH_GOOGLE: &str = "Continue with Google";
+/// The Feed action buttons' Semantics labels (S9 section 3, XC-03).
+pub const KEEP_BUTTON: &str = "Keep";
+pub const REJECT_BUTTON: &str = "Reject";
+pub const FILE_BUTTON: &str = "File";
+pub const UNDO_BUTTON: &str = "Undo";
+pub const NEW_CATEGORY: &str = "New category";
+/// Settings entry titles and the History filter (S9 7, 7.2).
+pub const SETTINGS_TAB: &str = "Settings";
+pub const CONNECTED_ACCOUNTS: &str = "Connected accounts";
+pub const HISTORY: &str = "History";
+pub const UNSUBSCRIBES_FILTER: &str = "Unsubscribes";
+
+/// How long a wait may take. A cold runner paints slowly, so the first wait is
+/// generous; after a tap a shorter ack timeout lets a lost click be retried.
+pub const APP_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+pub const FEED_TIMEOUT: Duration = Duration::from_secs(120);
+pub const REDIRECT_TIMEOUT: Duration = Duration::from_secs(60);
+pub const TAP_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The app origin (`http://localhost:<port>`), a prefix for URL waits.
+#[must_use]
+pub fn app_origin(stack: &Stack) -> String {
+    stack.app_url.as_str().trim_end_matches('/').to_owned()
+}
+
+/// Signs a seeded account in through the UI and returns a ready [`Ui`] on the
+/// Feed (S10 3.3).
+///
+/// The caller resets fake-google and registers the harness OAuth client first;
+/// this seeds the account (and its corpus fixtures, when any), scripts the next
+/// authorisation to approve it, mints an invite through the api's test route,
+/// redeems it, and waits for the Feed's action buttons.
+pub async fn signed_in_user(
+    stack: &Stack,
+    sub: &str,
+    email: &str,
+    fixtures: &[&str],
+) -> Result<Ui, E2eError> {
+    let google = FakeGoogle::connect(stack)?;
+    google.seed_account(sub, email, true).await?;
+    if !fixtures.is_empty() {
+        google.seed_messages(sub, fixtures).await?;
+    }
+    google.select_account_for_next_authorize(sub).await?;
+    let control = TestControl::connect(stack)?;
+    let token = control.create_invite(email).await?;
+    let ui = Ui::open(stack, &format!("/#/invite?t={token}")).await?;
+    ui.wait_for_text(INVITED_COPY, APP_LOAD_TIMEOUT).await?;
+    tap_continue_with_google(&ui).await?;
+    ui.wait_for_url(&app_origin(stack), "/invite", REDIRECT_TIMEOUT)
+        .await?;
+    ui.wait_for_text(KEEP_BUTTON, FEED_TIMEOUT).await?;
+    Ok(ui)
+}
+
+/// Tap "Continue with Google" and confirm the tap registered: the button swaps
+/// to a spinner, so its label disappears once the handler runs. A lost click on
+/// a cold runner is retried once.
+pub async fn tap_continue_with_google(ui: &Ui) -> Result<(), E2eError> {
+    ui.tap(CONTINUE_WITH_GOOGLE).await?;
+    if ui
+        .wait_for_text_absent(CONTINUE_WITH_GOOGLE, TAP_ACK_TIMEOUT)
+        .await
+        .is_err()
+    {
+        ui.tap(CONTINUE_WITH_GOOGLE).await?;
+        ui.wait_for_text_absent(CONTINUE_WITH_GOOGLE, TAP_ACK_TIMEOUT)
+            .await?;
+    }
+    Ok(())
+}
+
+/// The `unsub-testbed` control client (`/__testbed/...`, S10 6.2).
+pub struct Testbed {
+    base: Url,
+    client: reqwest::Client,
+}
+
+/// Exactly what the testbed recorded for one request.
+#[derive(Clone, Debug)]
+pub struct RecordedRequest {
+    /// The HTTP method, upper case.
+    pub method: String,
+    /// Lower-cased header names with their values.
+    pub headers: Vec<(String, String)>,
+    /// The raw request body.
+    pub body: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct TestbedRecord {
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    headers: Vec<(String, String)>,
+    #[serde(default)]
+    body: Vec<u8>,
+}
+
+impl Testbed {
+    /// Bind the control client to the stack's unsubscribe testbed.
+    pub fn connect(stack: &Stack) -> Result<Self, E2eError> {
+        Ok(Self {
+            base: stack.testbed.clone(),
+            client: reqwest::Client::new(),
+        })
+    }
+
+    /// Everything the testbed recorded for `route`, in order.
+    pub async fn received(&self, route: &str) -> Result<Vec<RecordedRequest>, E2eError> {
+        let url = endpoint(&self.base, "/__testbed/requests");
+        let records: Vec<TestbedRecord> = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(http)?
+            .json()
+            .await
+            .map_err(http)?;
+        Ok(records
+            .into_iter()
+            .filter(|r| r.path == route)
+            .map(|r| RecordedRequest {
+                method: r.method,
+                headers: r.headers,
+                body: r.body,
+            })
+            .collect())
+    }
+
+    /// Clear everything the testbed has recorded.
+    pub async fn reset(&self) -> Result<(), E2eError> {
+        let url = endpoint(&self.base, "/__testbed/reset");
+        let response = self.client.post(&url).send().await.map_err(http)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(E2eError::Http(format!(
+                "POST /__testbed/reset: {}",
+                response.status()
+            )))
+        }
+    }
+
+    /// The https one-click URL on the testbed for `path`; a one-click POST must
+    /// be https (UN-02 AC1). The https listener's port is printed by the testbed
+    /// binary into its log, which `scripts/e2e.sh` writes under the harness log
+    /// directory.
+    pub fn one_click_url(&self, path: &str) -> Result<Url, E2eError> {
+        testbed_https_base()?
+            .join(path.trim_start_matches('/'))
+            .map_err(|_| E2eError::InvalidUrl("MT_E2E_TESTBED_HTTPS"))
+    }
+}
+
+/// The testbed's https base, parsed from the `TESTBED_HTTPS_ADDR=` line its
+/// binary prints into `<log dir>/unsub-testbed.jsonl` at start-up.
+fn testbed_https_base() -> Result<Url, E2eError> {
+    let path = log_dir().join("unsub-testbed.jsonl");
+    let text =
+        std::fs::read_to_string(&path).map_err(|_| E2eError::MissingEnv("MT_E2E_TESTBED_HTTPS"))?;
+    let marker = "TESTBED_HTTPS_ADDR=";
+    let rest = text
+        .find(marker)
+        .map(|at| &text[at + marker.len()..])
+        .ok_or(E2eError::MissingEnv("MT_E2E_TESTBED_HTTPS"))?;
+    let addr: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    Url::parse(&format!("https://{addr}")).map_err(|_| E2eError::InvalidUrl("MT_E2E_TESTBED_HTTPS"))
+}
+
+/// A metric event (S10 8). Field names follow T-307's schema: the JSON line's
+/// `action` key carries the event type, and `outcome` the outcome code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetricEvent {
+    /// The metric event type (`swipe`, `undo`, `unsub_outcome`, ...).
+    pub event_type: String,
+    /// The outcome code, when the event has one.
+    pub outcome: Option<String>,
+}
+
+/// A byte offset per log file, so a journey reads only the lines written after
+/// its mark (S10 8).
+pub struct LogMark {
+    files: Vec<(PathBuf, u64)>,
+}
+
+/// Reads the metric events a journey's services emitted, from the per-service
+/// JSONL logs under the harness log directory (T-1101a).
+pub struct EventLog {
+    dir: PathBuf,
+}
+
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventLog {
+    /// An event log over `MT_E2E_LOG_DIR` (default `target/e2e-logs`).
+    #[must_use]
+    pub fn new() -> Self {
+        Self { dir: log_dir() }
+    }
+
+    /// Record the current end of every `.jsonl` file.
+    #[must_use]
+    pub fn mark(&self) -> LogMark {
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(std::ffi::OsStr::to_str) == Some("jsonl") {
+                    let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    files.push((path, len));
+                }
+            }
+        }
+        LogMark { files }
+    }
+
+    /// Every metric event written to the marked files since `mark`, in file
+    /// order.
+    pub fn since_mark(&self, mark: LogMark) -> Result<Vec<MetricEvent>, E2eError> {
+        let mut events = Vec::new();
+        for (path, offset) in mark.files {
+            let bytes = std::fs::read(&path)
+                .map_err(|e| E2eError::State(format!("read {}: {e}", path.display())))?;
+            let start = usize::try_from(offset).unwrap_or(0);
+            if start >= bytes.len() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes[start..]);
+            for line in text.lines() {
+                let Ok(value) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                if value.get("event").and_then(Value::as_str) != Some("metric") {
+                    continue;
+                }
+                let Some(event_type) = value.get("action").and_then(Value::as_str) else {
+                    continue;
+                };
+                events.push(MetricEvent {
+                    event_type: event_type.to_owned(),
+                    outcome: value
+                        .get("outcome")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+        }
+        Ok(events)
+    }
+}
+
+/// Replace the first angle-bracketed URL of the `List-Unsubscribe` header in
+/// `eml` with `url`, so a seeded one-click message points at the testbed. The
+/// fake trusts the synthetic `Authentication-Results`/`DKIM-Signature`, so only
+/// the URL value changes.
+fn rewrite_list_unsubscribe(eml: &[u8], url: &Url) -> Result<Vec<u8>, E2eError> {
+    let text = std::str::from_utf8(eml)
+        .map_err(|_| E2eError::State("corpus eml is not utf-8".to_owned()))?;
+    let lower = text.to_ascii_lowercase();
+    let header_at = lower
+        .find("list-unsubscribe:")
+        .ok_or_else(|| E2eError::State("fixture has no List-Unsubscribe header".to_owned()))?;
+    let after = &text[header_at..];
+    let open_rel = after
+        .find('<')
+        .ok_or_else(|| E2eError::State("List-Unsubscribe has no angle-bracketed URL".to_owned()))?;
+    let close_rel = after[open_rel..]
+        .find('>')
+        .ok_or_else(|| E2eError::State("List-Unsubscribe URL is not closed".to_owned()))?;
+    let open = header_at + open_rel;
+    let close = header_at + open_rel + close_rel;
+    let mut out = String::with_capacity(text.len() + url.as_str().len());
+    out.push_str(&text[..=open]);
+    out.push_str(url.as_str());
+    out.push_str(&text[close..]);
+    Ok(out.into_bytes())
+}
