@@ -137,16 +137,41 @@ async fn sw_05_ac2_e2e_undo_before_due_sends_nothing() -> Result<(), Box<dyn Err
         "the undone message's label set is not the seeded one"
     );
 
-    // S10 8: a cancelled job logs no outcome. The log is read only after the due
-    // time and the zero-request check, so this cannot pass vacuously.
-    let outcomes: Vec<_> = events
-        .since_mark(mark)?
-        .into_iter()
+    // S10 8: a cancelled job logs no outcome, and the reject and its undo each
+    // emit exactly one metric carrying only the action (T-1114). The log is
+    // read only after the due time and the zero-request check, so this cannot
+    // pass vacuously.
+    let events_since = events.since_mark(mark)?;
+    let outcomes: Vec<_> = events_since
+        .iter()
         .filter(|event| event.event_type == "unsub_outcome")
         .collect();
     assert!(
         outcomes.is_empty(),
         "a cancelled unsubscribe must log no outcome: {outcomes:?}"
+    );
+    let swipes: Vec<_> = events_since
+        .iter()
+        .filter(|event| event.event_type == "swipe")
+        .collect();
+    assert_eq!(
+        swipes.len(),
+        1,
+        "the reject emits exactly one swipe: {events_since:?}"
+    );
+    assert_eq!(
+        swipes[0].outcome.as_deref(),
+        Some("reject"),
+        "the swipe carries the rejected action"
+    );
+    let undos: Vec<_> = events_since
+        .iter()
+        .filter(|event| event.event_type == "undo")
+        .collect();
+    assert_eq!(
+        undos.len(),
+        1,
+        "the undo emits exactly one undo: {events_since:?}"
     );
 
     finish_journey(ui).await?;

@@ -1322,3 +1322,64 @@ async fn asvs_v16_5_3_job_never_marked_sent_on_error() -> TestResult {
     }
     Ok(())
 }
+
+/// OBS-EV AC3 (unsub): a delivery that finds a job a successful undo has
+/// already cancelled emits `unsub_after_undo` and sends nothing (S10 8, T-1114).
+#[tokio::test]
+async fn obs_ev_ac3_unsub_after_undo_and_history_missing_emitted() -> TestResult {
+    let env = setup(SendResult::Sent {
+        code: JobOutcomeCode::OneClickAccepted,
+    })
+    .await?;
+    let state = state_with(
+        &env,
+        vec![sender(
+            &env,
+            SendResult::Sent {
+                code: JobOutcomeCode::OneClickAccepted,
+            },
+        )],
+    );
+    let id = seed_job(
+        &env,
+        &env.user,
+        &env.mailbox,
+        5,
+        JobMethod::OneClick,
+        JobStatus::Cancelled,
+        due(&env),
+        due(&env) + Duration::days(30),
+    )
+    .await?;
+
+    // A successful undo writes `Cancelled` before its delete runs, so the
+    // record can still be seen by a delivery that races the undo.
+    let versioned = env
+        .ports
+        .store
+        .jobs()
+        .get(&id)
+        .await?
+        .ok_or("missing job")?;
+    let mut record = versioned.record;
+    record.outcome = Some(ports::store::JobOutcome {
+        code: JobOutcomeCode::Cancelled,
+        at: env.fakes.clock.now(),
+    });
+    env.ports
+        .store
+        .jobs()
+        .put(&record, Precondition::Matches(versioned.version))
+        .await?;
+
+    let (capture, _guard) = obs::capture("unsub", obs::arc(obs::FixedClock(env.fakes.clock.now())));
+    let response = run(&env, &state, &id, 0).await?;
+    assert_eq!(response, RunResponse::Done);
+    assert_eq!(
+        env.calls.load(Ordering::SeqCst),
+        0,
+        "an undone job is never sent"
+    );
+    assert_eq!(events(&capture.text(), "unsub_after_undo"), 1);
+    Ok(())
+}

@@ -234,6 +234,24 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
         "the run's outcome is not `{ONE_CLICK_ACCEPTED}`"
     );
 
+    // S10 8: the reject that queued the job emits exactly one `swipe`, carrying
+    // only the action (T-1114).
+    let swipes: Vec<MetricEvent> = events
+        .since_mark(mark.clone())?
+        .into_iter()
+        .filter(|event| event.event_type == "swipe")
+        .collect();
+    assert_eq!(
+        swipes.len(),
+        1,
+        "the reject must emit exactly one swipe: {swipes:?}"
+    );
+    assert_eq!(
+        swipes[0].outcome.as_deref(),
+        Some("reject"),
+        "the swipe carries the rejected action"
+    );
+
     finish_journey(journey.ui).await?;
     Ok(())
 }

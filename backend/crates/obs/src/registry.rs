@@ -129,6 +129,12 @@ pub const OUTCOMES: &[&str] = &[
     "provider_error",
     "provider_unavailable",
     "internal_error",
+    // Swipe actions, carried by the `swipe` and `undo` metric outcomes
+    // (S10 8, T-1114).
+    "keep",
+    "skip",
+    "file",
+    "reject",
 ];
 
 pub const OPS: &[&str] = &[

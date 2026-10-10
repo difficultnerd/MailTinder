@@ -204,8 +204,15 @@ pub async fn execute(
     }
     .await;
 
+    // The `swipe` metric (S10 8) is emitted once, at commit, and only by the
+    // request that applied the reject; the losing side of a same-key race
+    // emits nothing.
+    let applied = matches!(&outcome, Ok(Persisted::Applied(_)));
     match outcome {
         Ok(Persisted::Applied(result) | Persisted::Lost(result)) => {
+            if applied {
+                crate::services::swipe::emit_swipe(app, &user, SwipeAction::Reject);
+            }
             // The losing side of a concurrent request with the same
             // `Idempotency-Key`: answer from the response the winner recorded,
             // exactly as the sequential retry path does, and never apply the

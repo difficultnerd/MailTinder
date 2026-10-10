@@ -80,7 +80,11 @@ pub async fn undo(
     // Step 4: restore the provider labels first; a failure changes nothing, so
     // the token stays valid.
     if let Some(exact) = plan.restore_labels.as_ref() {
-        restore(app, &user, &payload.record, exact).await?;
+        if let Err(e) = restore(app, &user, &payload.record, exact).await {
+            // The exact previous state was not restored (S10 8, `undo_failed`).
+            emit_undo_failed(app, &user, payload.record.action);
+            return Err(e);
+        }
     }
 
     // Step 5: one state write reverses everything this swipe recorded. The
@@ -98,6 +102,9 @@ pub async fn undo(
     if !reversed {
         return Err(ApiError::UndoExpired);
     }
+
+    // The `undo` metric (S10 8), once the reversal has committed.
+    emit_undo(app, &user, payload.record.action);
 
     // Step 6: nothing here is a `reject`, so no unsubscribe has ever been sent.
     Ok(UndoResponse {
@@ -199,7 +206,11 @@ pub async fn undo_reject(
     // so the token stays valid; the cancelled job stays `Cancelled`, so a retry
     // maps `NotQueued(Cancelled)` back to `Cancelled` and gives the same answer.
     if let Some(exact) = plan_undo(&record).restore_labels {
-        restore(app, &user, &record, &exact).await?;
+        if let Err(e) = restore(app, &user, &record, &exact).await {
+            // The exact previous state was not restored (S10 8, `undo_failed`).
+            emit_undo_failed(app, &user, SwipeAction::Reject);
+            return Err(e);
+        }
     }
 
     // Step 3: the Needs Attention item belonged to this swipe.
@@ -226,6 +237,9 @@ pub async fn undo_reject(
     if !claimed {
         return Err(ApiError::UndoExpired);
     }
+
+    // The `undo` metric (S10 8), once the reversal has committed.
+    emit_undo(app, &user, SwipeAction::Reject);
 
     // Step 5: with the cancel won, the job record goes last, so every earlier
     // failure leaves a retryable `Cancelled` record.
@@ -346,6 +360,28 @@ fn security_event(app: &AppState, user: &UserId, outcome: JobCancelOutcome) {
         amr: None,
         provider: None,
         method: None,
+    });
+}
+
+/// The `undo` metric (S10 8): the undone action and the pseudonymous user,
+/// nothing else. Emitted once the reversal has committed.
+fn emit_undo(app: &AppState, user: &UserId, action: SwipeAction) {
+    obs::metric_event(&obs::MetricEvent {
+        event_type: "undo",
+        outcome: crate::services::swipe::action_code(action),
+        user: Some(Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0)),
+        provider: None,
+    });
+}
+
+/// The `undo_failed` metric (S10 8): the swipe's action was not restored to its
+/// exact previous state. Content-free, like every metric event.
+fn emit_undo_failed(app: &AppState, user: &UserId, action: SwipeAction) {
+    obs::metric_event(&obs::MetricEvent {
+        event_type: "undo_failed",
+        outcome: crate::services::swipe::action_code(action),
+        user: Some(Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0)),
+        provider: None,
     });
 }
 

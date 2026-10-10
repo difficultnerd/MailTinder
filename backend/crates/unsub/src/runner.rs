@@ -100,6 +100,21 @@ pub async fn run_job(
     let mut job = versioned.record;
     let mut version = versioned.version;
 
+    // A delivery for a job a successful undo has already cancelled (S10 8,
+    // `unsub_after_undo`; A1): the undo removed the swipe, so a send here would
+    // follow it. Report the unrecoverable case; nothing else runs. The job
+    // carries `Cancelled` only when a cancel won the race (the runner's own
+    // mailbox-removed path writes `MailboxRemoved`), so this cannot be
+    // confused with a job that was never queued.
+    if job
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.code == JobOutcomeCode::Cancelled)
+    {
+        log_metric(ports, &job, "unsub_after_undo", "cancelled").await;
+        return Ok(RunResponse::Done);
+    }
+
     // 5. Ownership re-check from the mailbox record (ASVS V8.3.1).
     match ports.store.mailboxes().get(&job.mailbox_id).await? {
         None => {
@@ -490,6 +505,17 @@ async fn log_outcome(ports: &Ports, job: &JobRecord, code: JobOutcomeCode) {
         event_type: "unsub_outcome",
         outcome,
         user: pseudo,
+        provider: Some("gmail"),
+    });
+}
+
+/// A content-free metric event for one job (S10 8). The user appears only as a
+/// pseudonym; the outcome is a registry code, never a value.
+async fn log_metric(ports: &Ports, job: &JobRecord, event: &'static str, outcome: &'static str) {
+    metric_event(&obs::MetricEvent {
+        event_type: event,
+        outcome,
+        user: pseudo_id(ports, &job.user_id.0).await,
         provider: Some("gmail"),
     });
 }

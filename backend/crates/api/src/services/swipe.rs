@@ -199,7 +199,11 @@ pub async fn swipe(
         skip_queue,
         stored_json: stored_json(&result, &undo)?,
     };
-    persist(&store, &user, effects).await?;
+    // The metric is emitted at commit, and only when this request applied the
+    // swipe: a retry or the losing side of a same-key race emits nothing.
+    if persist(&store, &user, effects).await? {
+        emit_swipe(app, &user, action);
+    }
     // The losing side of a concurrent request with the same `Idempotency-Key`:
     // answer from the response the winner recorded, exactly as the sequential
     // retry path does, and never apply the effects twice (ASVS V2.3.4).
@@ -240,6 +244,29 @@ fn swipe_action(action: ActionDto, category: Option<&Category>) -> SwipeAction {
             category: category.map_or(CategoryId(Uuid::nil()), |c| c.category_id),
         },
     }
+}
+
+/// The metric outcome name of a swipe action (S10 8: `swipe` and `undo` carry
+/// the action only). Also used by undo.
+#[must_use]
+pub(crate) fn action_code(action: SwipeAction) -> &'static str {
+    match action {
+        SwipeAction::Keep => "keep",
+        SwipeAction::Skip => "skip",
+        SwipeAction::Reject => "reject",
+        SwipeAction::File { .. } => "file",
+    }
+}
+
+/// The `swipe` metric (S10 8): the action and the pseudonymous user, nothing
+/// else. Emitted once per swipe, at the point the state change commits.
+pub(crate) fn emit_swipe(app: &AppState, user: &UserId, action: SwipeAction) {
+    obs::metric_event(&obs::MetricEvent {
+        event_type: "swipe",
+        outcome: action_code(action),
+        user: Some(obs::Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0)),
+        provider: None,
+    });
 }
 
 /// The user's wrapped `data_key`, needed to seal the undo token.
