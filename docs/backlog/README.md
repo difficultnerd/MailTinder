@@ -147,8 +147,9 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1101b](T-1101b-e2e-journeys-triage-and-unsubscribe.md) | End-to-end helpers and the sessions journey | M11 | sonnet | T-1003, T-1006a, T-1101a, T-1112c |
 | [T-1101c](T-1101c-e2e-journeys-and-leak-scans.md) | End-to-end journeys: Needs Attention, disconnect, delete account; leak, storage and CSP scans | M11 | sonnet | T-006, T-1005, T-1101b, T-1101d, T-1101e, T-1101f |
 | [T-1101d](T-1101d-e2e-journey-mixed-feed.md) | End-to-end journey: mixed Feed across two mailboxes | M11 | sonnet | T-1101b |
-| [T-1101e](T-1101e-e2e-journeys-reject-undo-and-unsubscribe.md) | End-to-end journeys: reject then undo, reject and unsubscribe | M11 | sonnet | T-1101b |
+| [T-1101e](T-1101e-e2e-journeys-reject-undo-and-unsubscribe.md) | End-to-end journeys: reject then undo, reject and unsubscribe | M11 | sonnet | T-1101b, T-1101g |
 | [T-1101f](T-1101f-e2e-journey-file.md) | End-to-end journey: file a message | M11 | sonnet | T-1101b |
+| [T-1101g](T-1101g-e2e-unsub-stack-virtual-clock-and-testbed-trust.md) | End-to-end unsubscribe stack: virtual clock and testbed trust | M11 | strong | T-500b, T-1101a, T-1101b |
 | [T-1102a](T-1102a-terraform-prod-foundation.md) | Terraform, production foundation: service accounts, IAM, KMS, Firestore, secrets, logs | M11 | strong | needs S11 |
 | [T-1102b](T-1102b-terraform-prod-runtime-and-deploy-identity.md) | Terraform, production runtime: Cloud Run, Cloud Tasks, Scheduler, Hosting and the deploy identity | M11 | strong | T-1102a, needs S11 |
 | [T-1103](T-1103-terraform-staging-project.md) | Terraform, staging project | M11 | sonnet | T-1102b |

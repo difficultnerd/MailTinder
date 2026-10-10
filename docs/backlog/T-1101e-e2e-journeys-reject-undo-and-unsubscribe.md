@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b |
+| M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b, T-1101g |
 
 **Read only these spec sections:** S10 sections 3.3 (journey list), 6.2 (one-click route group), 6.3 (rows "Reject queues job", "Undo before due time", "Every outcome recorded") and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 AU-07 AC1, FD-02 AC1 and AC2, SW-04 AC2, SW-05 AC2, UN-01 AC1 and AC3, UN-02 AC1. Nothing else is needed.
 
@@ -54,7 +54,7 @@ All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts 
 - Each journey seeds its own accounts with unique `sub` values so tests do not see each other's mail.
 - Read events only after the mark, so earlier journeys' lines do not count.
 - No real hosts, no real mail.
-- First check that the `unsub` and `worker` e2e configurations (T-500b follow-up) let the unsubscribe reach the testbed over the test egress policy (loopback listener and any certificate trust it needs). If a missing piece is small and inside `backend/crates/e2e` and test configuration, add it; if it needs production code or a policy loosening, stop and report BLOCKED with the exact missing piece.
+- The unsub/worker test configuration, the shared virtual clock and the testbed TLS trust come from T-1101g; use them, do not rebuild them. If something from T-1101g is missing, report BLOCKED with the exact missing piece.
 
 ## Out of scope
 
