@@ -33,6 +33,9 @@ struct Patterns {
     scheme: Regex,
     www: Regex,
     host: Regex,
+    email_quoted: Regex,
+    email_literal: Regex,
+    email_at: Regex,
     email: Regex,
     number: Regex,
 }
@@ -45,6 +48,12 @@ impl Patterns {
             )?,
             www: Regex::new(r#"(?i)www\.[^\s<>"'()\[\]{}]+"#)?,
             host: Regex::new(r"(?i)\b[a-z0-9-]+(\.[a-z0-9-]+)+/\S*")?,
+            // Quoted local parts (which may contain spaces), address literals
+            // and any remaining `@` flanked by non-whitespace. The regex crate
+            // is linear-time, so no upper bound is needed.
+            email_quoted: Regex::new(r#""[^"]*"@\S+"#)?,
+            email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
+            email_at: Regex::new(r"\S*@\S+")?,
             email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")?,
             number: Regex::new(r"\d(?:[ \-.]?\d){5,}")?,
         })
@@ -79,6 +88,11 @@ pub fn redact(input: &str) -> String {
     let clean = patterns.scheme.replace_all(&clean, URL_PLACEHOLDER);
     let clean = patterns.www.replace_all(&clean, URL_PLACEHOLDER);
     let clean = patterns.host.replace_all(&clean, URL_PLACEHOLDER);
+    let clean = patterns.email_quoted.replace_all(&clean, EMAIL_PLACEHOLDER);
+    let clean = patterns
+        .email_literal
+        .replace_all(&clean, EMAIL_PLACEHOLDER);
+    let clean = patterns.email_at.replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.email.replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.number.replace_all(&clean, NUMBER_PLACEHOLDER);
     clean.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -118,11 +132,40 @@ pub fn is_english(input: &str) -> bool {
 }
 
 /// Only the domain is allowed; never return a sender's local part.
+///
+/// Fail closed: the whole input must be whitespace- and control-free and the
+/// part after the last `@` must be a syntactically valid hostname, otherwise
+/// the empty string is returned (no address or domain is logged).
 pub fn from_domain(address: &str) -> String {
-    address
-        .rsplit_once('@')
-        .map(|(_, domain)| domain.to_lowercase())
-        .unwrap_or_default()
+    if address.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return String::new();
+    }
+    let Some((_, domain)) = address.rsplit_once('@') else {
+        return String::new();
+    };
+    let domain = domain.to_lowercase();
+    if is_valid_hostname(&domain) {
+        domain
+    } else {
+        String::new()
+    }
+}
+
+/// 1 to 253 characters, dot-separated labels of 1 to 63 ASCII letters, digits
+/// or hyphens, none starting or ending with a hyphen, at least one dot.
+fn is_valid_hostname(domain: &str) -> bool {
+    if domain.is_empty() || domain.len() > 253 || !domain.contains('.') {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
 }
 
 #[cfg(test)]
