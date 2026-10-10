@@ -176,6 +176,28 @@ jobs:
             echo "OK   every scalar role value is a quoted literal"
           fi
 
+          # The guard above rejects an *unquoted* expression, but a quoted
+          # value can still carry an interpolation: `role = "roles/${"owner"}"`
+          # is valid HCL that resolves to a primitive role, and the allowlist
+          # extractor below reads only a literal `"roles/..."`, so such a line
+          # was invisible to every check. Fail closed on any scalar
+          # `role = "..."` whose value is not exactly a `roles/...` literal.
+          if awk '
+            /^[[:space:]]*role[[:space:]]*=[[:space:]]*"/ {
+              rest = $0
+              sub(/^[[:space:]]*role[[:space:]]*=[[:space:]]*"/, "", rest)
+              if (match(rest, /^roles\/[A-Za-z0-9._]+/)) rest = substr(rest, RLENGTH + 1)
+              else rest = "!"
+              if (rest !~ /^"/) { print FILENAME": "$0; bad = 1 }
+            }
+            END { exit bad ? 1 : 0 }
+          ' $(find modules envs -name '*.tf'); then
+            echo "OK   every scalar role value is an exact roles/... literal"
+          else
+            echo "FAIL a scalar role value is not an exact roles/... literal (interpolation or unsupported expression)"
+            fail=1
+          fi
+
           # The `roles = [...]` list form (an IAM binding grants several roles at
           # once) is invisible to a line-oriented grep, so it is walked here:
           # each literal element is emitted for the allowlist, and any element
@@ -254,6 +276,63 @@ jobs:
             echo "OK   roles/iam.serviceAccountUser only on individual service accounts"
           else
             echo "FAIL roles/iam.serviceAccountUser granted on the project (ASVS V13.2.1)"
+            fail=1
+          fi
+
+          # Scope guard (ASVS V13.2.2, F6). A role-name allowlist is not a
+          # principal/resource/scope allowlist: an allowlisted role widened from
+          # a resource to the whole project would pass every check above. The
+          # only roles this work grants at project scope are the two runtime
+          # data roles, the log sink's writer and the deployer's Hosting admin;
+          # any other `roles/...` on a `google_project_iam_*` resource (a
+          # project-scoped KMS or secret role, say) fails here.
+          project_allowed=$(printf '%s\n' \
+            roles/datastore.user \
+            roles/aiplatform.user \
+            roles/logging.bucketWriter \
+            roles/firebasehosting.admin | sort -u)
+          project_used=$(awk '
+            /^[a-z_]+[[:space:]]/ && $0 !~ /^[[:space:]]*resource[[:space:]]+"/ { type = "" }
+            /^[[:space:]]*resource[[:space:]]+"/ {
+              type = $0
+              sub(/^[[:space:]]*resource[[:space:]]+"/, "", type)
+              sub(/".*/, "", type)
+            }
+            type ~ /^google_project_iam/ {
+              n = split($0, a, /"/)
+              for (i = 2; i <= n; i += 2) if (a[i] ~ /^roles\//) print a[i]
+            }
+          ' $(find modules envs -name '*.tf') | sort -u)
+          overreach=$(comm -23 <(printf '%s\n' "$project_used") <(printf '%s\n' "$project_allowed"))
+          if [ -n "$overreach" ]; then
+            echo "FAIL role(s) granted at project scope beyond the allowlist (scope widening, V13.2.2):"
+            printf '%s\n' "$overreach"
+            fail=1
+          else
+            echo "OK   project-level IAM grants stay within the allowed roles"
+          fi
+
+          # Cloud Run invoker bindings. roles/run.invoker is allowlisted
+          # globally, so an added service_iam_member on `unsub` or `worker`
+          # would pass both the allowlist and the allUsers guard (that watches
+          # allUsers only). Pin the whole set: only the four known bindings may
+          # exist (V12.3.3, F6).
+          if awk '
+            /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service_iam_/ {
+              label = $0
+              sub(/^[[:space:]]*resource[[:space:]]+"[^"]+"[[:space:]]+"/, "", label)
+              sub(/".*/, "", label)
+              if (label != "api_public" && label != "unsub_tasks_invoker" &&
+                  label != "worker_scheduler_invoker" && label != "deployer_run_developer") {
+                print FILENAME": "label
+                bad = 1
+              }
+            }
+            END { exit bad ? 1 : 0 }
+          ' $(find modules envs -name '*.tf'); then
+            echo "OK   only the known Cloud Run service IAM bindings exist"
+          else
+            echo "FAIL an unexpected Cloud Run service IAM binding (V12.3.3, F6)"
             fail=1
           fi
 

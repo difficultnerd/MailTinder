@@ -141,9 +141,20 @@ under `modules/` and `envs/`:
   `role = "roles/..."` form (every `google_*_iam_member`, `_binding` and
   `_policy` resource) and the `roles = ["roles/..."]` list form, and **fails
   closed on any role value that is not a plain quoted literal** (`role = var.x`,
-  `role = local.x`), so a role cannot be granted through a variable or a local
-  and stay unseen. This is what covers "no primitive role" and "no logging role
-  for an app identity".
+  `role = local.x`) **or that hides an interpolation inside a quoted value**
+  (`role = "roles/${...}"`), so a role cannot be granted through a variable, a
+  local or an interpolation and stay unseen. This is what covers "no primitive
+  role" and "no logging role for an app identity".
+- a role-name allowlist is not a *scope* allowlist, so two further checks pin
+  the (role, principal, resource) tuple: every role granted on a
+  `google_project_iam_*` resource must be one of the four project-scope roles
+  this work uses (`roles/datastore.user`, `roles/aiplatform.user`,
+  `roles/logging.bucketWriter`, `roles/firebasehosting.admin`), so an
+  otherwise-allowed role cannot be widened from a resource to the whole project;
+  and the `google_cloud_run_v2_service_iam_*` bindings are pinned to the four
+  known ones (`api_public`, `unsub_tasks_invoker`, `worker_scheduler_invoker`,
+  `deployer_run_developer`), so no extra invoker can be added to an internal
+  service (V12.3.3, V13.2.2).
 - two narrower checks back the allowlist up: `roles/iam.serviceAccountTokenCreator`
   is never allowed, and `roles/iam.serviceAccountUser` (`actAs`) is allowed only
   on an individual service account, never on the project. Only `api_public` may
