@@ -137,7 +137,7 @@ pub async fn next_page(
     };
     let wrapped = wrapped_key(app, &user).await?;
     let sealer = SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
-    let tunables = Tunables::default();
+    let tunables = app.tunables.clone();
 
     // Steps 2 and 3: starting positions and the session-start reset.
     let (mut positions, prior_phase) =

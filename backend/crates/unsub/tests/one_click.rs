@@ -972,3 +972,68 @@ async fn asvs_v16_3_4_tls_failure_logged() -> TestResult {
     testbed.shutdown().await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// E2E-INFRA AC4: the egress crate is unchanged
+// ---------------------------------------------------------------------------
+
+/// T-1101g: the e2e trust hand-off did not touch the `egress` crate. Its
+/// production policy for `unsub` still refuses the testbed's own listeners —
+/// the loopback IP literal, a host that resolves to loopback, and plain http —
+/// so no journey can pass by having relaxed it. The testbed is reachable only
+/// through the crate's existing `TestOverride` hook (S10 6.1), exactly as
+/// before, and that hook lands the POST here.
+#[tokio::test]
+async fn e2e_infra_ac4_egress_crate_policy_unchanged_by_e2e_trust() -> TestResult {
+    let testbed = start().await?;
+    let resolver = Arc::new(StubResolver::new());
+    resolver.map(TEST_HOST, vec![LOCALHOST]);
+    let production = production(Arc::clone(&resolver) as Arc<dyn Resolver>)?;
+
+    // 1. An IP-literal one-click host: refused by the URL check, so the
+    //    testbed's own TLS address can never be a production target.
+    let literal = Url::parse("https://127.0.0.1/oneclick/200")?;
+    assert!(
+        matches!(
+            production.one_click_post(&literal).await,
+            Err(EgressError::IpLiteralHost)
+        ),
+        "an IP-literal one-click host must stay refused"
+    );
+
+    // 2. A host that resolves to the loopback testbed: the address check
+    //    refuses it (this is the exact socket the e2e build allows).
+    let loopback = Url::parse("https://unsub.test/oneclick/200")?;
+    assert!(
+        matches!(
+            production.one_click_post(&loopback).await,
+            Err(EgressError::AddressRefused(_))
+        ),
+        "a target resolving to loopback must stay refused"
+    );
+
+    // 3. Plain http is refused wholesale, before any lookup.
+    let plain = Url::parse("http://unsub.test/oneclick/200")?;
+    assert!(
+        matches!(
+            production.one_click_post(&plain).await,
+            Err(EgressError::SchemeNotAllowed)
+        ),
+        "plain http must stay refused"
+    );
+
+    // 4. The crate's existing test hook is the only extra surface, and it still
+    //    does what it always did: allow the one socket and land the POST.
+    let hook_resolver = Arc::new(StubResolver::new());
+    hook_resolver.map(TEST_HOST, vec![LOCALHOST]);
+    let hooked = testbed_policy(&testbed, hook_resolver);
+    let target = Url::parse(&testbed_target(&testbed, "/oneclick/200"))?;
+    assert_eq!(
+        hooked.one_click_post(&target).await?,
+        OneClickOutcome::Accepted { status: 200 }
+    );
+    assert_eq!(testbed.requests_to("/oneclick/200").len(), 1);
+
+    testbed.shutdown().await;
+    Ok(())
+}

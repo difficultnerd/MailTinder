@@ -35,6 +35,10 @@ pub const E2E_AUDIENCE: &str = "unsub-e2e";
 pub const E2E_CALLER_EMAIL: &str = "e2e-caller@mailtinder.invalid";
 /// The variable holding the one accepted bearer value.
 pub const E2E_CALLER_TOKEN_ENV: &str = "UNSUB_E2E_CALLER_TOKEN";
+/// The variable naming the file holding the testbed's per-run CA certificate
+/// (public part only). Read only in e2e mode; a production build never looks at
+/// it (T-1101g).
+pub const E2E_TESTBED_CA_FILE_ENV: &str = "UNSUB_TESTBED_CA_FILE";
 /// The shortest accepted token, in bytes. A short token is refused at start.
 pub const MIN_TOKEN_LEN: usize = 16;
 /// The unauthenticated liveness route mounted only in e2e mode.
@@ -126,11 +130,15 @@ pub fn firestore_emulator_store(
 /// production e2e passes the emulator store.
 ///
 /// Required variables: `UNSUB_E2E_CALLER_TOKEN` (>= 16 bytes), `FAKE_GOOGLE_URL`
-/// and `UNSUB_TESTBED_URL` (both literal loopback URLs).
+/// and `UNSUB_TESTBED_URL` (both literal loopback URLs). `UNSUB_TESTBED_CA_FILE`
+/// is optional, except that an `https` testbed URL requires it: the per-run CA
+/// is the only trust root the testbed's TLS certificate has (T-1101g).
 ///
 /// # Errors
 ///
-/// Returns [`E2eError`] for a missing/invalid variable or adapter.
+/// Returns [`E2eError`] for a missing/invalid variable, an unreadable
+/// certificate file, an `https` testbed without a certificate, or an adapter
+/// that cannot be built.
 pub fn build_e2e_ports<S>(
     store: Arc<S>,
     lookup: impl Fn(&str) -> Option<String>,
@@ -141,10 +149,17 @@ where
     let token = accepted_token(&lookup)?;
     let fake_google = url_from(&lookup, "FAKE_GOOGLE_URL")?;
     let testbed = url_from(&lookup, "UNSUB_TESTBED_URL")?;
-    let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(&[
-        ("FAKE_GOOGLE_URL", fake_google.clone()),
-        ("UNSUB_TESTBED_URL", testbed),
-    ])?);
+    let ca = testbed_ca(&lookup)?;
+    if testbed.scheme() == "https" && ca.is_none() {
+        return Err(E2eError::Missing(E2E_TESTBED_CA_FILE_ENV));
+    }
+    let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(
+        &[
+            ("FAKE_GOOGLE_URL", fake_google.clone()),
+            ("UNSUB_TESTBED_URL", testbed),
+        ],
+        ca.as_deref(),
+    )?);
 
     let (mut ports, fakes) = testkit::fake_ports();
     let clock = Arc::clone(&ports.clock);
@@ -268,12 +283,19 @@ impl LoopbackEgress {
     /// a loopback literal: IPv4 `127.0.0.0/8` or IPv6 `::1` (the bracketed
     /// `[::1]` URL form included).
     ///
+    /// `ca_pem` is the testbed's per-run CA certificate (PEM, public part
+    /// only). When given it is added as exactly one extra trust root, so the
+    /// e2e build can complete the testbed's TLS handshake without trusting
+    /// anything else. `None` adds no root (an `http` testbed needs none). The
+    /// production `egress` crate and its policy are untouched (T-1101g).
+    ///
     /// # Errors
     ///
     /// Returns [`E2eError::Invalid`] (named by the offending variable) when an
     /// endpoint has no literal loopback IP host or port, and
-    /// [`E2eError::Adapter`] if the client cannot be built.
-    pub fn new(endpoints: &[(&'static str, Url)]) -> Result<Self, E2eError> {
+    /// [`E2eError::Adapter`] when `ca_pem` is not a PEM certificate or the
+    /// client cannot be built.
+    pub fn new(endpoints: &[(&'static str, Url)], ca_pem: Option<&[u8]>) -> Result<Self, E2eError> {
         if endpoints.is_empty() {
             return Err(E2eError::Invalid("UNSUB_TESTBED_URL"));
         }
@@ -289,10 +311,12 @@ impl LoopbackEgress {
                 .ok_or(E2eError::Invalid(name))?;
             sockets.push(SocketAddr::new(ip, port));
         }
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| E2eError::Adapter)?;
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if let Some(pem) = ca_pem {
+            let certificate = reqwest::Certificate::from_pem(pem).map_err(|_| E2eError::Adapter)?;
+            builder = builder.add_root_certificate(certificate);
+        }
+        let client = builder.build().map_err(|_| E2eError::Adapter)?;
         Ok(Self { sockets, client })
     }
 
@@ -433,6 +457,25 @@ fn required(
 fn url_from(lookup: &impl Fn(&str) -> Option<String>, name: &'static str) -> Result<Url, E2eError> {
     let raw = required(lookup, name)?;
     Url::parse(&raw).map_err(|_| E2eError::Invalid(name))
+}
+
+/// The testbed's per-run CA certificate (PEM), read from
+/// `UNSUB_TESTBED_CA_FILE`. `None` when the variable is unset or blank.
+///
+/// Only the certificate is ever read: the test CA's private key never leaves
+/// the testbed process (T-1101g).
+///
+/// # Errors
+///
+/// Returns [`E2eError::Invalid`] when the variable names a file that cannot be
+/// read. The path itself is never logged, and neither is the certificate.
+fn testbed_ca(lookup: &impl Fn(&str) -> Option<String>) -> Result<Option<Vec<u8>>, E2eError> {
+    match lookup(E2E_TESTBED_CA_FILE_ENV).filter(|v| !v.trim().is_empty()) {
+        None => Ok(None),
+        Some(path) => std::fs::read(path.trim())
+            .map(Some)
+            .map_err(|_| E2eError::Invalid(E2E_TESTBED_CA_FILE_ENV)),
+    }
 }
 
 /// Join a `fake-google` path onto its base URL.
