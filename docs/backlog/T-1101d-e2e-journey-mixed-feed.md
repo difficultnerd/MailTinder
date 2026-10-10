@@ -48,7 +48,7 @@ All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts 
 - No real hosts, no real mail.
 - The Add Gmail flow uses a popup window; switch to it, finish the fake-google re-authentication, switch back; allow the app time to start the link.
 
-- Events (S10 8): journey 3 emits no metric event today, so no event assertion applies here; if one appears, the test must fail and name it.
+- Events (S10 8): journey 3 taps Keep twice, so it emits exactly two `swipe` events, one per tap, both carrying the `keep` action and nothing else (T-1114 restored the assertion ADR 0002 dropped); the test asserts exactly those two and no other metric event.
 
 ## Out of scope
 

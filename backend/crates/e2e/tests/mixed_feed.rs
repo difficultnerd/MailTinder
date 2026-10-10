@@ -132,11 +132,29 @@ async fn fd_02_ac1_e2e_two_mailboxes_interleaved_newest_first() -> Result<(), Bo
     ui.wait_for_card(&[SENDER_T1, "mixed-feed-a@example.com"], FEED_TIMEOUT)
         .await?;
 
-    // Journey 3 emits no metric event today (S10 8).
+    // Journey 3 taps Keep twice, so it emits exactly two `swipe` metrics, one
+    // per tap, each carrying the kept action and no content (S10 8; T-1114
+    // restored the assertion ADR 0002 deferred).
     let emitted = events.since_mark(mark)?;
+    let swipes: Vec<&e2e::MetricEvent> = emitted
+        .iter()
+        .filter(|event| event.event_type == "swipe")
+        .collect();
+    assert_eq!(
+        emitted.len(),
+        2,
+        "journey 3 must emit exactly two metric events: {emitted:?}"
+    );
+    assert_eq!(
+        swipes.len(),
+        2,
+        "journey 3 must emit one swipe per Keep tap: {emitted:?}"
+    );
     assert!(
-        emitted.is_empty(),
-        "journey 3 emitted metric events: {emitted:?}"
+        swipes
+            .iter()
+            .all(|swipe| swipe.outcome.as_deref() == Some("keep")),
+        "each swipe carries the kept action: {emitted:?}"
     );
 
     finish_journey(ui).await?;
