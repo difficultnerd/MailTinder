@@ -76,12 +76,10 @@ fn due_delay() -> Result<Duration, Box<dyn Error>> {
     Ok(Duration::from_secs(raw.trim().parse()?))
 }
 
-/// One test's world: the testbed's read-back client, the browser on the Feed and
-/// the api's due delay.
+/// One test's world: the testbed's read-back client and the browser on the Feed.
 struct Journey {
     testbed: Testbed,
     ui: Ui,
-    due: Duration,
 }
 
 impl Journey {
@@ -90,7 +88,6 @@ impl Journey {
     async fn start(sub: &str, email: &str) -> Result<Self, Box<dyn Error>> {
         let stack = Stack::from_env()?;
         let testbed_https = std::env::var("MT_E2E_TESTBED_HTTPS_URL")?;
-        let due = due_delay()?;
         let google = FakeGoogle::connect(&stack)?;
         let testbed = Testbed::connect(&stack)?;
         google.reset().await?;
@@ -109,7 +106,7 @@ impl Journey {
         testbed.reset().await?;
         let ui = signed_in_user(&stack, sub, email, &[]).await?;
         ui.wait_for_text(SENDER, FEED_TIMEOUT).await?;
-        Ok(Self { testbed, ui, due })
+        Ok(Self { testbed, ui })
     }
 
     /// Reject the one-click card and wait for the queued toast (SW-03 AC2).
@@ -121,10 +118,12 @@ impl Journey {
 
     /// Wait out the job's due time and return what the testbed recorded on the
     /// one-click route: one POST for a job that ran, nothing for one cancelled.
+    /// The due delay is read here from the run's configuration rather than
+    /// carried on the journey, so it stays a plain config value.
     async fn wait_for_due(&self, extra: Duration) -> Result<Vec<RecordedRequest>, Box<dyn Error>> {
         Ok(self
             .testbed
-            .wait_for_request(ROUTE, self.due + extra)
+            .wait_for_request(ROUTE, due_delay()? + extra)
             .await?)
     }
 }
@@ -190,11 +189,12 @@ const ONE_CLICK_ACCEPTED: &str = "one_click_accepted";
 #[ignore = "run by scripts/e2e.sh"]
 async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
     let journey = Journey::start("sub-un-01-ac1-e2e", "un-01-ac1-e2e@example.com").await?;
+    let due = due_delay()?;
     let events = EventLog::new();
     let mark = events.mark();
 
-    // Time from the reject: the job is due `journey.due` after the api plans
-    // it, so the first record cannot arrive before that has elapsed.
+    // Time from the reject: the job is due `due` after the api plans it, so the
+    // first record cannot arrive before that has elapsed.
     let rejected_at = Instant::now();
     journey.reject().await?;
 
@@ -205,11 +205,11 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
         1,
         "exactly one POST must reach the testbed after the due time"
     );
-    assert_not_before_due(journey.due, rejected_at.elapsed());
+    assert_not_before_due(due, rejected_at.elapsed());
 
     // Runs once: a redelivery would be a second record. Watch the count past
     // another due interval instead of sleeping through it.
-    let deadline = Instant::now() + journey.due + DELIVERY_TIMEOUT;
+    let deadline = Instant::now() + due + DELIVERY_TIMEOUT;
     while Instant::now() < deadline {
         assert_eq!(
             journey.testbed.received(ROUTE).await?.len(),
