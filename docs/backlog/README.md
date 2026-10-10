@@ -171,6 +171,9 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108a, T-1108c |
 | [T-1114](T-1114-emit-swipe-undo-metric-events.md) | Emit the swipe, undo and unrecoverable-action metric events | M11 | sonnet | T-307, T-1101b, T-1101e, T-1101f |
 | [T-1115](T-1115-redaction-hardening.md) | Model input redaction hardening: quoted and bracketed addresses, sender-domain validation | M9 | sonnet | T-903 |
+| [T-1116](T-1116-bootstrap-project-script.md) | One-command project bootstrap (state bucket, first APIs, planner and applier identities) | M11 | strong | T-1102b |
+| [T-1117](T-1117-terraform-plan-apply-workflow.md) | Terraform plan on pull requests, apply on approval (keyless) | M11 | strong | T-1116, T-1103 |
+| [T-1118](T-1118-owner-input-helpers-and-console-checklist.md) | Owner-input helpers and console checklist | M11 | sonnet | T-1102a |
 | [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.
