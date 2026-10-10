@@ -7,8 +7,9 @@
 //! The Feed is a positional stream: a card is fetched once and its position
 //! advances, so the three cards must come from one page. Mailbox A therefore
 //! signs in with a single throwaway card (the sign-in page consumes it and sets
-//! A's floor), and the journey's fixtures are seeded afterwards, all newer than
-//! that card: A at t1 and t3, B at t2. The Feed's next load returns all three,
+//! A's floor). After linking B, a throwaway card sets B's floor too; the
+//! journey's fixtures are seeded afterwards, all newer than those cards:
+//! A at t1 and t3, B at t2. The Feed's next load returns all three,
 //! newest first across both mailboxes, each card naming its mailbox. The card in
 //! focus is read from its semantics label: the card behind it is excluded from
 //! semantics, so the label is exactly the focused card.
@@ -78,14 +79,26 @@ async fn two_mailbox_feed(
     google.select_account_for_next_authorize(sub_a).await?;
     connect_second_mailbox(&mut ui, stack, email_b).await?;
 
+    // A mailbox with no previously seen card starts in backlog, not the new
+    // phase. Give B the same baseline as A before introducing the three new
+    // cards, otherwise B's t2 belongs to a different phase and cannot interleave.
+    google
+        .seed_message_at(sub_b, FIXTURE_MARKER, MARKER_MINUTE)
+        .await?;
+    let origin = stack.app_url.as_str().trim_end_matches('/').to_owned();
+    ui.goto(&format!("{origin}/")).await?;
+    ui.wait_for_text("Continue", FEED_TIMEOUT).await?;
+    ui.tap("Continue").await?;
+    ui.wait_for_card(&["Acme Both", email_b], FEED_TIMEOUT)
+        .await?;
+
     // The three cards, all newer than the throwaway card, land in one page.
     google.seed_message_at(sub_a, FIXTURE_T1, T1_MINUTE).await?;
     google.seed_message_at(sub_b, FIXTURE_T2, T2_MINUTE).await?;
     google.seed_message_at(sub_a, FIXTURE_T3, T3_MINUTE).await?;
 
-    // The link leaves the app on Connected accounts; a fresh load at the app
-    // root rebuilds the Feed from A's floor, so both mailboxes interleave.
-    let origin = stack.app_url.as_str().trim_end_matches('/').to_owned();
+    // A fresh load at the app root rebuilds the Feed from both floors, so the
+    // three new cards interleave within the same phase.
     ui.goto(&format!("{origin}/")).await?;
     Ok(ui)
 }

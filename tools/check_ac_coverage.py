@@ -182,6 +182,20 @@ def test_key(known_id: str) -> str:
     return norm
 
 
+def is_task_local_story_ac(raw_id: str) -> bool:
+    """True for an `AC` row of a story the spec sources do not define.
+
+    A task may name its own story (T-1101g's `E2E-INFRA AC1`, whose checks are
+    proved by `e2e_infra_ac1_*` tests). Such a row supplies its own test key
+    from the whole ID; the named test must still exist, so a typo fails exactly
+    like a missing test instead of being ignored.
+
+    The story part must carry a word (letters, not only a number), which is what
+    distinguishes `E2E-INFRA` from the spec's own `SW-03` style IDs.
+    """
+    return bool(re.match(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][A-Z0-9]* AC\d+[a-z]?$", raw_id))
+
+
 def rust_test_names(root: Path) -> set[str]:
     """Collect Rust test function names under backend/ (excluding /target/)."""
     names: set[str] = set()
@@ -378,6 +392,16 @@ def main(argv: list[str] | None = None) -> int:
                     kid = known_map.get(target_id)
 
             if kid is None:
+                # A story the spec sources do not define (`E2E-INFRA AC1`,
+                # T-1101g): the row carries its own test key, and the test must
+                # exist, so a typo fails like a missing test.
+                if is_task_local_story_ac(raw_id):
+                    key = test_key(raw_id)
+                    if not has_test(key, rust_names, dart_keys):
+                        failures.append(
+                            f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
+                        )
+                    continue
                 failures.append(
                     f"{rel_task_path}: {raw_id}: unknown ID"
                 )

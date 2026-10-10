@@ -46,7 +46,9 @@ wait_port_file() {
   done
   # Timing goes to stderr: stdout is the port value the caller captures.
   echo "    $file ready after ${waited}s" >&2
-  tr -d '[:space:]' < "$file"
+  # Only the first line is the port: a service may append further lines (the
+  # testbed writes its HTTPS listener address on line 2, T-1101g).
+  sed -n '1{s/[[:space:]]//g;p;}' "$file"
 }
 
 # Field helpers over /proc/<pid>/stat. The comm field (2) is parenthesised and

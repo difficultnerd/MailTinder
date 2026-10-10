@@ -116,6 +116,23 @@ pub fn e2e_mode_enabled() -> bool {
     false
 }
 
+/// The tunables this process runs with.
+///
+/// Production gets [`domain::Tunables::default`] exactly as before. A `testkit`
+/// build with `MT_E2E=1` applies the e2e override read by
+/// [`crate::startup_e2e::e2e_tunables`] (`MT_E2E_UNSUB_DELAY_S`), so a demo's
+/// queued unsubscribe job falls due in seconds rather than the production five
+/// minutes (S10 3.3, T-1112b). Unset, blank or unparsable keeps the production
+/// value; a release build never reads the variable at all.
+#[must_use]
+pub fn runtime_tunables() -> domain::Tunables {
+    #[cfg(feature = "testkit")]
+    if e2e_requested() {
+        return crate::startup_e2e::e2e_tunables(|name| std::env::var(name).ok());
+    }
+    domain::Tunables::default()
+}
+
 /// Start the service. Initialises observability, builds the ports for the
 /// selected mode and serves until a shutdown signal.
 ///

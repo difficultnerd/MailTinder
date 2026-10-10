@@ -99,25 +99,53 @@ export MT_E2E_FAKE_GOOGLE_URL="http://localhost:$FAKE_PORT"
 
 phase "unsub-testbed"
 TESTBED_PORT_FILE="$RUN/unsub-testbed.port"
+# The testbed writes its per-run CA certificate here (public part only, mode
+# 600); `unsub`'s e2e binary reads the same file and trusts exactly that root
+# for its TLS one-click POST (T-1101g).
+export UNSUB_TESTBED_CA_FILE="$RUN/unsub-testbed-ca.pem"
 start_bg unsub-testbed "$LOGS/unsub-testbed.jsonl" \
-  env TESTBED_PORT_FILE="$TESTBED_PORT_FILE" "$REPO/backend/target/debug/unsub-testbed"
+  env TESTBED_PORT_FILE="$TESTBED_PORT_FILE" \
+  "$REPO/backend/target/debug/unsub-testbed"
 TESTBED_PORT="$(wait_port_file "$TESTBED_PORT_FILE" 30)"
-export MT_E2E_TESTBED_URL="http://localhost:$TESTBED_PORT"
+# Line 2 of the port file is the HTTPS listener address. The one-click target
+# must be a literal loopback IP: the e2e egress refuses a hostname, unlike the
+# production policy's host names (T-1101g).
+TESTBED_HTTPS_ADDR="$(sed -n '2{s/[[:space:]]//g;p;}' "$TESTBED_PORT_FILE")"
+export MT_E2E_TESTBED_URL="http://127.0.0.1:$TESTBED_PORT"
+export MT_E2E_TESTBED_HTTPS_URL="https://$TESTBED_HTTPS_ADDR"
 
 UNSUB_PORT="$(free_port)"
 API_PORT="$(free_port)"
 HOST_PORT="$(free_port)"
 CD_PORT="$(free_port)"
 
+# The one bearer value `unsub`'s e2e verifier accepts, generated per run and
+# passed through the environment only: it is never printed and never on argv
+# (T-1101g).
+UNSUB_E2E_CALLER_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export UNSUB_E2E_CALLER_TOKEN
+
 # The discovered values come after the env files so they win: the files carry a
 # placeholder emulator host, but this run's emulator is on the free port above.
+# `UNSUB_E2E_CALLER_TOKEN` is exported above, never an `env` argument, so the
+# token never appears in a command line (T-1101g).
 phase "unsub on 127.0.0.1:$UNSUB_PORT"
 start_bg unsub "$LOGS/unsub.jsonl" env \
   $(env_file "$REPO/scripts/e2e/unsub.env") \
+  MT_E2E=1 \
   PORT="$UNSUB_PORT" \
-  UNSUB_BASE_URL="http://localhost:$UNSUB_PORT" \
+  UNSUB_BASE_URL="http://127.0.0.1:$UNSUB_PORT" \
+  UNSUB_TESTBED_URL="$MT_E2E_TESTBED_HTTPS_URL" \
+  UNSUB_TESTBED_CA_FILE="$UNSUB_TESTBED_CA_FILE" \
+  FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
   FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
   "$REPO/backend/target/debug/unsub"
+
+# The e2e due delay (S2 `UNSUB_DELAY` in the test configuration): a reject
+# queues its job three real seconds ahead, so a journey waits seconds rather
+# than the production five minutes (T-1101g). The api's clock stays real:
+# fake-google checks token expiry and the Firestore emulator uses wall time.
+MT_E2E_UNSUB_DELAY_S="${MT_E2E_UNSUB_DELAY_S:-3}"
 
 phase "api on 127.0.0.1:$API_PORT"
 start_bg api "$LOGS/api.jsonl" env \
@@ -127,6 +155,8 @@ start_bg api "$LOGS/api.jsonl" env \
   FAKE_GOOGLE_URL="http://127.0.0.1:$FAKE_PORT" \
   PORT="$API_PORT" \
   FIRESTORE_EMULATOR_HOST="$FIRESTORE_EMULATOR_HOST" \
+  UNSUB_BASE_URL="http://127.0.0.1:$UNSUB_PORT" \
+  MT_E2E_UNSUB_DELAY_S="$MT_E2E_UNSUB_DELAY_S" \
   "$REPO/backend/target/debug/api"
 wait_http "http://127.0.0.1:$API_PORT/api/v1/healthz"
 
