@@ -572,6 +572,73 @@ impl Ui {
         self.client.switch_to_window(last).await.map_err(wd)
     }
 
+    /// Poll until a second browser window exists (the step-up popup a tap
+    /// opened) and switch to it, or `timeout` passes. The popup is opened
+    /// synchronously by the tap handler, but WebDriver can need a moment to
+    /// list the new handle.
+    pub async fn wait_for_popup(&self, timeout: Duration) -> Result<(), E2eError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let handles = self.client.windows().await.map_err(wd)?;
+            if handles.len() >= 2 {
+                let last = handles
+                    .into_iter()
+                    .last()
+                    .ok_or_else(|| E2eError::State("no browser window".to_owned()))?;
+                return self.client.switch_to_window(last).await.map_err(wd);
+            }
+            if Instant::now() >= deadline {
+                self.capture_failure("popup").await;
+                return Err(E2eError::Timeout("the step-up popup window".to_owned()));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Switch back to the app's main window, the first browser window. Safe
+    /// when the popup has already closed itself: the remaining handle is picked.
+    pub async fn switch_to_main(&self) -> Result<(), E2eError> {
+        let handles = self.client.windows().await.map_err(wd)?;
+        let first = handles
+            .into_iter()
+            .next()
+            .ok_or_else(|| E2eError::State("no browser window".to_owned()))?;
+        self.client.switch_to_window(first).await.map_err(wd)
+    }
+
+    /// Navigate the current window to the absolute `url` (a mid-session route
+    /// change; [`Self::open`] starts a new browser session instead).
+    pub async fn goto(&self, url: &str) -> Result<(), E2eError> {
+        self.client.goto(url).await.map_err(wd)
+    }
+
+    /// Poll until one element's `aria-label` contains every needle in
+    /// `needles`, or `timeout` passes.
+    ///
+    /// The focused Feed card carries its sender, mailbox address and subject in
+    /// one label (FD-02 AC2), while the card behind it is excluded from
+    /// semantics: this reads exactly the card in focus, where `innerText` would
+    /// also hold the card behind.
+    pub async fn wait_for_card(&self, needles: &[&str], timeout: Duration) -> Result<(), E2eError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = self
+                .client
+                .execute(CARD_LABEL_JS, vec![json!(needles)])
+                .await
+                .map_err(wd)?;
+            if found.as_bool() == Some(true) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let label = needles.first().copied().unwrap_or("card");
+                self.capture_failure(label).await;
+                return Err(E2eError::Timeout(format!("a card labelled {needles:?}")));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// Persisted browser state: `localStorage`, `sessionStorage`, IndexedDB
     /// database names and Cache Storage keys, as JSON (leak scans; T-1101c).
     pub async fn storage_dump(&self) -> Result<String, E2eError> {
@@ -814,13 +881,7 @@ impl FakeGoogle {
     /// Seed the named corpus cases into `sub`'s mailbox, in order; the last is
     /// the newest.
     pub async fn seed_messages(&self, sub: &str, fixture_ids: &[&str]) -> Result<(), E2eError> {
-        let email = self
-            .accounts
-            .lock()
-            .map_err(|_| E2eError::State("accounts poisoned".to_owned()))?
-            .get(sub)
-            .map(|(email, _)| email.clone())
-            .ok_or_else(|| E2eError::State(format!("no seeded account for {sub}")))?;
+        let email = self.email_for(sub)?;
         let corpus = testkit::corpus::load().map_err(E2eError::State)?;
         // A fixed base, not wall-clock: the harness must not read the clock (S10
         // 1 rule 2), and deterministic dates keep the seeded order stable.
@@ -882,6 +943,72 @@ impl FakeGoogle {
                 "eml_base64": base64::engine::general_purpose::STANDARD.encode(eml),
                 "labels": ["INBOX"],
                 "internal_date": internal_date,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Seed one corpus case into `sub`'s mailbox at an explicit received time:
+    /// `minutes_after_base` past [`BASE_UNIX_SECONDS`], so a journey can
+    /// interleave two mailboxes by received time (FD-02 AC1).
+    pub async fn seed_message_at(
+        &self,
+        sub: &str,
+        fixture_id: &str,
+        minutes_after_base: i64,
+    ) -> Result<(), E2eError> {
+        let email = self.email_for(sub)?;
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        let case = corpus
+            .cases
+            .iter()
+            .find(|c| c.spec.id == fixture_id)
+            .ok_or_else(|| E2eError::State(format!("no corpus case {fixture_id}")))?;
+        let received = time::OffsetDateTime::from_unix_timestamp(BASE_UNIX_SECONDS)
+            .map_err(|e| E2eError::State(format!("base timestamp: {e}")))?
+            .checked_add(time::Duration::minutes(minutes_after_base))
+            .ok_or_else(|| E2eError::State("received time out of range".to_owned()))?
+            .format(&Rfc3339)
+            .map_err(|e| E2eError::State(format!("rfc3339: {e}")))?;
+        self.post(
+            "/__fake/gmail/messages",
+            json!({
+                "email": email,
+                "eml_base64": base64::engine::general_purpose::STANDARD.encode(&case.eml),
+                "labels": ["INBOX"],
+                "internal_date": received,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The address `sub` was seeded with.
+    fn email_for(&self, sub: &str) -> Result<String, E2eError> {
+        self.accounts
+            .lock()
+            .map_err(|_| E2eError::State("accounts poisoned".to_owned()))?
+            .get(sub)
+            .map(|(email, _)| email.clone())
+            .ok_or_else(|| E2eError::State(format!("no seeded account for {sub}")))
+    }
+
+    /// Script the next authorisation to approve the second mailbox at `email`
+    /// (the `link` intent's round trip). The address is used as the account
+    /// `sub`: the fake keys its Gmail mailboxes by address, so any `sub`
+    /// distinct from the signed-in user's identifies this mailbox.
+    pub async fn select_second_mailbox_for_next_authorize(
+        &self,
+        email: &str,
+    ) -> Result<(), E2eError> {
+        self.post(
+            "/__fake/identity/next-login",
+            json!({
+                "sub": email,
+                "email": email,
+                "email_verified": true,
+                "outcome": "approve",
             }),
         )
         .await
@@ -1391,6 +1518,65 @@ pub async fn signed_in_user(
     Ok(ui)
 }
 
+/// A route nested under Settings, so the step-up popup's own URL never matches.
+const SETTINGS_ROUTE: &str = "/settings";
+/// The Connected accounts screen's Add Gmail button (S9 7.1; `Copy.addGmail`).
+pub const ADD_GMAIL: &str = "Add Gmail";
+/// The step-up overlay's panel title (S9 1.1; `Copy.confirmItsYou`).
+pub const CONFIRM_ITS_YOU: &str = "Confirm it's you";
+/// The OAuth round trip from the link callback back to Connected accounts.
+pub const LINK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Link a second mailbox through the UI (journey 3): Settings, Connected
+/// accounts, Add Gmail, the Confirm-it's-you popup, fake-google approving
+/// `email`, and the return to Connected accounts.
+///
+/// The signed-in user's fresh Google sign-in for the step-up must already be
+/// scripted by the caller ([`FakeGoogle::select_account_for_next_authorize`]);
+/// this scripts `email`'s login for the link the moment the popup has finished,
+/// and leaves `ui` on Connected accounts with the new address listed.
+pub async fn connect_second_mailbox(
+    ui: &mut Ui,
+    stack: &Stack,
+    email: &str,
+) -> Result<(), E2eError> {
+    let google = FakeGoogle::connect(stack)?;
+    let origin = stack.app_url.as_str().trim_end_matches('/').to_owned();
+
+    // Navigate within the authenticated app (S9 7.1). A cold load at a
+    // protected deep link builds its routes before the session refresh has
+    // completed; that refresh then pops the route back to the sign-in screen.
+    // Flutter merges the destination's icon label and text into one tab label.
+    ui.tap("Settings\nSettings").await?;
+    ui.wait_for_text("Connected accounts", TAP_ACK_TIMEOUT)
+        .await?;
+    ui.tap("Connected accounts").await?;
+    ui.wait_for_text(ADD_GMAIL, APP_LOAD_TIMEOUT).await?;
+
+    // Add Gmail: the `link` intent needs a fresh sign-in, so the server answers
+    // `403 step_up_required` and the Confirm-it's-you overlay appears (AU-04 AC6).
+    ui.tap(ADD_GMAIL).await?;
+    ui.wait_for_text(CONFIRM_ITS_YOU, TAP_ACK_TIMEOUT).await?;
+
+    // Continue with Google opens the step-up popup and navigates it to
+    // fake-google, which approves the signed-in user.
+    ui.tap(CONTINUE_WITH_GOOGLE).await?;
+    ui.wait_for_popup(TAP_ACK_TIMEOUT).await?;
+    // The popup settles back on the app once its authorisation has consumed the
+    // caller's script; only then is the next authorisation free for the link.
+    ui.wait_for_url(&origin, SETTINGS_ROUTE, REDIRECT_TIMEOUT)
+        .await?;
+    google
+        .select_second_mailbox_for_next_authorize(email)
+        .await?;
+    ui.switch_to_main().await?;
+
+    // The waiting link intent now re-runs, navigates the main window to
+    // fake-google, links `email`, and returns to Connected accounts.
+    ui.wait_for_text(email, LINK_TIMEOUT).await?;
+    Ok(())
+}
+
 /// The prefix of a [`finish_journey`] marker file; T-1101c's leak scan reads it.
 const FINISH_MARKER_PREFIX: &str = "JOURNEYS_FINISHED-";
 
@@ -1515,6 +1701,17 @@ if (!body) return false;
 if (body.innerText && body.innerText.includes(needle)) return true;
 return Array.from(document.querySelectorAll('[aria-label]'))
   .some(el => (el.getAttribute('aria-label') || '').includes(needle));
+"#;
+
+/// True when one element's `aria-label` contains every needle in
+/// `arguments[0]` (the focused Feed card's label; the card behind it is
+/// excluded from semantics).
+const CARD_LABEL_JS: &str = r#"
+const needles = arguments[0];
+return Array.from(document.querySelectorAll('[aria-label]')).some(el => {
+  const label = el.getAttribute('aria-label') || '';
+  return needles.every(needle => label.includes(needle));
+});
 "#;
 
 /// Persisted browser state as a JSON string; completes asynchronously.
