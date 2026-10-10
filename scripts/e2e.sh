@@ -198,6 +198,19 @@ fi
 # default `python3 -m unittest discover` gate cannot start it, so without this
 # it was permanently skipped (security review F5). It starts and stops its own
 # stack on free ports and reuses this job's build, so the cost is one stack.
+phase "leak, storage and CSP scans (T-1101c)"
+# The scans read the whole run - every journey's log lines, the emulator's
+# documents and every journey's browser dump - so they run in their own
+# `cargo test` call after the journeys, never inside the phase above where a
+# journey's own artefacts may not exist yet (S10 7.3). `MT_E2E_LEAK_SCAN` is what
+# tells the scan target that this is the scan call.
+(cd backend && MT_E2E_LEAK_SCAN=1 cargo test --locked -p e2e --test zz_leak_scan -- --ignored --test-threads=1 --nocapture)
+
+# The stack-dependent demo acceptance test (T-1108a) runs here, in the only CI
+# job that has the stack (Firestore emulator, Chrome, a Flutter web build); the
+# default `python3 -m unittest discover` gate cannot start it, so without this
+# it was permanently skipped (security review F5). It starts and stops its own
+# stack on free ports and reuses this job's build, so the cost is one stack.
 phase "demo.sh --check (T-1108a)"
 MT_DEMO_STACK=1 python3 "$REPO/tools/test_demo_script.py" \
   DemoScriptTest.test_demo_check_serves_page_and_health_then_cleans_up

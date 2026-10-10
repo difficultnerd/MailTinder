@@ -125,7 +125,9 @@ pub fn build_router_with_routes(
     // session; require both the `testkit` feature and runtime e2e mode (S10 3.2).
     #[cfg(feature = "testkit")]
     let app = if startup::e2e_mode_enabled() {
-        app.merge(crate::routes::testkit::router())
+        app.merge(crate::routes::testkit::router(
+            crate::startup_e2e::e2e_clock(),
+        ))
     } else {
         app
     };

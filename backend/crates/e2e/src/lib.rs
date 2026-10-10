@@ -295,7 +295,18 @@ impl Ui {
     /// `click()` remains the fallback for a node WebDriver cannot interact
     /// with (for example an element its hit test finds covered).
     pub async fn tap(&self, label: &str) -> Result<(), E2eError> {
-        self.tap_marked(MARK_TAPPABLE_JS, label).await
+        self.tap_marked(MARK_TAPPABLE_JS, &[label]).await
+    }
+
+    /// Click the control labelled `label` in the row that carries `after`.
+    ///
+    /// A list that repeats one action per row (Connected accounts renders a
+    /// Disconnect button in every mailbox's row) gives several controls the same
+    /// `aria-label`, so [`Self::tap`] cannot say which row it means. `after` is
+    /// text from that row's own subtree (the mailbox address), and the labelled
+    /// control nearest the deepest node carrying it is clicked (T-1101c).
+    pub async fn tap_after(&self, label: &str, after: &str) -> Result<(), E2eError> {
+        self.tap_marked(MARK_AFTER_JS, &[label, after]).await
     }
 
     /// Click the control whose merged Semantics label carries `label` as one of
@@ -308,20 +319,22 @@ impl Ui {
     /// Every other control matches exactly, so this is the exception, not the
     /// rule (T-1101e).
     pub async fn tap_merged(&self, label: &str) -> Result<(), E2eError> {
-        self.tap_marked(MARK_MERGED_JS, label).await
+        self.tap_marked(MARK_MERGED_JS, &[label]).await
     }
 
     /// Tag the labelled control with `mark_js`, then click it (see
     /// [`Self::tap`] for why the click is retried).
-    async fn tap_marked(&self, mark_js: &str, label: &str) -> Result<(), E2eError> {
+    async fn tap_marked(&self, mark_js: &str, args: &[&str]) -> Result<(), E2eError> {
         // Flutter web rebuilds its semantics tree while the page settles (slower on a cold CI runner): a node can be found and tagged,
         // then replaced before the click lands, and a miss at any step used to be fatal. Retry the whole find -> tag -> click sequence
         // until it succeeds or FIND_TIMEOUT passes; every step is a no-op on a miss, so repeating it is safe.
         let deadline = Instant::now() + FIND_TIMEOUT;
+        let label = args.first().copied().unwrap_or("control");
+        let arguments: Vec<Value> = args.iter().map(|arg| json!(arg)).collect();
         loop {
             let marked = self
                 .client
-                .execute(mark_js, vec![json!(label)])
+                .execute(mark_js, arguments.clone())
                 .await
                 .map_err(wd)?;
             if marked.as_bool() == Some(true) {
@@ -551,7 +564,7 @@ impl Ui {
         let base = webdriver_url()?;
         let session = self.session_id().await?;
         let url = format!("{}/session/{}/log", base.trim_end_matches('/'), session);
-        reqwest::Client::new()
+        let response: WebDriverResponse<Vec<LogEntry>> = reqwest::Client::new()
             .post(&url)
             .json(&json!({ "type": "browser" }))
             .send()
@@ -559,7 +572,8 @@ impl Ui {
             .map_err(http)?
             .json()
             .await
-            .map_err(http)
+            .map_err(http)?;
+        Ok(response.value)
     }
 
     /// Switch to the most recently opened window (step-up popups; T-1001b).
@@ -634,6 +648,34 @@ impl Ui {
                 let label = needles.first().copied().unwrap_or("card");
                 self.capture_failure(label).await;
                 return Err(E2eError::Timeout(format!("a card labelled {needles:?}")));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Poll until no element's `aria-label` contains every needle in `needles`,
+    /// or `timeout` passes (T-1101c: a disconnected mailbox's card must be gone).
+    pub async fn wait_for_card_absent(
+        &self,
+        needles: &[&str],
+        timeout: Duration,
+    ) -> Result<(), E2eError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = self
+                .client
+                .execute(CARD_LABEL_ABSENT_JS, vec![json!(needles)])
+                .await
+                .map_err(wd)?;
+            if found.as_bool() == Some(true) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let label = needles.first().copied().unwrap_or("card");
+                self.capture_failure(label).await;
+                return Err(E2eError::Timeout(format!(
+                    "no card labelled {needles:?} to remain"
+                )));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -791,11 +833,42 @@ impl Ui {
     }
 }
 
+/// The envelope every WebDriver command answers with: the command's payload
+/// under `value` (W3C WebDriver). A raw command's response is not the payload
+/// itself, so decoding it directly fails on every answer.
+#[derive(Deserialize)]
+struct WebDriverResponse<T> {
+    value: T,
+}
+
 /// One WebDriver browser log entry.
 #[derive(Deserialize, Serialize)]
 struct LogEntry {
     level: String,
     message: String,
+}
+
+/// One provider call `fake-google` recorded (`/__fake/events`): the method and
+/// the symbolic route (`drive.files.delete`, `oauth.revoke`, `messages.trash`,
+/// ...), in arrival order, so a journey can assert what the api did and in which
+/// order (T-1101c).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct FakeCall {
+    /// `request` for a provider call, or `permanent_delete_attempted`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The HTTP method, empty for an event that is not a call.
+    #[serde(default)]
+    pub method: String,
+    /// The symbolic route, empty for an event that is not a call.
+    #[serde(default)]
+    pub route: String,
+}
+
+/// The `/__fake` events response body.
+#[derive(Deserialize)]
+struct FakeEvents {
+    events: Vec<FakeCall>,
 }
 
 /// The Gmail scope the fake's list route requires (S8); the label read-back
@@ -1061,6 +1134,48 @@ impl FakeGoogle {
         Ok(out)
     }
 
+    /// Every provider call `fake-google` recorded, in arrival order, including
+    /// the ones a deletion makes (`drive.files.delete`, `oauth.revoke`): the api
+    /// reads no message content and calls no other route on this path, so a
+    /// journey asserts exactly what ran and in which order (T-1101c).
+    pub async fn calls(&self) -> Result<Vec<FakeCall>, E2eError> {
+        let value: FakeEvents = self
+            .client
+            .get(endpoint(&self.base, "/__fake/events"))
+            .send()
+            .await
+            .map_err(http)?
+            .json()
+            .await
+            .map_err(http)?;
+        Ok(value.events)
+    }
+
+    /// The revoked token kinds `fake-google` recorded, in order
+    /// (`refresh` for a refresh token, `access` for a lone access token). Only
+    /// the kind is recorded, never a token (T-1101c).
+    pub async fn revocations(&self) -> Result<Vec<String>, E2eError> {
+        let value = self
+            .client
+            .get(endpoint(&self.base, "/__fake/identity/revocations"))
+            .send()
+            .await
+            .map_err(http)?
+            .json::<Value>()
+            .await
+            .map_err(http)?;
+        Ok(value
+            .get("revocations")
+            .and_then(Value::as_array)
+            .map(|kinds| {
+                kinds
+                    .iter()
+                    .filter_map(|kind| kind.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// The mailbox's label ID -> name map, from the Gmail labels list.
     async fn label_names(&self, token: &str) -> Result<HashMap<String, String>, E2eError> {
         let labels = self.get_json("/gmail/v1/users/me/labels", token).await?;
@@ -1160,6 +1275,41 @@ impl TestControl {
             .ok_or_else(|| E2eError::State("invite response had no token".to_owned()))
     }
 
+    /// Move the api's e2e clock `seconds` forward (T-1101c): a journey passes a
+    /// queued job's due time, or the account-deletion sweep horizon, without
+    /// real time passing (S10 6.3).
+    pub async fn advance_clock(&self, seconds: i64) -> Result<(), E2eError> {
+        self.post(
+            "/internal/test/advance-clock",
+            json!({ "seconds": seconds }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Override the delay a queued unsubscribe's due time is planned with for
+    /// the rest of the run, or clear the override with `None` (T-1101c).
+    ///
+    /// The run's configured delay is only seconds (T-1101g), which is shorter
+    /// than a journey's own disconnect round trip: a journey that must disconnect
+    /// a mailbox while one of its unsubscribes is still queued sets a delay the
+    /// UI work fits inside, then clears it.
+    pub async fn set_unsub_delay(&self, seconds: Option<u64>) -> Result<(), E2eError> {
+        self.post("/internal/test/unsub-delay", json!({ "seconds": seconds }))
+            .await
+            .map(|_| ())
+    }
+
+    /// Run the worker's account-deletion backstop once (S2 AU-06 AC1) and return
+    /// how many records it deleted (T-1101c).
+    pub async fn sweep(&self) -> Result<u64, E2eError> {
+        let value = self.post("/internal/test/sweep", json!({})).await?;
+        value
+            .get("deleted_records")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| E2eError::State("sweep response had no deleted_records".to_owned()))
+    }
+
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
         let response = self
             .client
@@ -1203,6 +1353,16 @@ struct RecordedWire {
     body: Vec<u8>,
 }
 
+/// One wire record as the harness hands it to a journey: the path it was
+/// filtered on is not part of a [`RecordedRequest`].
+fn into_recorded(record: RecordedWire) -> RecordedRequest {
+    RecordedRequest {
+        method: record.method,
+        headers: record.headers,
+        body: record.body,
+    }
+}
+
 /// The one-click unsubscribe testbed's read-back control API (`/__testbed`,
 /// S10 6.2). Journeys assert exactly what a route received.
 pub struct Testbed {
@@ -1222,6 +1382,29 @@ impl Testbed {
     /// Everything the testbed recorded for `route` (a path, without the query),
     /// in arrival order.
     pub async fn received(&self, route: &str) -> Result<Vec<RecordedRequest>, E2eError> {
+        Ok(self
+            .wire_records()
+            .await?
+            .into_iter()
+            .filter(|record| record.path == route)
+            .map(into_recorded)
+            .collect())
+    }
+
+    /// Everything the testbed recorded, whatever its path, in arrival order. A
+    /// journey that expects a link never to be fetched asserts that nothing
+    /// arrived at all (T-1101c).
+    pub async fn received_any(&self) -> Result<Vec<RecordedRequest>, E2eError> {
+        Ok(self
+            .wire_records()
+            .await?
+            .into_iter()
+            .map(into_recorded)
+            .collect())
+    }
+
+    /// The testbed's whole wire record, every route.
+    async fn wire_records(&self) -> Result<Vec<RecordedWire>, E2eError> {
         let response = self
             .client
             .get(endpoint(&self.base, "/__testbed/requests"))
@@ -1235,16 +1418,7 @@ impl Testbed {
                 "GET /__testbed/requests: {status} {body}"
             )));
         }
-        let records: Vec<RecordedWire> = response.json().await.map_err(http)?;
-        Ok(records
-            .into_iter()
-            .filter(|record| record.path == route)
-            .map(|record| RecordedRequest {
-                method: record.method,
-                headers: record.headers,
-                body: record.body,
-            })
-            .collect())
+        response.json().await.map_err(http)
     }
 
     /// Clear every recorded request, so a journey never sees another journey's
@@ -1584,11 +1758,16 @@ const FINISH_MARKER_PREFIX: &str = "JOURNEYS_FINISHED-";
 /// call it explicitly as their last statement (async work cannot run reliably in
 /// `Drop`, so there is no `Drop`-based variant).
 ///
-/// T-1101b defines this with a stub body: it records the call by writing one
+/// It writes the browser's persisted state and checks the shipped CSP held for
+/// the whole journey (T-1101c), then records the call by writing one
 /// `JOURNEYS_FINISHED-<test name>` marker file under the log directory and
-/// releases the browser. T-1101c replaces the body with the real
-/// `save_browser_dump` and `assert_no_csp_violation` and adds a `zz_leak_scan.rs`
-/// check that every journey test wrote a marker.
+/// releasing the browser. `zz_leak_scan.rs` fails when a journey in
+/// [`JOURNEY_TESTS`] left no marker, and scans the dump this wrote.
+///
+/// # Errors
+///
+/// `E2eError::State` when the dump or the marker cannot be written, and
+/// whatever [`save_browser_dump`] and [`assert_no_csp_violation`] report.
 pub async fn finish_journey(ui: Ui) -> Result<(), E2eError> {
     let dir = log_dir();
     let name = std::thread::current()
@@ -1597,6 +1776,13 @@ pub async fn finish_journey(ui: Ui) -> Result<(), E2eError> {
         .to_owned();
     std::fs::create_dir_all(&dir)
         .map_err(|e| E2eError::State(format!("finish_journey log dir: {e}")))?;
+    // What the session left in the browser's stores, scanned afterwards
+    // (ASVS V14.3.3).
+    save_browser_dump(&ui, &name).await?;
+    // The app ran under the shipped CSP, Trusted Types included (ASVS V3.4.3).
+    assert_no_csp_violation(&ui).await?;
+    // The marker the scan reads, written last: it means this journey finished
+    // clean.
     std::fs::write(dir.join(format!("{FINISH_MARKER_PREFIX}{name}")), &name)
         .map_err(|e| E2eError::State(format!("finish_journey marker: {e}")))?;
     // Best-effort: release the browser session; a cleanup hiccup must not hide a
@@ -1629,6 +1815,37 @@ const CLICK_MARKED_JS: &str = r#"
 const node = document.querySelector('[data-e2e-tap]');
 if (!node) return false;
 node.click();
+return true;
+"#;
+
+/// Tag the control labelled `arguments[0]` that belongs to the row carrying the
+/// text `arguments[1]`. See [`Ui::tap_after`]. Returns false when nothing
+/// matches.
+///
+/// A row that repeats one action per row gives several controls the same label.
+/// The deepest element of the semantics tree carrying the row's text (the
+/// mailbox address) is the anchor, and the labelled control nearest it in
+/// document order is the row's own: a tile renders its trailing action after its
+/// title and subtitle, and Flutter blocks the rows below only while a dialog is
+/// open.
+const MARK_AFTER_JS: &str = r#"
+const label = arguments[0];
+const after = arguments[1];
+const all = Array.from(document.querySelectorAll('flt-semantics, [role="button"], button, [aria-label]'));
+const labelled = el => el.getAttribute('aria-label') === label || (el.textContent || '').trim() === label;
+const carries = el => (el.getAttribute('aria-label') || '').includes(after) || (el.textContent || '').includes(after);
+const anchors = all.filter(carries);
+if (anchors.length === 0) return false;
+const anchor = all.indexOf(anchors[anchors.length - 1]);
+const matches = [];
+for (let i = 0; i < all.length; i++) { if (labelled(all[i])) matches.push(i); }
+if (matches.length === 0) return false;
+const later = matches.filter(i => i > anchor);
+const earlier = matches.filter(i => i < anchor);
+const chosen = later.length > 0 ? later[0] : earlier[earlier.length - 1];
+if (chosen === undefined) return false;
+document.querySelectorAll('[data-e2e-tap]').forEach(el => el.removeAttribute('data-e2e-tap'));
+all[chosen].setAttribute('data-e2e-tap', '');
 return true;
 "#;
 
@@ -1714,6 +1931,16 @@ return Array.from(document.querySelectorAll('[aria-label]')).some(el => {
 });
 "#;
 
+/// True when no element's `aria-label` contains every needle in `arguments[0]`
+/// (T-1101c: the card of a mailbox the user just disconnected must be gone).
+const CARD_LABEL_ABSENT_JS: &str = r#"
+const needles = arguments[0];
+return !Array.from(document.querySelectorAll('[aria-label]')).some(el => {
+  const label = el.getAttribute('aria-label') || '';
+  return needles.every(needle => label.includes(needle));
+});
+"#;
+
 /// Persisted browser state as a JSON string; completes asynchronously.
 const STORAGE_JS: &str = r#"
 const done = arguments[arguments.length - 1];
@@ -1759,6 +1986,404 @@ const out = nodes.slice(0, 400).map(el => {
 });
 return JSON.stringify({ count: nodes.length, nodes: out });
 "#;
+
+// ---------------------------------------------------------------------------
+// Leak, storage and CSP scans (T-1101c).
+// ---------------------------------------------------------------------------
+
+/// Every canary token, corpus address and unsubscribe URL the T-204 fixture
+/// corpus plants (S10 5, 7.3). A log line, a Firestore document or a browser
+/// store that holds one of these is a leak: they exist only so a leak is
+/// impossible to miss.
+pub struct Canaries {
+    /// `CANARY-<case>-<field>` tokens, corpus addresses and corpus URLs.
+    pub strings: Vec<String>,
+}
+
+impl Canaries {
+    /// Load the corpus's canaries, addresses and URLs.
+    ///
+    /// # Errors
+    ///
+    /// `E2eError::State` when the fixture corpus cannot be loaded.
+    pub fn load() -> Result<Self, E2eError> {
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        let mut strings = corpus.all_canaries();
+        strings.extend(corpus.all_addresses());
+        strings.extend(corpus.all_urls());
+        strings.sort();
+        strings.dedup();
+        Ok(Self { strings })
+    }
+
+    /// Every canary that appears in `text`, in the corpus's order.
+    pub fn find_in(&self, text: &str) -> Vec<String> {
+        self.strings
+            .iter()
+            .filter(|needle| text.contains(needle.as_str()))
+            .cloned()
+            .collect()
+    }
+}
+
+/// The Firestore project `scripts/e2e.sh` starts the emulator with, the same one
+/// the api's e2e wiring uses.
+pub const E2E_FIRESTORE_PROJECT: &str = "demo-mailtinder";
+
+/// The server collections of S5 ("Firestore (server)"), every one of which a
+/// document could leak into. The dump reads them all, not only the ones a
+/// journey expects to have written: an unexpected collection is a leak too.
+pub const FIRESTORE_COLLECTIONS: &[&str] = &[
+    "users",
+    "mailboxes",
+    "sessions",
+    "invites",
+    "invite_requests",
+    "jobs",
+    "needs_attention",
+    "rate_limits",
+    "classifier_eval",
+    "bakeoff_snapshots",
+    "classifiers",
+    "config",
+];
+
+/// Lists every document of every S5 collection through the Firestore emulator's
+/// REST API (S10 7.3: "the Firestore emulator is exported and scanned the same
+/// way").
+pub struct FirestoreDump;
+
+impl FirestoreDump {
+    /// Every document of every S5 collection as `(path, json)`, where `path` is
+    /// the document's path under `documents/` (`mailboxes/abc`).
+    ///
+    /// # Errors
+    ///
+    /// `E2eError::Http` when the emulator answers a collection with a failure;
+    /// `E2eError::Http` from the HTTP call itself when it cannot be reached.
+    pub async fn all_documents(
+        emulator: &Url,
+        project: &str,
+    ) -> Result<Vec<(String, String)>, E2eError> {
+        let base = format!(
+            "{}/v1/projects/{project}/databases/(default)/documents",
+            emulator.as_str().trim_end_matches('/')
+        );
+        let client = reqwest::Client::new();
+        let mut documents = Vec::new();
+        for collection in FIRESTORE_COLLECTIONS {
+            let mut page: Option<String> = None;
+            loop {
+                let mut request = client.get(format!("{base}/{collection}"));
+                if let Some(token) = &page {
+                    request = request.query(&[("pageToken", token.as_str())]);
+                }
+                let response = request.send().await.map_err(http)?;
+                let status = response.status();
+                let body: Value = response.json().await.map_err(http)?;
+                if !status.is_success() {
+                    return Err(E2eError::Http(format!("GET {collection}: {status} {body}")));
+                }
+                for document in body
+                    .get("documents")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let name = document
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let path = name.split("/documents/").nth(1).unwrap_or(name).to_owned();
+                    documents.push((path, document.to_string()));
+                }
+                match body.get("nextPageToken").and_then(Value::as_str) {
+                    Some(token) => page = Some(token.to_owned()),
+                    None => break,
+                }
+            }
+        }
+        Ok(documents)
+    }
+}
+
+/// The documents of `documents` that live in `collection`.
+pub fn documents_in<'a>(
+    documents: &'a [(String, String)],
+    collection: &str,
+) -> Vec<&'a (String, String)> {
+    let prefix = format!("{collection}/");
+    documents
+        .iter()
+        .filter(|(path, _)| path.starts_with(&prefix))
+        .collect()
+}
+
+/// The string value of the top-level Firestore field `field` in one document's
+/// REST JSON, when it is present.
+pub fn document_string(document: &str, field: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(document).ok()?;
+    value
+        .get("fields")?
+        .get(field)?
+        .get("stringValue")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The path of the mailbox document whose `provider_subject_id` is `subject` -
+/// the Google `sub` a journey seeds its account with, and the only identifier
+/// the harness knows before the api has answered (`mailboxes/<id>`).
+pub fn mailbox_path_for_subject<'a>(
+    documents: &'a [(String, String)],
+    subject: &str,
+) -> Option<&'a str> {
+    documents_in(documents, "mailboxes")
+        .into_iter()
+        .find(|(_, json)| document_string(json, "provider_subject_id").as_deref() == Some(subject))
+        .map(|(path, _)| path.as_str())
+}
+
+/// The documents whose REST JSON holds `needle` anywhere. A document that still
+/// names a deleted user or a disconnected mailbox is a leftover (T-1101c).
+pub fn documents_holding<'a>(
+    documents: &'a [(String, String)],
+    needle: &str,
+) -> Vec<&'a (String, String)> {
+    documents
+        .iter()
+        .filter(|(_, json)| json.contains(needle))
+        .collect()
+}
+
+/// The emulator's base URL, from `FIRESTORE_EMULATOR_HOST` (a `host:port`).
+///
+/// # Errors
+///
+/// `E2eError::MissingEnv` when the variable is not set and
+/// `E2eError::InvalidUrl` when it is not a URL.
+pub fn firestore_emulator_url() -> Result<Url, E2eError> {
+    let host = std::env::var("FIRESTORE_EMULATOR_HOST")
+        .map_err(|_| E2eError::MissingEnv("FIRESTORE_EMULATOR_HOST"))?;
+    Url::parse(&format!("http://{}", host.trim()))
+        .map_err(|_| E2eError::InvalidUrl("FIRESTORE_EMULATOR_HOST"))
+}
+
+/// The prefix of a [`save_browser_dump`] file name.
+const BROWSER_DUMP_PREFIX: &str = "browser-";
+
+/// Write `ui`'s persisted browser state to `<log dir>/browser-<journey>.json`.
+/// Every journey does this through [`finish_journey`], before it closes the
+/// browser, so the leak scan sees what the session left behind.
+///
+/// # Errors
+///
+/// `E2eError::State` when the log directory or the file cannot be written, and
+/// the WebDriver error from reading the browser's stores.
+pub async fn save_browser_dump(ui: &Ui, journey: &str) -> Result<(), E2eError> {
+    let dir = log_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| E2eError::State(format!("browser dump dir: {e}")))?;
+    let dump = ui.storage_dump().await?;
+    std::fs::write(
+        dir.join(format!("{BROWSER_DUMP_PREFIX}{journey}.json")),
+        dump.as_bytes(),
+    )
+    .map_err(|e| E2eError::State(format!("browser dump for {journey}: {e}")))?;
+    Ok(())
+}
+
+/// The browser storage dumps the finished journeys wrote (ASVS V14.3.3).
+pub struct BrowserDumps;
+
+impl BrowserDumps {
+    /// Every `browser-<journey>.json` in the log directory as
+    /// `(journey, contents)`, sorted by journey.
+    ///
+    /// # Errors
+    ///
+    /// `E2eError::State` when the log directory cannot be read, a dump cannot be
+    /// read, or no dump exists at all: a missing dump is not a pass (T-1101c).
+    pub fn load_all() -> Result<Vec<(String, String)>, E2eError> {
+        let dir = log_dir();
+        let entries =
+            std::fs::read_dir(&dir).map_err(|e| E2eError::State(format!("browser dumps: {e}")))?;
+        let mut dumps = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(journey) = name
+                .strip_prefix(BROWSER_DUMP_PREFIX)
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let body = std::fs::read_to_string(&path)
+                .map_err(|e| E2eError::State(format!("browser dump {name}: {e}")))?;
+            dumps.push((journey.to_owned(), body));
+        }
+        dumps.sort();
+        if dumps.is_empty() {
+            return Err(E2eError::State(format!(
+                "no browser dumps in {}",
+                dir.display()
+            )));
+        }
+        Ok(dumps)
+    }
+}
+
+/// Fails when Chrome's log holds a Content Security Policy or Trusted Types
+/// violation message (ASVS V3.4.3).
+///
+/// The host serves the shipped `firebase.json` CSP (T-006), and a journey calls
+/// this after its last step, so the app completed a real swipe under that policy
+/// with Trusted Types and asked for nothing the policy forbids.
+///
+/// # Errors
+///
+/// The WebDriver error from reading the browser log, or `E2eError::State` naming
+/// the violation messages.
+pub async fn assert_no_csp_violation(ui: &Ui) -> Result<(), E2eError> {
+    let offenders: Vec<String> = ui
+        .console_errors()
+        .await?
+        .into_iter()
+        .filter(|message| {
+            message.contains("Content Security Policy")
+                || message.contains("TrustedHTML")
+                || message.contains("TrustedScript")
+        })
+        .collect();
+    if offenders.is_empty() {
+        Ok(())
+    } else {
+        Err(E2eError::State(format!(
+            "CSP violation: {}",
+            offenders.join(" | ")
+        )))
+    }
+}
+
+/// Set by `scripts/e2e.sh`'s scan phase and by nothing else. The scans run in
+/// their own `cargo test` call after every journey (S10 7.3), so the journey
+/// phase's own `--ignored` pass must not run them: a scan that ran before the
+/// last journey finished would report a missing dump, and the scan's evidence is
+/// the whole run.
+#[must_use]
+pub fn leak_scan_enabled() -> bool {
+    std::env::var_os("MT_E2E_LEAK_SCAN").is_some()
+}
+
+/// Every journey test that must end with [`finish_journey`], by the test
+/// function's name: the name its marker file and its browser dump carry
+/// (T-1101b to T-1101c).
+///
+/// `zz_leak_scan.rs` fails when one of these left no marker, so a journey that
+/// forgot the call cannot pass quietly, and the harness's own
+/// `journey_list_matches_the_test_files` keeps this list equal to the journeys
+/// the test files define (S10 10.4).
+pub const JOURNEY_TESTS: &[&str] = &[
+    "au_03_ac1_e2e_invited_user_lands_on_feed",
+    "au_05_ac1_e2e_disconnect_revokes_and_cancels_jobs",
+    "au_06_ac1_e2e_delete_account_order_and_sweep",
+    "au_07_ac1_e2e_second_sign_in_ends_first_session",
+    "e2e_infra_ac1_job_due_and_posted_once",
+    "fd_02_ac1_e2e_two_mailboxes_interleaved_newest_first",
+    "fd_02_ac2_e2e_cards_show_mailbox",
+    "na_01_ac2_e2e_done_deletes_item",
+    "sw_04_ac2_e2e_file_applies_label_and_leaves_inbox",
+    "sw_05_ac2_e2e_undo_before_due_sends_nothing",
+    "un_01_ac1_e2e_unsubscribe_runs_once",
+    "un_01_ac3_e2e_outcome_in_history_after_feed_load",
+    "un_02_ac1_e2e_one_click_post_is_exact",
+];
+
+/// The test files that hold journeys. Everything else under `tests/` is not
+/// one: `demo_seed.rs` drives T-1108b's demo seed (its browser check ticks the
+/// sign-in journey's box and closes the browser itself) and `zz_leak_scan.rs`
+/// scans the run.
+pub const JOURNEY_TEST_FILES: &[&str] = &[
+    "delete_account",
+    "disconnect",
+    "file",
+    "mixed_feed",
+    "needs_attention",
+    "reject_undo",
+    "reject_unsubscribe",
+    "sessions",
+    "sign_in",
+    "unsub_infra",
+];
+
+/// The browser dumps of the journeys that finished cleanly, after checking that
+/// *every* journey in [`JOURNEY_TESTS`] left both its marker and its dump.
+///
+/// # Errors
+///
+/// `E2eError::State` naming the journeys that wrote no marker or no dump (a
+/// missing file is not a pass, T-1101c), and whatever
+/// [`BrowserDumps::load_all`] reports.
+pub fn finished_journey_dumps() -> Result<Vec<(String, String)>, E2eError> {
+    let dir = log_dir();
+    let entries = std::fs::read_dir(&dir).map_err(|e| E2eError::State(format!("journeys: {e}")))?;
+    let mut markers = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some(journey) = name.strip_prefix(FINISH_MARKER_PREFIX) {
+            markers.push(journey.to_owned());
+        }
+    }
+    let unfinished: Vec<&str> = JOURNEY_TESTS
+        .iter()
+        .copied()
+        .filter(|journey| !markers.iter().any(|marker| marker == journey))
+        .collect();
+    if !unfinished.is_empty() {
+        return Err(E2eError::State(format!(
+            "journeys that left no finish marker: {unfinished:?}"
+        )));
+    }
+    let dumps = BrowserDumps::load_all()?;
+    let undumped: Vec<&str> = JOURNEY_TESTS
+        .iter()
+        .copied()
+        .filter(|journey| !dumps.iter().any(|(name, _)| name == journey))
+        .collect();
+    if !undumped.is_empty() {
+        return Err(E2eError::State(format!(
+            "journeys that left no browser dump: {undumped:?}"
+        )));
+    }
+    Ok(dumps)
+}
+
+/// The `async fn` names of every `#[tokio::test]` in one test file, in order.
+#[cfg(test)]
+fn tokio_test_functions(text: &str) -> Vec<String> {
+    let marker = "#[tokio::test]";
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(marker) {
+        rest = &rest[at + marker.len()..];
+        let Some(fn_at) = rest.find("async fn ") else {
+            break;
+        };
+        let after = &rest[fn_at + "async fn ".len()..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            names.push(name);
+        }
+        rest = &rest[fn_at..];
+    }
+    names
+}
 
 #[cfg(test)]
 mod tests {
@@ -1886,6 +2511,44 @@ mod tests {
         assert!(log.since_mark(quiet)?.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    /// The journeys the scan demands a marker from must be exactly the journeys
+    /// the test files define (T-1101c): a new journey that forgets
+    /// `finish_journey` fails here, rather than quietly passing the leak scan,
+    /// and a journey deleted from a file does not leave the scan demanding a
+    /// marker nothing writes.
+    #[test]
+    fn journey_list_matches_the_test_files() -> Result<(), E2eError> {
+        let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut found: Vec<String> = Vec::new();
+        let entries = std::fs::read_dir(&tests_dir)
+            .map_err(|e| E2eError::State(format!("read {}: {e}", tests_dir.display())))?;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let stem = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            if !JOURNEY_TEST_FILES.contains(&stem.as_str()) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| E2eError::State(format!("read {}: {e}", path.display())))?;
+            found.extend(tokio_test_functions(&text));
+        }
+        found.sort();
+        let mut expected: Vec<String> = JOURNEY_TESTS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        expected.sort();
+        assert_eq!(
+            found, expected,
+            "JOURNEY_TESTS and the test files' journeys disagree"
+        );
         Ok(())
     }
 }
