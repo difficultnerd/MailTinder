@@ -39,11 +39,14 @@ Flutter 3.47.6 stable, the version recorded in
 Flutter or a non-Linux host can shift glyph rasterisation and will report a
 false mismatch. Regenerate only on Linux with that version.
 
-CI does **not** pin that version: the `dart` job in
-`.github/workflows/ci.yml` runs `subosito/flutter-action` with `channel: stable`
-and no `flutter-version`, so a stable-channel bump can change rasterisation and
-fail `flutter test` for every pull request. Pinning the CI version is tracked as
-`docs/backlog/T-1111a-pin-flutter-version-in-ci.md`.
+CI pins that version: the `dart` job in `.github/workflows/ci.yml` runs
+`subosito/flutter-action` with `flutter-version: 3.47.6`, the same version
+recorded in `docs/decisions/0001-flutter-web-csp.md`. A golden failure therefore
+means a real UI change, not a stable-channel bump; if the pin and the goldens
+ever disagree, regenerate the goldens on the pinned version, never on whatever
+stable resolves to. When the decision's version moves, the pin moves with it —
+`ci_pins_the_flutter_version_recorded_in_the_decision` in
+`app/test/ci_flutter_pin_test.dart` fails if the two drift apart.
 
 ## How to review a golden diff
 
