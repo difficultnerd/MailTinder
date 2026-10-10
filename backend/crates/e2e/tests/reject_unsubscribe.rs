@@ -6,7 +6,10 @@
 //! History.
 //!
 //! Run only by `scripts/e2e.sh` (`cargo test -p e2e -- --ignored`), the job that
-//! has fake-google, the Firestore emulator, the testbed and ChromeDriver. Every
+//! has fake-google, the Firestore emulator, the testbed and ChromeDriver. Run
+//! with `--test-threads=1` (as the script does): the tests share the global
+//! `fake-google` and clear the one testbed, so parallel execution would corrupt
+//! state. Every
 //! test seeds the corpus case `one-click-covered` with its `List-Unsubscribe`
 //! target rewritten to this run's testbed TLS listener (T-1101g): `unsub`'s e2e
 //! egress accepts the literal loopback IP and trusts only that run's CA. Each
@@ -22,8 +25,8 @@ use std::error::Error;
 use std::time::{Duration, Instant};
 
 use e2e::{
-    finish_journey, signed_in_user, EventLog, FakeGoogle, LogMark, MetricEvent, RecordedRequest,
-    Stack, Testbed, Ui, APP_LOAD_TIMEOUT, FEED_ROUTE, FEED_TIMEOUT, REJECT_BUTTON,
+    finish_journey, note_step, signed_in_user, EventLog, FakeGoogle, LogMark, MetricEvent,
+    RecordedRequest, Stack, Testbed, Ui, APP_LOAD_TIMEOUT, FEED_ROUTE, FEED_TIMEOUT, REJECT_BUTTON,
 };
 
 /// The corpus case whose headers classify as a covered one-click list message.
@@ -57,14 +60,20 @@ const FEED_RELOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(30);
 /// The interval every poll above uses.
 const POLL: Duration = Duration::from_millis(200);
+/// Slack allowed when checking a job did not run before its due time (the api's
+/// timer and this process do not share a clock).
+const DUE_TOLERANCE: Duration = Duration::from_secs(1);
 
 /// The api's due delay for a queued unsubscribe (`MT_E2E_UNSUB_DELAY_S`,
 /// T-1101g): the test configuration queues a job seconds ahead rather than the
 /// production five minutes, so a journey waits for a near-term due time instead
-/// of advancing a clock.
+/// of advancing a clock. It must be set (`scripts/e2e.sh` exports it) so this
+/// journey waits exactly what the api queued with: a default here could wait
+/// seconds against a job due minutes later (T-1101e review F3).
 fn due_delay() -> Result<Duration, Box<dyn Error>> {
-    let raw = std::env::var("MT_E2E_UNSUB_DELAY_S").unwrap_or_else(|_| "3".to_owned());
-    Ok(Duration::from_secs(raw.parse()?))
+    let raw = std::env::var("MT_E2E_UNSUB_DELAY_S")
+        .map_err(|_| "MT_E2E_UNSUB_DELAY_S must be set for an e2e run")?;
+    Ok(Duration::from_secs(raw.trim().parse()?))
 }
 
 /// One test's world: the testbed's read-back client, the browser on the Feed and
@@ -158,6 +167,17 @@ async fn unsub_outcomes(
     }
 }
 
+/// A job that ran must not have run *before* its due time (UN-01 AC1): the
+/// first record cannot arrive sooner than `due` after the reject, less
+/// [`DUE_TOLERANCE`] for the two clocks' skew. Without this a delay override
+/// that was ignored - a job that fired immediately - would still pass.
+fn assert_not_before_due(due: Duration, elapsed: Duration) {
+    assert!(
+        elapsed + DUE_TOLERANCE >= due,
+        "the unsubscribe ran before its due time: {elapsed:?} after the reject, due after {due:?}"
+    );
+}
+
 /// UN-01 AC1: the queued unsubscribe runs exactly once, after its due time.
 #[tokio::test]
 #[ignore = "run by scripts/e2e.sh"]
@@ -166,6 +186,9 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
     let events = EventLog::new();
     let mark = events.mark();
 
+    // Time from the reject: the job is due `journey.due` after the api plans
+    // it, so the first record cannot arrive before that has elapsed.
+    let rejected_at = Instant::now();
     journey.reject().await?;
 
     // The due time (T-1101g): the job becomes due and the testbed sees it.
@@ -175,6 +198,7 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
         1,
         "exactly one POST must reach the testbed after the due time"
     );
+    assert_not_before_due(journey.due, rejected_at.elapsed());
 
     // Runs once: a redelivery would be a second record. Watch the count past
     // another due interval instead of sleeping through it.
@@ -255,6 +279,13 @@ async fn un_02_ac1_e2e_one_click_post_is_exact() -> Result<(), Box<dyn Error>> {
 async fn un_01_ac3_e2e_outcome_in_history_after_feed_load() -> Result<(), Box<dyn Error>> {
     let journey = Journey::start("sub-un-01-ac3-e2e", "un-01-ac3-e2e@example.com").await?;
 
+    // Mark before the reject: the runner writes the `unsub_outcome` metric as
+    // soon as the POST and the store write finish, which can be before the due
+    // wait below returns, so a mark taken after it would miss the line and read
+    // the log from too far along (T-1101e review F1).
+    let events = EventLog::new();
+    let mark = events.mark();
+
     journey.reject().await?;
     let records = journey.wait_for_due(DELIVERY_TIMEOUT).await?;
     assert_eq!(
@@ -266,8 +297,6 @@ async fn un_01_ac3_e2e_outcome_in_history_after_feed_load() -> Result<(), Box<dy
     // The job's outcome is what History shows, and the runner stores it (and
     // logs its metric) once the POST is done: wait for that before loading the
     // Feed, so the collection cannot race the store.
-    let events = EventLog::new();
-    let mark = events.mark();
     let outcomes = unsub_outcomes(&events, &mark).await?;
     assert_eq!(
         outcomes.len(),
@@ -277,13 +306,19 @@ async fn un_01_ac3_e2e_outcome_in_history_after_feed_load() -> Result<(), Box<dy
 
     // The next Feed load collects every stored outcome (S10 6.3, option B), and
     // the app's way to load the Feed is pull to refresh. The api's request log
-    // says whether the gesture produced one, so this is checked, not assumed.
+    // says whether the gesture produced one, so this is checked, not assumed;
+    // which path ran is recorded for the run's diagnostics.
     let pull_mark = events.mark();
-    if journey.ui.pull_to_refresh().await.is_err() || !feed_loaded(&events, &pull_mark).await? {
+    let pulled =
+        journey.ui.pull_to_refresh().await.is_ok() && feed_loaded(&events, &pull_mark).await?;
+    if pulled {
+        note_step("un_01_ac3: the Feed loaded after a pull to refresh");
+    } else {
         // A runner whose ChromeDriver cannot drive a touch drag, or whose
         // browser does not treat it as one, is no reason to lose the criterion:
-        // a page reload is the same `FeedModel.open()` the pull makes. Either
-        // way the Feed load is proven before History is opened.
+        // a page reload boots the app and opens the Feed. Either way the Feed
+        // load is proven before History is opened.
+        note_step("un_01_ac3: no Feed load from a pull to refresh; reloading the page");
         let reload_mark = events.mark();
         journey.ui.reload().await?;
         journey

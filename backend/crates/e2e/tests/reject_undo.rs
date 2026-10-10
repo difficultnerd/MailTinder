@@ -15,6 +15,10 @@
 //! the reject queues a job seconds ahead instead of the production five
 //! minutes, so the journey waits for a near-term due time rather than advancing
 //! a clock. The undo lands in the first second, well inside that window.
+//!
+//! Run with `--test-threads=1` (as `scripts/e2e.sh` does): the tests share the
+//! global `fake-google` and clear the one testbed, so parallel execution would
+//! corrupt state.
 
 use std::error::Error;
 use std::time::Duration;
@@ -54,10 +58,14 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The api's due delay for a queued unsubscribe (`MT_E2E_UNSUB_DELAY_S`,
 /// T-1101g): the test configuration queues a job seconds ahead rather than the
-/// production five minutes.
+/// production five minutes. It must be set (`scripts/e2e.sh` exports it) so this
+/// journey waits exactly what the api queued with: a default here would let the
+/// negative check wait seconds against a job due minutes later and pass without
+/// proving anything (T-1101e review F3).
 fn due_delay() -> Result<Duration, Box<dyn Error>> {
-    let raw = std::env::var("MT_E2E_UNSUB_DELAY_S").unwrap_or_else(|_| "3".to_owned());
-    Ok(Duration::from_secs(raw.parse()?))
+    let raw = std::env::var("MT_E2E_UNSUB_DELAY_S")
+        .map_err(|_| "MT_E2E_UNSUB_DELAY_S must be set for an e2e run")?;
+    Ok(Duration::from_secs(raw.trim().parse()?))
 }
 
 #[tokio::test]

@@ -184,6 +184,14 @@ fn note(dir: &Path, message: &str) {
     }
 }
 
+/// Append one diagnostic line to the run's `diagnostics.log` (S10 3.3), so a
+/// step that had to take a fallback path is visible in the uploaded log folder.
+/// It carries only which path a journey took - never an address, identifier or
+/// message content.
+pub fn note_step(message: &str) {
+    note(&log_dir(), message);
+}
+
 /// The last `lines` lines of `path`, or `None` when it cannot be read.
 fn tail_lines(path: &Path, lines: usize) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;

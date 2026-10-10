@@ -145,7 +145,10 @@ start_bg unsub "$LOGS/unsub.jsonl" env \
 # queues its job three real seconds ahead, so a journey waits seconds rather
 # than the production five minutes (T-1101g). The api's clock stays real:
 # fake-google checks token expiry and the Firestore emulator uses wall time.
-MT_E2E_UNSUB_DELAY_S="${MT_E2E_UNSUB_DELAY_S:-3}"
+# Exported so the journeys read the same value the api queues with: a test that
+# defaulted its own delay could wait seconds against a job due minutes later
+# and pass without proving anything (T-1101e review F3).
+export MT_E2E_UNSUB_DELAY_S="${MT_E2E_UNSUB_DELAY_S:-3}"
 
 phase "api on 127.0.0.1:$API_PORT"
 start_bg api "$LOGS/api.jsonl" env \
