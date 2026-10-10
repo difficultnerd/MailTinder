@@ -720,6 +720,301 @@ impl TestControl {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Journey helpers (T-1101b).
+// ---------------------------------------------------------------------------
+
+/// A request the one-click testbed recorded (S10 6.2): the method, the headers
+/// (lower-cased names) and the raw body.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct RecordedRequest {
+    /// The HTTP method, upper case.
+    pub method: String,
+    /// Lower-cased header names and their values.
+    pub headers: Vec<(String, String)>,
+    /// The raw request body.
+    pub body: Vec<u8>,
+}
+
+/// The testbed's wire record: [`RecordedRequest`] plus the path we filter on.
+#[derive(Deserialize)]
+struct RecordedWire {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// The one-click unsubscribe testbed's read-back control API (`/__testbed`,
+/// S10 6.2). Journeys assert exactly what a route received.
+pub struct Testbed {
+    base: Url,
+    client: reqwest::Client,
+}
+
+impl Testbed {
+    /// Bind the control client to the stack's unsub-testbed.
+    pub fn connect(stack: &Stack) -> Result<Self, E2eError> {
+        Ok(Self {
+            base: stack.testbed.clone(),
+            client: reqwest::Client::new(),
+        })
+    }
+
+    /// Everything the testbed recorded for `route` (a path, without the query),
+    /// in arrival order.
+    pub async fn received(&self, route: &str) -> Result<Vec<RecordedRequest>, E2eError> {
+        let response = self
+            .client
+            .get(endpoint(&self.base, "/__testbed/requests"))
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(E2eError::Http(format!(
+                "GET /__testbed/requests: {status} {body}"
+            )));
+        }
+        let records: Vec<RecordedWire> = response.json().await.map_err(http)?;
+        Ok(records
+            .into_iter()
+            .filter(|record| record.path == route)
+            .map(|record| RecordedRequest {
+                method: record.method,
+                headers: record.headers,
+                body: record.body,
+            })
+            .collect())
+    }
+}
+
+/// A byte offset per log file captured by [`EventLog::mark`], so each journey
+/// reads only the lines written after it started.
+#[derive(Clone, Debug, Default)]
+pub struct LogMark {
+    offsets: HashMap<PathBuf, u64>,
+}
+
+/// One metric event (S10 8) as T-307's schema writes it: the event type (the
+/// wire key `action`) and the outcome code, with no content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetricEvent {
+    /// The metric type: `swipe`, `undo`, `unsub_outcome`, ...
+    pub event_type: String,
+    /// The outcome code, when the metric carries one.
+    pub outcome: Option<String>,
+}
+
+/// One structured log line, read only for the fields the harness needs.
+#[derive(Deserialize)]
+struct LogLine {
+    event: Option<String>,
+    action: Option<String>,
+    outcome: Option<String>,
+}
+
+/// Reads the services' structured log lines (`<service>.jsonl`, one JSON object
+/// per line as T-307 writes them) from the e2e log directory.
+pub struct EventLog {
+    dir: PathBuf,
+}
+
+impl EventLog {
+    /// Read the run's log directory (`MT_E2E_LOG_DIR`, default
+    /// `target/e2e-logs`, S10 3.3).
+    pub fn new() -> Self {
+        Self { dir: log_dir() }
+    }
+
+    /// Read a specific directory (unit tests).
+    pub fn at(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    /// Record the current byte length of every `*.jsonl` file, so a later
+    /// [`Self::since_mark`] returns only the lines written after this point.
+    pub fn mark(&self) -> LogMark {
+        let offsets = self
+            .jsonl_files()
+            .into_iter()
+            .map(|path| {
+                let len = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+                (path, len)
+            })
+            .collect();
+        LogMark { offsets }
+    }
+
+    /// Every metric event written since `mark`, across every log file. Earlier
+    /// journeys' lines are outside the mark and never count.
+    pub fn since_mark(&self, mark: LogMark) -> Result<Vec<MetricEvent>, E2eError> {
+        let mut events = Vec::new();
+        for path in self.jsonl_files() {
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            // A file created after the mark, or one that shrank, is read whole.
+            let start = mark
+                .offsets
+                .get(&path)
+                .copied()
+                .unwrap_or(0)
+                .min(bytes.len() as u64) as usize;
+            let text = String::from_utf8_lossy(&bytes[start..]);
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                // A partially flushed line simply fails to parse and is skipped.
+                if let Some(event) = metric_event(line) {
+                    events.push(event);
+                }
+            }
+        }
+        Ok(events)
+    }
+
+    /// The `*.jsonl` files in the directory, sorted for a stable order.
+    fn jsonl_files(&self) -> Vec<PathBuf> {
+        let Ok(dir) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut files: Vec<PathBuf> = dir
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .collect();
+        files.sort();
+        files
+    }
+}
+
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parse one log line into a [`MetricEvent`], or `None` for any other event.
+fn metric_event(line: &str) -> Option<MetricEvent> {
+    let parsed: LogLine = serde_json::from_str(line).ok()?;
+    if parsed.event.as_deref() != Some("metric") {
+        return None;
+    }
+    Some(MetricEvent {
+        event_type: parsed.action?,
+        outcome: parsed.outcome,
+    })
+}
+
+/// The invited copy on the Sign-in screen (S2 AU-03 AC1; `Copy.invited`), shown
+/// before the OAuth round-trip.
+pub const INVITED_COPY: &str =
+    "You've been invited. Continue with the Google account the invite was sent to.";
+/// The Google button's Semantics label (XC-03).
+pub const CONTINUE_WITH_GOOGLE: &str = "Continue with Google";
+/// The Reject button's Semantics label: proves the Feed rendered a card.
+pub const REJECT_BUTTON: &str = "Reject";
+/// A cold CI runner takes a long time to paint the app before the semantics
+/// tree exposes a control, so the first wait is generous.
+pub const APP_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// The Feed after the OAuth round-trip, once the api has fetched and classified.
+pub const FEED_TIMEOUT: Duration = Duration::from_secs(120);
+/// The OAuth round-trip from the invite screen back into the app.
+pub const REDIRECT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long to wait for a tapped button to react before re-tapping it.
+pub const TAP_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The sender display name of the newest fixture (the last id in `fixtures`,
+/// which the harness seeds last, so it is the first card). `None` when
+/// `fixtures` is empty.
+fn newest_sender(fixtures: &[&str]) -> Result<Option<String>, E2eError> {
+    let Some(id) = fixtures.last() else {
+        return Ok(None);
+    };
+    let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+    let case = corpus
+        .cases
+        .iter()
+        .find(|case| case.spec.id == *id)
+        .ok_or_else(|| E2eError::State(format!("no corpus case {id}")))?;
+    Ok(Some(case.spec.from_display.clone()))
+}
+
+/// Sign a seeded account in through the UI and return a ready [`Ui`] on the
+/// Feed (T-1101b). The caller resets fake-google and registers the client once;
+/// this seeds `sub`/`email`, seeds `fixtures` mail when given, then drives the
+/// invite and OAuth round-trip exactly as the sign-in journey does (AU-03 AC1).
+pub async fn signed_in_user(
+    stack: &Stack,
+    sub: &str,
+    email: &str,
+    fixtures: &[&str],
+) -> Result<Ui, E2eError> {
+    let google = FakeGoogle::connect(stack)?;
+    let control = TestControl::connect(stack)?;
+    google.seed_account(sub, email, true).await?;
+    if !fixtures.is_empty() {
+        google.seed_messages(sub, fixtures).await?;
+    }
+    google.select_account_for_next_authorize(sub).await?;
+    let token = control.create_invite(email).await?;
+
+    let ui = Ui::open(stack, &format!("/#/invite?t={token}")).await?;
+    ui.wait_for_text(INVITED_COPY, APP_LOAD_TIMEOUT).await?;
+    // Tap, then confirm the control reacted: the button swaps to a spinner, so
+    // its label disappears as soon as the handler runs. A lost click is
+    // re-tapped once before giving up.
+    ui.tap(CONTINUE_WITH_GOOGLE).await?;
+    if ui
+        .wait_for_text_absent(CONTINUE_WITH_GOOGLE, TAP_ACK_TIMEOUT)
+        .await
+        .is_err()
+    {
+        ui.tap(CONTINUE_WITH_GOOGLE).await?;
+        ui.wait_for_text_absent(CONTINUE_WITH_GOOGLE, TAP_ACK_TIMEOUT)
+            .await?;
+    }
+    let app_origin = stack.app_url.as_str().trim_end_matches('/').to_owned();
+    ui.wait_for_url(&app_origin, "/invite", REDIRECT_TIMEOUT)
+        .await?;
+    match newest_sender(fixtures)? {
+        Some(sender) => ui.wait_for_text(&sender, FEED_TIMEOUT).await?,
+        None => ui.wait_for_text(REJECT_BUTTON, FEED_TIMEOUT).await?,
+    }
+    Ok(ui)
+}
+
+/// The prefix of a [`finish_journey`] marker file; T-1101c's leak scan reads it.
+const FINISH_MARKER_PREFIX: &str = "JOURNEYS_FINISHED-";
+
+/// End a journey: `save_browser_dump` then `assert_no_csp_violation`. Journeys
+/// call it explicitly as their last statement (async work cannot run reliably in
+/// `Drop`, so there is no `Drop`-based variant).
+///
+/// T-1101b defines this with a stub body: it records the call by writing one
+/// `JOURNEYS_FINISHED-<test name>` marker file under the log directory and
+/// releases the browser. T-1101c replaces the body with the real
+/// `save_browser_dump` and `assert_no_csp_violation` and adds a `zz_leak_scan.rs`
+/// check that every journey test wrote a marker.
+pub async fn finish_journey(ui: Ui) -> Result<(), E2eError> {
+    let dir = log_dir();
+    let name = std::thread::current()
+        .name()
+        .unwrap_or("unknown")
+        .to_owned();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| E2eError::State(format!("finish_journey log dir: {e}")))?;
+    std::fs::write(dir.join(format!("{FINISH_MARKER_PREFIX}{name}")), &name)
+        .map_err(|e| E2eError::State(format!("finish_journey marker: {e}")))?;
+    // Best-effort: release the browser session; a cleanup hiccup must not hide a
+    // real failure.
+    let _ = ui.close().await;
+    Ok(())
+}
+
 /// DOM attribute [`MARK_TAPPABLE_JS`] sets on the node and
 /// [`CLICK_MARKED_JS`] clicks; the CSS selector WebDriver finds it by.
 const MARKED_SELECTOR: &str = "[data-e2e-tap]";
@@ -823,3 +1118,90 @@ const out = nodes.slice(0, 400).map(el => {
 });
 return JSON.stringify({ count: nodes.length, nodes: out });
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A fresh, unique directory under this crate's `target` tree. It is
+    /// deliberately not the system temporary directory: a fixed, predictable
+    /// name there could be pre-created by another process, and the security
+    /// scan forbids it for exactly that reason.
+    fn temp_log_dir() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("e2e-log-tests")
+            .join(format!("case-{n}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create log dir");
+        dir
+    }
+
+    #[test]
+    fn metric_event_reads_the_t307_schema_fields() {
+        let event = metric_event(
+            "{\"event\":\"metric\",\"action\":\"unsub_outcome\",\"outcome\":\"sent\",\"user_pseudo\":\"00\"}",
+        )
+        .expect("a metric line parses");
+        assert_eq!(event.event_type, "unsub_outcome");
+        assert_eq!(event.outcome.as_deref(), Some("sent"));
+
+        // A metric without an outcome keeps the type and no outcome.
+        let bare = metric_event("{\"event\":\"metric\",\"action\":\"swipe\"}")
+            .expect("a metric line without outcome parses");
+        assert_eq!(bare.event_type, "swipe");
+        assert_eq!(bare.outcome, None);
+
+        // Non-metric events and missing `action` are not metric events.
+        assert_eq!(
+            metric_event("{\"event\":\"request\",\"action\":\"unsub_outcome\"}"),
+            None
+        );
+        assert_eq!(metric_event("{\"event\":\"metric\"}"), None);
+        assert_eq!(metric_event("not json"), None);
+    }
+
+    #[test]
+    fn since_mark_reads_only_lines_written_after_the_mark() -> Result<(), E2eError> {
+        let dir = temp_log_dir();
+        let api = dir.join("api.jsonl");
+        std::fs::write(&api, "{\"event\":\"metric\",\"action\":\"swipe\"}\n")
+            .expect("seed an earlier line");
+        let log = EventLog::at(dir.clone());
+        let mark = log.mark();
+
+        // After the mark: another line in an existing file and a new file.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&api)
+            .expect("open the api log");
+        writeln!(
+            file,
+            "{{\"event\":\"metric\",\"action\":\"unsub_outcome\",\"outcome\":\"sent\"}}"
+        )
+        .expect("append a metric line");
+        std::fs::write(
+            dir.join("unsub.jsonl"),
+            "{\"event\":\"metric\",\"action\":\"unsub_outcome\",\"outcome\":\"cancelled\"}\n",
+        )
+        .expect("write a new log file");
+
+        let events = log.since_mark(mark)?;
+        assert_eq!(events.len(), 2, "only the two post-mark lines count");
+        assert!(events.iter().all(|e| e.event_type == "unsub_outcome"));
+        assert!(events
+            .iter()
+            .any(|e| e.outcome.as_deref() == Some("cancelled")));
+
+        // A mark taken now sees nothing new.
+        let quiet = log.mark();
+        assert!(log.since_mark(quiet)?.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+}
