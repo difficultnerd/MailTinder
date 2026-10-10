@@ -14,6 +14,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = std::io::stdout().lock();
     writeln!(out, "TESTBED_ADDR={http} TESTBED_HTTPS_ADDR={https}")?;
     out.flush()?;
+    // scripts/e2e.sh may ask for the port in a file instead of parsing stdout:
+    // line 1 is the plain-HTTP port (what `wait_port_file` reads), line 2 is
+    // the HTTPS listener address, which the e2e harness needs as the one-click
+    // target (T-1101g).
+    if let Some(path) = std::env::var_os("TESTBED_PORT_FILE") {
+        std::fs::write(path, format!("{}\n{}\n", http.port(), https))?;
+    }
     // Keep serving until the process is killed.
     std::future::pending::<()>().await;
     Ok(())

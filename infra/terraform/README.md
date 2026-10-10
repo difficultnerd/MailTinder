@@ -70,6 +70,16 @@ the plan and runs `apply`**, from his own machine, one project at a time
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
 
+## Decision pending (owner): deletion semantics
+
+Firestore point-in-time recovery is currently disabled
+(`modules/foundation/firestore.tf`), which makes crypto-shredding immediate when
+an account's documents are deleted but leaves an operator mistake unrecoverable.
+Enabling PITR would add a rollback window, at the cost of retaining a
+recoverable copy of every wrapped `data_key` for the retention period, so a
+deleted account's data would survive its deletion - the owner (James) decides
+which trade-off production takes; the behaviour is unchanged in this change.
+
 ## Deploy identity and its real blast radius (T-1102b)
 
 `mt-deployer` is the only credential GitHub Actions uses; there is no service

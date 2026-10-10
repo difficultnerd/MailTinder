@@ -15,7 +15,7 @@ use domain::{
     apply, batched_with_sent_sibling, Applied, JobEvent, JobId, JobMethod, JobState, JobStatus,
     NeedsAttentionReason, Tunables,
 };
-use obs::{metric_event, Pseudonymiser, SecurityEvent, Sensitive};
+use obs::{metric_event, op_log, OpLog, Pseudonymiser, SecurityEvent, Sensitive};
 use ports::store::{JobOutcome, JobOutcomeCode, JobRecord, Precondition, StoreError, Version};
 use ports::{Ports, SecretName, TaskName};
 use svc_common::internal_auth::InternalAuthConfig;
@@ -99,6 +99,28 @@ pub async fn run_job(
     };
     let mut job = versioned.record;
     let mut version = versioned.version;
+
+    // A delivery for a job a successful undo has already cancelled (S10 8):
+    // the undo removed the swipe and cancelled the job *before* this delivery
+    // sent anything, so no unsubscribe left the server. This is the designed,
+    // harmless race, never an unrecoverable action, so it is logged at `op`
+    // level and not as the A1 metric `unsub_after_undo` (which pages on any
+    // event). The job carries `Cancelled` only when a cancel won the race (the
+    // runner's own mailbox-removed path writes `MailboxRemoved`), so this
+    // cannot be confused with a job that was never queued.
+    if job
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| outcome.code == JobOutcomeCode::Cancelled)
+    {
+        op_log(&OpLog {
+            op: "unsub.run",
+            outcome: "cancelled",
+            status: Some(200),
+            latency_ms: None,
+        });
+        return Ok(RunResponse::Done);
+    }
 
     // 5. Ownership re-check from the mailbox record (ASVS V8.3.1).
     match ports.store.mailboxes().get(&job.mailbox_id).await? {

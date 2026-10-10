@@ -1,0 +1,23 @@
+{
+  "rules": {
+    "floor": 80.0
+  },
+  "swipe": {
+    "floor": 80.0
+  },
+  "undo": {
+    "floor": 80.0
+  },
+  "header_rules": {
+    "floor": 80.0
+  },
+  "redact": {
+    "floor": 80.0
+  },
+  "gamification": {
+    "floor": 75.0
+  },
+  "feed": {
+    "floor": 75.0
+  }
+}

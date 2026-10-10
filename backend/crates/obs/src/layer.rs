@@ -18,6 +18,10 @@ use crate::sink::LogSink;
 enum Check {
     /// Value must be in the named registry list.
     Registry(&'static [&'static str]),
+    /// Value must be an operation name or a registered HTTP route template
+    /// (`registry::is_route`): the `route` field carries either, depending on
+    /// the event (T-307).
+    Route,
     /// Value must parse as a UUID.
     Uuid,
     /// Value must be exactly 32 lower-case hex chars.
@@ -38,7 +42,7 @@ fn checks() -> &'static [(&'static str, Check)] {
         ("request_id", Check::Uuid),
         ("user_pseudo", Check::Pseudo),
         ("target_user_pseudo", Check::Pseudo),
-        ("route", Check::Registry(registry::OPS)),
+        ("route", Check::Route),
         ("status", Check::Int(100, 599)),
         ("latency_ms", Check::UInt),
         ("action", Check::Registry(registry::ACTIONS)),
@@ -137,6 +141,13 @@ fn validate(check: &Check, value: &Value) -> Option<Value> {
     match check {
         Check::Registry(list) => match value {
             Value::String(s) if registry::in_list(list, s) => Some(value.clone()),
+            _ => {
+                registry::count_unregistered();
+                None
+            }
+        },
+        Check::Route => match value {
+            Value::String(s) if registry::is_route(s) => Some(value.clone()),
             _ => {
                 registry::count_unregistered();
                 None

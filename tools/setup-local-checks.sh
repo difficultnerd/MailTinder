@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # setup-local-checks.sh — install the tools that tools/ci-local.sh needs.
 #
-# Installs into tools/.bin (cargo-deny, gitleaks) and tools/.venv-semgrep.
+# Installs into tools/.bin (cargo-deny, gitleaks, cargo-mutants) and
+# tools/.venv-semgrep.
 # Rust (cargo/rustfmt/clippy) and Flutter/Dart must already be on PATH.
 #
 # Usage: ./tools/setup-local-checks.sh
@@ -56,6 +57,32 @@ if [ ! -x "$ROOT/tools/.venv-semgrep/bin/semgrep" ]; then
   echo "  semgrep $("$ROOT/tools/.venv-semgrep/bin/semgrep" --version)"
 else
   echo "semgrep already installed."
+fi
+
+# ---- cargo-mutants (T-1109 mutation-testing pilot) ----
+# Pinned release with a pinned SHA-256; verify the checksum before installing.
+CM_VER="v27.1.0"
+CM_SHA256="dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e"
+if [ ! -x "$BIN/cargo-mutants" ]; then
+  if [ "$ARCH" = "x86_64" ]; then
+    echo "Installing cargo-mutants $CM_VER ($ARCH)..."
+    CM_TMP="$(mktemp -d)"
+    curl -sSfL "https://github.com/sourcefrog/cargo-mutants/releases/download/$CM_VER/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz" -o "$CM_TMP/cm.tgz"
+    echo "$CM_SHA256  $CM_TMP/cm.tgz" | sha256sum -c -
+    tar -xzf "$CM_TMP/cm.tgz" -C "$BIN" cargo-mutants
+    chmod +x "$BIN/cargo-mutants"
+    rm -rf "$CM_TMP"
+    echo "  cargo-mutants $("$BIN/cargo-mutants" --version)"
+  else
+    echo "No prebuilt cargo-mutants for $ARCH; building pinned $CM_VER with cargo..."
+    # Install under tools/.bin (git-ignored), never under a tracked path: an earlier fallback root of tools/.cargo-mutants was swept into a
+    # commit by `git add -A` and put a 9.5 MB executable on main (AAR 3.79).
+    cargo install cargo-mutants --version "${CM_VER#v}" --locked --root "$BIN/cargo-mutants-root"
+    ln -sf "$BIN/cargo-mutants-root/bin/cargo-mutants" "$BIN/cargo-mutants"
+    echo "  cargo-mutants $("$BIN/cargo-mutants" --version)"
+  fi
+else
+  echo "cargo-mutants already installed."
 fi
 
 echo ""

@@ -20,7 +20,7 @@ const MAX_URI_CHARS: usize = 2048;
 /// The first acceptable `https` and `mailto` URI from a `List-Unsubscribe`
 /// value. Either may be absent.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct LuUris {
+pub struct LuUris {
     pub https: Option<Url>,
     pub mailto: Option<MailtoTarget>,
 }
@@ -30,7 +30,7 @@ pub(crate) struct LuUris {
 /// test harness has already stripped the brackets, the value is read as a
 /// comma-separated URI list instead. Keeps the first acceptable URI of each
 /// kind.
-pub(crate) fn parse_list_unsubscribe(value: &str) -> LuUris {
+pub fn parse_list_unsubscribe(value: &str) -> LuUris {
     let mut out = LuUris::default();
     let mut seen = 0usize;
     if value.contains('<') {

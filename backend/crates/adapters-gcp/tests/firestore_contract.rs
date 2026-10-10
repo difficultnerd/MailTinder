@@ -101,3 +101,21 @@ async fn firestore_conditional_put_conflict_is_precondition_failed() -> Result<(
         .map_err(|e| format!("current put: {e:?}"))?;
     Ok(())
 }
+
+/// T-1101a: a missing `config/classifiers` document reads as `Ok(None)`, not an
+/// error. The emulator answers the GET with `404 NOT_FOUND`; the adapter must
+/// map that to "no configuration" (classifiers off) so the Feed never fails on
+/// an unconfigured deployment.
+#[tokio::test]
+async fn config_classifiers_missing_document_is_none_not_error() -> Result<(), String> {
+    let store = make_store();
+    let got = store
+        .config()
+        .get_classifiers()
+        .await
+        .map_err(|e| format!("a missing config document must not error, got {e:?}"))?;
+    if got.is_some() {
+        return Err("a fresh project has no config document".into());
+    }
+    Ok(())
+}

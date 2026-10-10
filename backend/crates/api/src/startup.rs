@@ -11,20 +11,22 @@ use std::sync::Arc;
 
 use adapters_gcp::{
     production_clock, production_rng, CloudKms, CloudTasksScheduler, EnvelopeKeyService,
-    FirestoreConfig, FirestoreStore, GcpHttp, GoogleCallerVerifier, KmsSystemKeyService,
-    MetadataTokenSource, SecretManagerSecrets, SecretsConfig, SystemClock, TasksConfig,
-    TokenSource,
+    FirestoreConfig, FirestoreStore, GcpHttp, GcpTokenSource, GeminiClassifier, GeminiConfig,
+    GoogleCallerVerifier, KmsSystemKeyService, MetadataTokenSource, SecretManagerSecrets,
+    SecretsConfig, SystemClock, TasksConfig, TokenSource,
 };
 use adapters_gmail::identity::{
     GoogleIdentity, GoogleIdentityConfig, GOOGLE_AUTH_ENDPOINT, GOOGLE_JWKS_URI,
     GOOGLE_REVOKE_ENDPOINT, GOOGLE_TOKEN_ENDPOINT,
 };
 use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
+use adapters_models::jev::{JevClassifier, JevConfig};
 use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{
-    AppFolderStore, CallerVerifier, HttpEgress, IdentityProvider, InviteMailer, JobScheduler,
-    KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore, SystemKeyService,
+    AppFolderStore, CallerVerifier, Classifier, HttpEgress, IdentityProvider, InviteMailer,
+    JobScheduler, KeyService, MailProvider, Ports, SecretName, Secrets, ServerStore,
+    SystemKeyService,
 };
 use url::Url;
 
@@ -47,6 +49,9 @@ const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GOOGLEAPIS_ROOT: &str = "https://www.googleapis.com";
 /// The Cloud Tasks queue for unsubscribe jobs.
 const QUEUE_ID: &str = "unsubscribe";
+/// The default pinned Gemini Flash-Lite model version (T-904). Never an alias
+/// like `-latest`; override only with a pinned version through `GEMINI_MODEL`.
+const GEMINI_MODEL: &str = "gemini-2.0-flash-lite-001";
 
 /// A start-up failure. Nothing is printed through the print macros; the
 /// process logs one line through `tracing` and exits non-zero.
@@ -111,6 +116,23 @@ pub fn e2e_mode_enabled() -> bool {
     false
 }
 
+/// The tunables this process runs with.
+///
+/// Production gets [`domain::Tunables::default`] exactly as before. A `testkit`
+/// build with `MT_E2E=1` applies the e2e override read by
+/// [`crate::startup_e2e::e2e_tunables`] (`MT_E2E_UNSUB_DELAY_S`), so a demo's
+/// queued unsubscribe job falls due in seconds rather than the production five
+/// minutes (S10 3.3, T-1112b). Unset, blank or unparsable keeps the production
+/// value; a release build never reads the variable at all.
+#[must_use]
+pub fn runtime_tunables() -> domain::Tunables {
+    #[cfg(feature = "testkit")]
+    if e2e_requested() {
+        return crate::startup_e2e::e2e_tunables(|name| std::env::var(name).ok());
+    }
+    domain::Tunables::default()
+}
+
 /// Start the service. Initialises observability, builds the ports for the
 /// selected mode and serves until a shutdown signal.
 ///
@@ -132,7 +154,13 @@ pub async fn run() -> Result<(), SetupError> {
     } else {
         build_production_ports().await?
     };
-    serve(ports, config).await
+    // The bake-off models are production-only: e2e drives them through fakes.
+    let classifiers = if e2e_requested() {
+        crate::classify::ClassifierSet::default()
+    } else {
+        build_classifiers(&ports).await?
+    };
+    serve(ports, config, classifiers).await
 }
 
 #[cfg(feature = "testkit")]
@@ -271,10 +299,81 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
     Ok((ports, base.with_keys(rate_key, email_lookup_key)))
 }
 
+/// Build the bake-off classifiers: the Gemini classifier on Vertex AI (T-904)
+/// and the Jev classifier from the secret read once at start-up. `api` is the
+/// only service that loads the Jev key (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+async fn build_classifiers(ports: &Ports) -> Result<crate::classify::ClassifierSet, SetupError> {
+    Ok(crate::classify::ClassifierSet {
+        gemini: Some(build_gemini(ports)?),
+        jev: build_jev(ports).await,
+    })
+}
+
+/// Build the Gemini classifier. The service-account token comes from the
+/// metadata server; no key exists (S4 5.7).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Missing`] when `GOOGLE_CLOUD_PROJECT` is unset.
+fn build_gemini(ports: &Ports) -> Result<Arc<dyn Classifier>, SetupError> {
+    let project = env("GOOGLE_CLOUD_PROJECT")?;
+    let model = env("GEMINI_MODEL").unwrap_or_else(|_| GEMINI_MODEL.to_owned());
+    let tokens: Arc<dyn GcpTokenSource> =
+        Arc::new(MetadataTokenSource::new(Arc::clone(&ports.clock)));
+    Ok(Arc::new(GeminiClassifier::new(
+        GeminiConfig::new(project, model),
+        Arc::clone(&ports.egress),
+        tokens,
+    )))
+}
+
+/// Build the Jev classifier. A missing or non-UTF-8 key leaves
+/// `ClassifierSet.jev = None` and logs `jev_key_missing` (no value).
+async fn build_jev(ports: &Ports) -> Option<Arc<dyn Classifier>> {
+    let Ok(config) = JevConfig::production() else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_config_invalid"
+        );
+        return None;
+    };
+    let Ok(key) = ports.secrets.get(SecretName::JevApiKey).await else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let Ok(key) = String::from_utf8(key.expose().clone()) else {
+        tracing::info!(
+            event = "op",
+            route = "api.startup",
+            outcome = "jev_key_missing"
+        );
+        return None;
+    };
+    let classifier: Arc<dyn Classifier> = Arc::new(JevClassifier::new(
+        config,
+        Arc::clone(&ports.egress),
+        Sensitive::new(key),
+    ));
+    Some(classifier)
+}
+
 /// Bind and serve the router with graceful shutdown on `SIGTERM` and `SIGINT`.
-async fn serve(ports: Ports, config: ApiConfig) -> Result<(), SetupError> {
+async fn serve(
+    ports: Ports,
+    config: ApiConfig,
+    classifiers: crate::classify::ClassifierSet,
+) -> Result<(), SetupError> {
     let listen = SocketAddr::new(config.bind_host, config.port);
-    let state = crate::app_state(Arc::new(ports), Arc::new(config));
+    let state = crate::app_state_with_classifiers(Arc::new(ports), Arc::new(config), classifiers);
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .map_err(|_| SetupError::Adapter)?;

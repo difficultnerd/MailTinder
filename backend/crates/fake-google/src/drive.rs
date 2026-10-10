@@ -378,29 +378,71 @@ fn multipart_boundary(headers: &HeaderMap) -> Result<String, GmailError> {
 }
 
 /// Parse a `multipart/related` body into (first-part bytes, second-part bytes).
+///
+/// Byte-safe: the second part is the app-folder file's raw bytes (sealed
+/// ciphertext, arbitrary binary), so the body must be split on byte sequences.
+/// A `String::from_utf8_lossy` pass would replace every invalid sequence with
+/// U+FFFD and corrupt the stored file, making every later read unreadable.
 fn parse_multipart(body: &[u8], boundary: &str) -> Result<(Vec<u8>, Vec<u8>), GmailError> {
     let delim = format!("--{boundary}");
-    let text = String::from_utf8_lossy(body);
-    let parts: Vec<&str> = text.split(&delim).collect();
     // parts[0] is the preamble; parts[1..] are the parts (last is the closing --).
     let mut contents = Vec::new();
-    for part in parts.iter().skip(1) {
-        let part = part.strip_prefix("--").unwrap_or(part);
-        let part = part.trim_start_matches('\r').trim_start_matches('\n');
+    for part in split_on(body, delim.as_bytes()).into_iter().skip(1) {
+        let part = part.strip_prefix(b"--".as_slice()).unwrap_or(part);
+        let part = trim_start_crlf(part);
         if part.is_empty() {
             continue;
         }
         // Split headers from content at the first blank line.
-        let Some((_headers, content)) = part.split_once("\r\n\r\n") else {
+        let Some(index) = find_subslice(part, b"\r\n\r\n") else {
             continue;
         };
-        let content = content.strip_suffix("\r\n").unwrap_or(content);
-        contents.push(content.as_bytes().to_vec());
+        let content = &part[index + 4..];
+        let content = content.strip_suffix(b"\r\n".as_slice()).unwrap_or(content);
+        contents.push(content.to_vec());
     }
     if contents.len() < 2 {
         return Err(GmailError::new(400, "invalidArgument"));
     }
     Ok((contents[0].clone(), contents[1].clone()))
+}
+
+/// Split `haystack` on every non-overlapping occurrence of `needle`.
+fn split_on<'a>(haystack: &'a [u8], needle: &[u8]) -> Vec<&'a [u8]> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if &haystack[i..i + needle.len()] == needle {
+            parts.push(&haystack[start..i]);
+            i += needle.len();
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    parts.push(&haystack[start..]);
+    parts
+}
+
+/// The first index of `needle` in `haystack`, if any.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+}
+
+/// Leading `\r` and `\n` bytes removed.
+fn trim_start_crlf(mut bytes: &[u8]) -> &[u8] {
+    while let Some((&first, rest)) = bytes.split_first() {
+        if first == b'\r' || first == b'\n' {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
 }
 
 fn query_pairs<T: serde::Serialize>(q: &T) -> Vec<(String, String)> {

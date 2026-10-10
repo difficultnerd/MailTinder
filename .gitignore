@@ -15,6 +15,9 @@ app/ios/Pods/
 app/android/.gradle/
 app/android/local.properties
 app/coverage/
+# Golden-test mismatch artefacts (T-1111): the diff PNGs are never committed;
+# only app/test/golden/goldens/ is tracked.
+app/test/golden/failures/
 # Python (tooling only)
 __pycache__/
 *.pyc
@@ -39,6 +42,11 @@ __pycache__/
 # Local check tooling (not committed)
 tools/.bin/
 tools/.venv-semgrep/
+# Mutation-testing tool installed under the checkout during local runs; the
+# prebuilt binary and its install metadata must never be committed (T-1112a F1).
+tools/.cargo-mutants/
+# Mutation-run scratch output (T-1112a F1): never commit build debris.
+/target/
 # Terraform provider cache and state (never commit these).
 # A single Google provider binary is ~114 MB and GitHub hard-rejects
 # anything over 100 MB — the T-607b push died on exactly that.
@@ -52,3 +60,7 @@ crash.log
 # Terraform
 *.tfvars
 !*.tfvars.example
+# Local e2e process state and synthetic service logs.
+/target/
+# cargo-mutants install roots (a built executable must never be committed)
+tools/.cargo-mutants/

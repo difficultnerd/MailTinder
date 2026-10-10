@@ -100,6 +100,26 @@ fn xc_01_helpers_emit_only_allowlisted_keys() {
 }
 
 #[test]
+fn asvs_v16_2_1_route_may_be_a_registered_http_template() {
+    let (sink, _guard) = capture("test", test_clock());
+    // A service registers its router's templates at start-up (T-307, T-500);
+    // the `route` field accepts those as well as an operation name, so an HTTP
+    // request line keeps the template it was made against.
+    obs::register_http_routes(&["/api/v1/feed/next"]);
+    request_log(&RequestLog {
+        request_id: uuid::Uuid::new_v4(),
+        user: Some(pseudo()),
+        route: "/api/v1/feed/next",
+        status: 200,
+        latency_ms: 3,
+        rate_limit_hit: false,
+    });
+    let line = parse_lines(&sink.text()).pop().expect("one line");
+    assert_eq!(line["route"], "/api/v1/feed/next");
+    assert!(line.get("dropped_fields").is_none(), "no field is dropped");
+}
+
+#[test]
 fn log_1_canaries_never_reach_log_output() {
     let (sink, _guard) = capture("test", test_clock());
     let canaries = vec![

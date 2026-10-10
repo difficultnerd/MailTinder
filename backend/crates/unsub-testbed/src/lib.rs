@@ -34,6 +34,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -55,6 +56,10 @@ pub use ssrf_table::{SsrfCase, SSRF_CASES};
 /// The ceiling on the `/oneclick/hang` route: it protects a forgotten test, not
 /// a real scenario (S10 6.2).
 pub const HANG_CEILING: Duration = Duration::from_secs(30);
+
+/// The variable naming the file the per-run CA *certificate* is written to
+/// (T-1101g). The private key never leaves this process.
+pub const CA_FILE_ENV: &str = "UNSUB_TESTBED_CA_FILE";
 
 /// Exactly what a request carried, recorded before the scenario is applied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,8 +356,47 @@ pub async fn start_with_untrusted_cert() -> io::Result<Testbed> {
 
 /// Bind a specific plain-HTTP address (the binary uses `TESTBED_ADDR`). With
 /// `control`, the `/__testbed/*` routes are mounted.
+///
+/// Before serving, the per-run CA **certificate** (the public part only, never
+/// the private key) is written to `UNSUB_TESTBED_CA_FILE` when that variable is
+/// set, mode 600, so an e2e client can trust this run's TLS listener and
+/// nothing else (T-1101g).
 pub async fn start_at(addr: SocketAddr, control: bool) -> io::Result<Testbed> {
+    write_ca_certificate_from_env()?;
     start_inner(addr, control, CertKind::TrustedCa).await
+}
+
+/// Write the test CA certificate (PEM) to `path` with mode 600.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] when the file cannot be created or
+/// written.
+pub fn write_ca_certificate(path: &std::path::Path) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(test_ca().pem.as_slice())?;
+    file.flush()
+}
+
+/// Write the certificate to `UNSUB_TESTBED_CA_FILE` when it is set and not
+/// blank; a no-op otherwise.
+///
+/// # Errors
+///
+/// Returns an [`io::Error`] when the variable is set but the file cannot be
+/// written.
+pub fn write_ca_certificate_from_env() -> io::Result<()> {
+    match std::env::var_os(CA_FILE_ENV) {
+        Some(path) if !path.is_empty() => write_ca_certificate(std::path::Path::new(&path)),
+        _ => Ok(()),
+    }
 }
 
 #[derive(Clone, Copy)]

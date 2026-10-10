@@ -465,6 +465,81 @@ async fn sw_05_ac3_undo_after_feed_collected_job_reports_sent() -> TestResult {
 }
 
 // ---------------------------------------------------------------------------
+// OBS-EV AC3: a send that follows a successful undo is an unrecoverable action
+// ---------------------------------------------------------------------------
+
+/// The `(event_type, outcome)` pairs of every `metric` line captured in `sink`.
+fn metrics(sink: &obs::CaptureSink) -> Vec<(String, String)> {
+    sink.lines()
+        .iter()
+        .filter_map(|line| {
+            let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+            if parsed.get("event")?.as_str()? != "metric" {
+                return None;
+            }
+            Some((
+                parsed.get("action")?.as_str()?.to_owned(),
+                parsed.get("outcome")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// OBS-EV AC3 (api): an undo of a reject whose unsubscribe had already left the
+/// queue (the runner claimed or sent it first) emits exactly one
+/// `unsub_after_undo`; an undo that wins the cancel, sending nothing, emits
+/// none (S10 8, T-1114).
+#[tokio::test]
+async fn obs_ev_ac3_unsub_after_undo_emitted_when_a_send_follows() -> TestResult {
+    // The runner claims and sends first; the undo then only finds `Sent`.
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed("news", one_click_facts(), 10);
+        let result = w.reject(&session, 1, &id).await?;
+        let job = w.job_id(1);
+        let egress = RecordingEgress::new();
+        assert!(claim_and_send(&*w.fakes.store, &egress, &job).await);
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let undone = w.undo(&session, &result.undo_token).await?;
+        assert!(undone.restored);
+        assert!(undone.unsubscribe_already_sent);
+
+        let events = metrics(&capture);
+        let after: Vec<_> = events
+            .iter()
+            .filter(|(event, _)| event == "unsub_after_undo")
+            .collect();
+        assert_eq!(after.len(), 1, "exactly one unsub_after_undo: {events:?}");
+        assert_eq!(after[0].1, "sent", "the event carries the sent outcome");
+    }
+
+    // The undo wins the cancel: the job is cancelled and nothing is sent, so the
+    // benign race is not an unrecoverable action.
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed("news", one_click_facts(), 10);
+        let result = w.reject(&session, 1, &id).await?;
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let undone = w.undo(&session, &result.undo_token).await?;
+        assert!(undone.restored);
+        assert!(!undone.unsubscribe_already_sent);
+
+        let events = metrics(&capture);
+        assert!(
+            events.iter().all(|(event, _)| event != "unsub_after_undo"),
+            "a cancelled job sends nothing: {events:?}"
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // SW-05 AC4: one undo per call, walking back
 // ---------------------------------------------------------------------------
 

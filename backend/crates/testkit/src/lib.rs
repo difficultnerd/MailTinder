@@ -9,6 +9,7 @@
     clippy::missing_errors_doc,
     clippy::return_self_not_must_use,
     clippy::many_single_char_names,
+    clippy::module_name_repetitions,
     clippy::single_match,
     clippy::single_match_else,
     clippy::too_many_lines
@@ -19,10 +20,13 @@ pub mod classifier;
 pub mod clock;
 pub mod contract;
 pub mod corpus;
+pub mod e2e;
 pub mod egress;
 pub mod fake_caller;
 pub mod fake_classifier;
+pub mod fake_jev;
 pub mod fake_ports;
+pub mod fake_vertex;
 pub mod fakes;
 pub mod identity;
 pub mod keys;
@@ -36,10 +40,11 @@ pub mod store;
 
 pub use app_folder::InMemoryAppFolder;
 pub use classifier::FakeClassifier;
-pub use clock::{VirtualClock, T0};
+pub use clock::{OffsetClock, VirtualClock, T0};
 pub use egress::{EgressRecord, FakeHttpEgress, Route};
 pub use fake_caller::FakeCallerVerifier;
 pub use fake_ports::{fake_ports, Fakes};
+pub use fake_vertex::{FakeVertexHandle, Scenario};
 pub use fakes::invite_mailer::FakeInviteMailer;
 pub use identity::FakeIdentityProvider;
 pub use keys::{FakeKeyService, FakeSystemKeyService};

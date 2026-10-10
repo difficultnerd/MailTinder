@@ -7,6 +7,8 @@ pub mod error;
 pub mod experiments;
 pub mod http;
 pub mod limits;
+#[cfg(feature = "testkit")]
+pub mod local_runner;
 pub mod routes;
 pub mod sealed;
 pub mod services;
@@ -85,7 +87,7 @@ pub fn build_router_with_routes(
     state: AppState,
     routes: impl FnOnce(Router<AppState>) -> Router<AppState>,
 ) -> Router {
-    routes(Router::new())
+    let app = routes(Router::new())
         .route("/api/v1/healthz", get(healthz))
         .route(
             "/api/v1/auth/:provider/start",
@@ -118,8 +120,18 @@ pub fn build_router_with_routes(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             request_id_layer,
+        ));
+    // Test-only routes are merged after the layers so a synthetic call needs no
+    // session; require both the `testkit` feature and runtime e2e mode (S10 3.2).
+    #[cfg(feature = "testkit")]
+    let app = if startup::e2e_mode_enabled() {
+        app.merge(crate::routes::testkit::router(
+            crate::startup_e2e::e2e_clock(),
         ))
-        .with_state(state)
+    } else {
+        app
+    };
+    app.with_state(state)
 }
 
 /// Load the session cookie into the request extensions (S7 3.2).
@@ -279,6 +291,18 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
 /// Build an `AppState` from real ports and config (used by `main`).
 #[must_use]
 pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
+    app_state_with_classifiers(ports, config, classify::ClassifierSet::default())
+}
+
+/// Build an `AppState` with the bake-off models wired in (T-904). `main` passes
+/// the production `GeminiClassifier`; tests keep the empty default via
+/// [`app_state`].
+#[must_use]
+pub fn app_state_with_classifiers(
+    ports: Arc<Ports>,
+    config: Arc<ApiConfig>,
+    classifiers: classify::ClassifierSet,
+) -> AppState {
     let limits = Arc::new(RateLimiter::new(
         ports.store.clone(),
         ports.clock.clone(),
@@ -291,8 +315,9 @@ pub fn app_state(ports: Arc<Ports>, config: Arc<ApiConfig>) -> AppState {
         limits,
         tokens: Arc::new(crate::tokens::TokenService::new()),
         invite_mailer,
-        classifiers: classify::ClassifierSet::default(),
+        classifiers,
         bakeoff_gate: classify::BakeoffGate::default(),
         business_calendar: Arc::new(crate::services::delivery_check::national_calendar()),
+        tunables: crate::startup::runtime_tunables(),
     }
 }

@@ -49,6 +49,15 @@ pub mod policies {
         };
     }
     policy!(SIGN_IN_IP, "sign_in_ip", 20, 600, None, Ip, Firestore);
+    // The `SIGN_IN_IP` budget the local e2e stack runs with (T-1101d). Every
+    // journey in `scripts/e2e.sh` reaches the api through one loopback address
+    // (`scripts/e2e_host.py` sets a single `X-Forwarded-For`), so the whole
+    // suite spends the 20-sign-in production budget long before its last
+    // journey signs in, and later journeys are refused with a `429`. The
+    // control is otherwise unchanged: it stays per-IP and windowed and is
+    // enforced in every non-e2e mode. Only a `testkit` build with `MT_E2E=1`
+    // ever selects it, through [`sign_in_ip`].
+    policy!(SIGN_IN_IP_E2E, "sign_in_ip", 100, 600, None, Ip, Firestore);
     policy!(
         SIGN_IN_FAILED_SUBJECT,
         "sign_in_failed",
@@ -154,6 +163,20 @@ pub mod policies {
         User,
         Firestore
     );
+
+    /// The sign-in IP policy in force: [`SIGN_IN_IP`] everywhere except an e2e
+    /// process (a `testkit` build with `MT_E2E=1`), which gets the larger
+    /// [`SIGN_IN_IP_E2E`] budget so the local suite's journeys — all from one
+    /// loopback address — do not throttle each other (T-1101d). No other mode,
+    /// and no test that builds its own router, ever sees the raised policy.
+    #[must_use]
+    pub fn sign_in_ip() -> &'static Policy {
+        #[cfg(feature = "testkit")]
+        if crate::startup::e2e_mode_enabled() {
+            return &SIGN_IN_IP_E2E;
+        }
+        &SIGN_IN_IP
+    }
 }
 
 #[derive(Clone, Copy)]

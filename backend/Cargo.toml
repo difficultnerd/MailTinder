@@ -20,6 +20,7 @@ egress = { path = "crates/egress", version = "0.1.0" }
 unsub-testbed = { path = "crates/unsub-testbed", version = "0.1.0" }
 unsub = { path = "crates/unsub", version = "0.1.0" }
 testkit = { path = "crates/testkit", version = "0.1.0" }
+worker = { path = "crates/worker", version = "0.1.0" }
 adapters-gmail = { path = "crates/adapters-gmail", version = "0.1.0" }
 adapters-gcp = { path = "crates/adapters-gcp", version = "0.1.0" }
 adapters-models = { path = "crates/adapters-models", version = "0.1.0" }
@@ -46,6 +47,10 @@ mail-parser = "0.9"
 jsonwebtoken = "9"
 html5ever = "0.27"
 unicode-segmentation = "1"
+# WebDriver client for the end-to-end harness crate (`crates/e2e`, dev-only).
+# rustls keeps it off the native-tls/openssl path; the transitive `webdriver`
+# crate is MPL-2.0 (see backend/deny.toml).
+fantoccini = { version = "0.21", default-features = false, features = ["rustls-tls"] }
 
 # Keep local tests and the separate llvm-cov build within the worker disk budget.
 # Coverage instrumentation does not require debug information or incremental caches.

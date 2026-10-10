@@ -59,6 +59,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
+          # Pin the version the goldens were captured with (ADR 0001). Pinning
+          # only `stable` lets a channel bump change rasterisation and fail
+          # every golden; see docs/golden-tests.md. T-1111a.
+          flutter-version: 3.47.6
           channel: stable
           cache: true
       - run: flutter pub get
@@ -282,6 +286,59 @@ jobs:
           fi
           exit $fail
 
+  # End-to-end harness (T-1101a): builds and runs the whole local stack and
+  # drives the browser journeys (S10 3.3). Separate from `rust` because it needs
+  # Flutter, Chrome, ChromeDriver and the Firestore emulator, and it is required
+  # by branch protection (tools/apply_branch_protection.sh).
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          install_components: cloud-firestore-emulator,beta
+      # Production must compile without testkit; separately prove the real
+      # test route is absent and startup refuses MT_E2E in that build.
+      # The workspace `rust` job also proves feature + runtime gating.
+      - run: cargo build --release --locked -p api --no-default-features
+      - run: cargo test --locked -p api --no-default-features --test release_routes
+      - run: cargo test --locked -p api --no-default-features --test startup
+      # `unsub`'s own no-testkit refusal guard (T-1112d); the workspace `rust`
+      # job's `--all-features` compiles the guard out, so it must run here.
+      - run: cargo test --locked -p unsub --no-default-features --test startup_e2e
+      - run: flutter pub get
+        working-directory: app
+      - run: scripts/e2e.sh
+        working-directory: .
+      # Diagnostics from a failed run: screenshots, page text/source, the
+      # semantics tree, the browser console log, the ChromeDriver tail and the
+      # service logs. Runs when a step fails and when the timeout cancels the
+      # job, so a red run is always diagnosable.
+      - if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-logs
+          path: target/e2e-logs/
+          if-no-files-found: ignore
+
   # Integrity guard. Branch protection treats a SKIPPED required job as a pass,
   # so a gate that quietly does not run is worse than no gate at all. This job
   # is required, and fails unless every gate above actually ran and succeeded -
@@ -293,7 +350,7 @@ jobs:
   # jobs sharing one name would make it ambiguous which run gates a merge.
   ci-integrity:
     runs-on: ubuntu-latest
-    needs: [rust, dart, language-policy, ac-coverage, terraform]
+    needs: [rust, dart, language-policy, ac-coverage, e2e, terraform]
     if: always()
     env:
       R_RUST: ${{ needs.rust.result }}
@@ -301,6 +358,7 @@ jobs:
       R_LANG: ${{ needs.language-policy.result }}
       R_AC: ${{ needs.ac-coverage.result }}
       R_TF: ${{ needs.terraform.result }}
+      R_E2E: ${{ needs.e2e.result }}
     steps:
       - name: Assert every expected gate ran and passed
         run: |
@@ -318,4 +376,5 @@ jobs:
           report language-policy "$R_LANG"
           report ac-coverage     "$R_AC"
           report terraform       "$R_TF"
+          report e2e             "$R_E2E"
           exit $fail

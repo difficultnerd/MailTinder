@@ -57,13 +57,17 @@ async fn app_folder_store_contract_drive() {
 }
 
 /// SR-01 AC5: rules live in the user's app folder, not on our server.
+/// The stored value is sealed ciphertext (arbitrary bytes), so the round trip
+/// must preserve every byte; a text-only multipart layer would corrupt it.
 #[tokio::test]
 async fn sr_01_ac5_write_then_read_round_trip_ciphertext() {
     let handle = support::start().await;
     let mb = handle.add_mailbox("rules@example.com");
     let ctx = ctx(&handle, &mb, 7);
     let store = store(&handle);
-    let ciphertext = b"CIPHERTEXT-round-trip-1".to_vec();
+    let ciphertext: Vec<u8> = vec![
+        0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x9c, 0x80, 0xc3, 0x28, 0xa0, 0x7f, 0xed,
+    ];
     let tag = store.write(&ctx, &ciphertext, None).await.expect("write");
     let read = store.read(&ctx).await.expect("read").expect("present");
     assert_eq!(read.0, ciphertext);
