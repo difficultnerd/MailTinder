@@ -91,6 +91,24 @@ const FIND_TIMEOUT: Duration = Duration::from_secs(20);
 /// focus, so keys sent immediately can reach a field that is not yet listening.
 const FOCUS_SETTLE: Duration = Duration::from_millis(300);
 
+/// The input-source id of [`Ui::pull_to_refresh`]'s touch sequence. A separate
+/// id keeps it from colliding with a real device's state in the session.
+const PULL_POINTER_ID: &str = "e2e-pull";
+
+/// How many pointer moves [`Ui::pull_to_refresh`] sends. Flutter's scroll
+/// physics accumulate overscroll per drag update, and a single large jump can
+/// be coalesced away, so the pull arrives as several small moves.
+const PULL_STEPS: u32 = 8;
+
+/// The duration of each [`PULL_STEPS`] move, in milliseconds.
+const PULL_STEP_MS: u64 = 16;
+
+/// How far [`Ui::pull_to_refresh`] travels, in CSS pixels. The
+/// `RefreshIndicator` arms once the drag passes about a sixth of the scroll
+/// view's height (`_kDragContainerExtentPercentage` times the colour tween's
+/// end), so a third of the 1024-pixel e2e window is comfortably past it.
+const PULL_DISTANCE: f64 = 320.0;
+
 /// Directory the harness writes failure artifacts to. `scripts/e2e.sh` points
 /// `MT_E2E_LOG_DIR` at `target/e2e-logs`, the folder the `e2e` CI job uploads.
 fn log_dir() -> PathBuf {
@@ -269,6 +287,25 @@ impl Ui {
     /// `click()` remains the fallback for a node WebDriver cannot interact
     /// with (for example an element its hit test finds covered).
     pub async fn tap(&self, label: &str) -> Result<(), E2eError> {
+        self.tap_marked(MARK_TAPPABLE_JS, label).await
+    }
+
+    /// Click the control whose merged Semantics label carries `label` as one of
+    /// its parts (or as its whole text).
+    ///
+    /// A bottom-navigation destination merges its icon's label and its text
+    /// label into one semantics node, and Flutter joins merged labels with a
+    /// newline (`_concatAttributedString`), so the Settings tab's `aria-label`
+    /// is `"Settings\nSettings"`: [`Self::tap`]'s exact match cannot find it.
+    /// Every other control matches exactly, so this is the exception, not the
+    /// rule (T-1101e).
+    pub async fn tap_merged(&self, label: &str) -> Result<(), E2eError> {
+        self.tap_marked(MARK_MERGED_JS, label).await
+    }
+
+    /// Tag the labelled control with `mark_js`, then click it (see
+    /// [`Self::tap`] for why the click is retried).
+    async fn tap_marked(&self, mark_js: &str, label: &str) -> Result<(), E2eError> {
         // Flutter web rebuilds its semantics tree while the page settles (slower on a cold CI runner): a node can be found and tagged,
         // then replaced before the click lands, and a miss at any step used to be fatal. Retry the whole find -> tag -> click sequence
         // until it succeeds or FIND_TIMEOUT passes; every step is a no-op on a miss, so repeating it is safe.
@@ -276,7 +313,7 @@ impl Ui {
         loop {
             let marked = self
                 .client
-                .execute(MARK_TAPPABLE_JS, vec![json!(label)])
+                .execute(mark_js, vec![json!(label)])
                 .await
                 .map_err(wd)?;
             if marked.as_bool() == Some(true) {
@@ -504,12 +541,7 @@ impl Ui {
     /// Fetch the WebDriver browser log for this session.
     async fn browser_log(&self) -> Result<Vec<LogEntry>, E2eError> {
         let base = webdriver_url()?;
-        let session = self
-            .client
-            .session_id()
-            .await
-            .map_err(wd)?
-            .ok_or_else(|| E2eError::State("no webdriver session id".to_owned()))?;
+        let session = self.session_id().await?;
         let url = format!("{}/session/{}/log", base.trim_end_matches('/'), session);
         reqwest::Client::new()
             .post(&url)
@@ -554,6 +586,128 @@ impl Ui {
             .filter(|e| e.level == "SEVERE")
             .map(|e| e.message)
             .collect())
+    }
+
+    /// Pull the Feed down with a real touch drag to refresh it (S9 section 3,
+    /// FD-03 AC5). The Feed load this starts is the one that collects a queued
+    /// unsubscribe's outcome into History (S10 6.3, option B; T-1101e).
+    ///
+    /// Flutter web scrolls a scroll view for touch pointers only - its default
+    /// scroll behaviour ignores a mouse drag and a wheel never overscrolls -
+    /// and a downward drag *on* the card is the Skip gesture, so the drag must
+    /// start outside the card. The Feed's header is outside the scroll view, so
+    /// the strip just below it is inside the scroll view and above the card;
+    /// the idle Blitz button marks that boundary (it is the header's last row),
+    /// and the drag then travels well past the sixth of the viewport the
+    /// indicator arms at, with room to spare inside the window.
+    pub async fn pull_to_refresh(&self) -> Result<(), E2eError> {
+        let start = self.js(PULL_START_JS).await?;
+        let (Some(x), Some(y)) = (
+            start.get("x").and_then(Value::as_f64),
+            start.get("y").and_then(Value::as_f64),
+        ) else {
+            self.capture_failure("pull to refresh").await;
+            return Err(E2eError::NotFound(
+                "the top of the Feed's scroll view to pull down from".to_owned(),
+            ));
+        };
+        let mut steps = vec![
+            json!({ "type": "pointerMove", "duration": 0, "x": x, "y": y, "origin": "viewport" }),
+            json!({ "type": "pointerDown" }),
+        ];
+        for step in 1..=PULL_STEPS {
+            let travelled = PULL_DISTANCE * f64::from(step) / f64::from(PULL_STEPS);
+            steps.push(json!({
+                "type": "pointerMove",
+                "duration": PULL_STEP_MS,
+                "x": x,
+                "y": y + travelled,
+                "origin": "viewport",
+            }));
+        }
+        steps.push(json!({ "type": "pointerUp" }));
+        self.webdriver_post(
+            "/actions",
+            json!({ "actions": [{
+                "type": "pointer",
+                "id": PULL_POINTER_ID,
+                "parameters": { "pointerType": "touch" },
+                "actions": steps,
+            }] }),
+        )
+        .await?;
+        // Release the input state, so a later journey's gestures start clean;
+        // a release that fails is not worth failing the journey for.
+        let _ = self.webdriver_delete("/actions").await;
+        Ok(())
+    }
+
+    /// Reload the page (WebDriver's refresh). The app boots again on the Feed,
+    /// which is the same `FeedModel.open()` call pull to refresh makes, so a
+    /// journey has a second way to produce a Feed load when a runner cannot
+    /// drive a touch drag (T-1101e).
+    pub async fn reload(&self) -> Result<(), E2eError> {
+        self.client.refresh().await.map_err(wd)
+    }
+
+    /// This browser session's WebDriver id.
+    async fn session_id(&self) -> Result<String, E2eError> {
+        self.client
+            .session_id()
+            .await
+            .map_err(wd)?
+            .ok_or_else(|| E2eError::State("no webdriver session id".to_owned()))
+    }
+
+    /// POST a raw WebDriver command to this session. The actions API (the one
+    /// way to send a real touch drag) has no fantoccini wrapper at 0.21.
+    async fn webdriver_post(&self, command: &str, body: Value) -> Result<(), E2eError> {
+        let base = webdriver_url()?;
+        let url = format!(
+            "{}/session/{}{command}",
+            base.trim_end_matches('/'),
+            self.session_id().await?
+        );
+        let response = reqwest::Client::new()
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let text = response.text().await.unwrap_or_default();
+            Err(E2eError::WebDriver(format!(
+                "POST {command}: {status} {text}"
+            )))
+        }
+    }
+
+    /// DELETE a raw WebDriver command for this session (releasing the input
+    /// state the actions API keeps).
+    async fn webdriver_delete(&self, command: &str) -> Result<(), E2eError> {
+        let base = webdriver_url()?;
+        let url = format!(
+            "{}/session/{}{command}",
+            base.trim_end_matches('/'),
+            self.session_id().await?
+        );
+        let response = reqwest::Client::new()
+            .delete(&url)
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let text = response.text().await.unwrap_or_default();
+            Err(E2eError::WebDriver(format!(
+                "DELETE {command}: {status} {text}"
+            )))
+        }
     }
 
     /// End the browser session.
@@ -686,6 +840,44 @@ impl FakeGoogle {
             .await?;
         }
         Ok(())
+    }
+
+    /// Seed one corpus one-click message into `email`'s mailbox with its
+    /// `List-Unsubscribe` target rewritten to this run's testbed (S10 6.2).
+    ///
+    /// Only the target URL changes: every other header, including the DKIM
+    /// coverage of both unsubscribe headers, stays the fixture's, so the
+    /// message still classifies as a covered one-click list message. The target
+    /// must be the testbed's literal-loopback TLS base
+    /// (`MT_E2E_TESTBED_HTTPS_URL`); `unsub`'s e2e egress refuses a hostname.
+    pub async fn seed_one_click_message(
+        &self,
+        email: &str,
+        fixture: &str,
+        fixture_target: &str,
+        route: &str,
+        testbed_https: &str,
+        internal_date: &str,
+    ) -> Result<(), E2eError> {
+        let corpus = testkit::corpus::load().map_err(E2eError::State)?;
+        let case = corpus
+            .case(fixture)
+            .ok_or_else(|| E2eError::State(format!("no corpus case {fixture}")))?;
+        let text = String::from_utf8(case.eml.clone())
+            .map_err(|e| E2eError::State(format!("corpus case {fixture} is not UTF-8: {e}")))?;
+        let target = format!("{}{route}", testbed_https.trim_end_matches('/'));
+        let eml = text.replace(fixture_target, &target);
+        self.post(
+            "/__fake/gmail/messages",
+            json!({
+                "email": email,
+                "eml_base64": base64::engine::general_purpose::STANDARD.encode(eml),
+                "labels": ["INBOX"],
+                "internal_date": internal_date,
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// The label *names* on every message in `email`'s mailbox, newest first,
@@ -919,6 +1111,46 @@ impl Testbed {
             })
             .collect())
     }
+
+    /// Clear every recorded request, so a journey never sees another journey's
+    /// traffic (S10 6.2). Journeys run one at a time, but the testbed is one
+    /// process for the whole run.
+    pub async fn reset(&self) -> Result<(), E2eError> {
+        let response = self
+            .client
+            .post(endpoint(&self.base, "/__testbed/reset"))
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(E2eError::Http(format!(
+                "POST /__testbed/reset: {status} {body}"
+            )))
+        }
+    }
+
+    /// Poll `route` until the testbed has recorded a request or `timeout`
+    /// passes, then return what it recorded. A journey waits out a job's due
+    /// time this way instead of sleeping for minutes: an empty result after the
+    /// timeout is the assertion that nothing was sent (T-1101e).
+    pub async fn wait_for_request(
+        &self,
+        route: &str,
+        timeout: Duration,
+    ) -> Result<Vec<RecordedRequest>, E2eError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let records = self.received(route).await?;
+            if !records.is_empty() || Instant::now() >= deadline {
+                return Ok(records);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
 }
 
 /// A byte offset per log file captured by [`EventLog::mark`], so each journey
@@ -944,6 +1176,7 @@ struct LogLine {
     event: Option<String>,
     action: Option<String>,
     outcome: Option<String>,
+    route: Option<String>,
 }
 
 /// Reads the services' structured log lines (`<service>.jsonl`, one JSON object
@@ -981,7 +1214,29 @@ impl EventLog {
     /// Every metric event written since `mark`, across every log file. Earlier
     /// journeys' lines are outside the mark and never count.
     pub fn since_mark(&self, mark: LogMark) -> Result<Vec<MetricEvent>, E2eError> {
-        let mut events = Vec::new();
+        Ok(self
+            .lines_since(&mark)
+            .into_iter()
+            .filter_map(|line| metric_event(&line))
+            .collect())
+    }
+
+    /// The route templates of every `request` line written since `mark`
+    /// (T-307's request event; the api logs one per request with its template).
+    /// A journey uses it to prove a Feed load happened - `/api/v1/feed/next` -
+    /// which is how a pull to refresh is told from a gesture that did nothing
+    /// (T-1101e).
+    pub fn request_routes_since_mark(&self, mark: &LogMark) -> Result<Vec<String>, E2eError> {
+        Ok(self
+            .lines_since(mark)
+            .into_iter()
+            .filter_map(|line| request_route(&line))
+            .collect())
+    }
+
+    /// The non-empty log lines written since `mark`, across every log file.
+    fn lines_since(&self, mark: &LogMark) -> Vec<String> {
+        let mut lines = Vec::new();
         for path in self.jsonl_files() {
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
@@ -998,13 +1253,10 @@ impl EventLog {
                 if line.trim().is_empty() {
                     continue;
                 }
-                // A partially flushed line simply fails to parse and is skipped.
-                if let Some(event) = metric_event(line) {
-                    events.push(event);
-                }
+                lines.push(line.to_owned());
             }
         }
-        Ok(events)
+        lines
     }
 
     /// The `*.jsonl` files in the directory, sorted for a stable order.
@@ -1040,6 +1292,15 @@ fn metric_event(line: &str) -> Option<MetricEvent> {
     })
 }
 
+/// The route template of one `request` log line, or `None` for any other event.
+fn request_route(line: &str) -> Option<String> {
+    let parsed: LogLine = serde_json::from_str(line).ok()?;
+    if parsed.event.as_deref() != Some("request") {
+        return None;
+    }
+    parsed.route
+}
+
 /// The invited copy on the Sign-in screen (S2 AU-03 AC1; `Copy.invited`), shown
 /// before the OAuth round-trip.
 pub const INVITED_COPY: &str =
@@ -1048,6 +1309,10 @@ pub const INVITED_COPY: &str =
 pub const CONTINUE_WITH_GOOGLE: &str = "Continue with Google";
 /// The Reject button's Semantics label: proves the Feed rendered a card.
 pub const REJECT_BUTTON: &str = "Reject";
+/// The api's route template for a Feed load, exactly as T-307's `request`
+/// event logs it. A journey reads it back from `api.jsonl` to tell a Feed load
+/// that happened from one that did not (T-1101e).
+pub const FEED_ROUTE: &str = "/api/v1/feed/next";
 /// A cold CI runner takes a long time to paint the app before the semantics
 /// tree exposes a control, so the first wait is generous.
 pub const APP_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -1171,6 +1436,36 @@ const node = document.querySelector('[data-e2e-tap]');
 if (!node) return false;
 node.click();
 return true;
+"#;
+
+/// Tag the tappable node whose merged `aria-label` has `arguments[0]` as one
+/// of its parts (Flutter joins merged labels with a newline), or whose text is
+/// exactly `arguments[0]`. See [`Ui::tap_merged`]. Returns false when nothing
+/// matches.
+const MARK_MERGED_JS: &str = r#"
+const label = arguments[0];
+const hasPart = el => (el.getAttribute('aria-label') || '').split('\n')
+  .some(part => part.trim() === label);
+const matches = Array.from(document.querySelectorAll('flt-semantics, [role], [aria-label], button'))
+  .filter(el => hasPart(el) || (el.textContent || '').trim() === label);
+if (matches.length === 0) return false;
+document.querySelectorAll('[data-e2e-tap]').forEach(el => el.removeAttribute('data-e2e-tap'));
+matches.sort((a, b) => (b.hasAttribute('flt-tappable') ? 1 : 0) - (a.hasAttribute('flt-tappable') ? 1 : 0));
+matches[0].setAttribute('data-e2e-tap', '');
+return true;
+"#;
+
+/// The point a pull to refresh starts from: inside the Feed's scroll view,
+/// above the card and below the header. The header's last row is the idle
+/// Blitz button (its Semantics label is `Copy.blitzSemantics`), so its bottom
+/// edge is the top of the scroll view. Returns null when the Feed is not
+/// showing, so the caller reports a miss instead of dragging blind.
+const PULL_START_JS: &str = r#"
+const blitz = Array.from(document.querySelectorAll('flt-semantics, [aria-label]'))
+  .find(el => (el.getAttribute('aria-label') || '').startsWith('Start a 60-second Blitz round'));
+if (!blitz) return null;
+const rect = blitz.getBoundingClientRect();
+return { x: rect.left + rect.width / 2, y: rect.bottom + 8 };
 "#;
 
 /// DOM attribute [`MARK_TYPE_JS`] sets on the editable control and the CSS
@@ -1299,6 +1594,49 @@ mod tests {
         );
         assert_eq!(metric_event("{\"event\":\"metric\"}"), None);
         assert_eq!(metric_event("not json"), None);
+    }
+
+    #[test]
+    fn request_routes_since_mark_reads_only_the_request_event() -> Result<(), E2eError> {
+        let dir = temp_log_dir();
+        let api = dir.join("api.jsonl");
+        std::fs::write(
+            &api,
+            "{\"event\":\"request\",\"route\":\"/api/v1/session\",\"status\":200}\n",
+        )
+        .expect("seed an earlier request line");
+        let log = EventLog::at(dir.clone());
+        let mark = log.mark();
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&api)
+            .expect("open the api log");
+        writeln!(
+            file,
+            "{{\"event\":\"request\",\"route\":\"{FEED_ROUTE}\",\"status\":200}}"
+        )
+        .expect("append a feed request");
+        writeln!(
+            file,
+            "{{\"event\":\"metric\",\"action\":\"unsub_outcome\",\"outcome\":\"sent\"}}"
+        )
+        .expect("append a metric line");
+
+        let routes = log.request_routes_since_mark(&mark)?;
+        assert_eq!(routes, vec![FEED_ROUTE.to_owned()]);
+
+        // A request line without a route, a non-request line and junk are all
+        // skipped rather than counted as a Feed load.
+        assert_eq!(request_route("{\"event\":\"request\"}"), None);
+        assert_eq!(
+            request_route("{\"event\":\"metric\",\"route\":\"/x\"}"),
+            None
+        );
+        assert_eq!(request_route("not json"), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
