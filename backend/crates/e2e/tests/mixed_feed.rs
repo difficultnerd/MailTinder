@@ -15,10 +15,11 @@
 //! semantics, so the label is exactly the focused card.
 
 use std::error::Error;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use e2e::{
-    connect_second_mailbox, finish_journey, signed_in_user, EventLog, FakeGoogle, Stack, Ui,
+    connect_second_mailbox, finish_journey, signed_in_user, EventLog, FakeGoogle, LogMark,
+    MetricEvent, Stack, Ui,
 };
 
 /// A's throwaway card: the sign-in Feed load fetches it and advances A's floor.
@@ -48,6 +49,13 @@ const KEEP: &str = "Keep";
 /// The Feed after the link, once the api has fetched and classified both
 /// mailboxes.
 const FEED_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the two `swipe` metrics may take to reach the log after the third
+/// card appears. The Feed advances from prefetched cards, so a Keep tap can
+/// return before the api has handled that swipe and written its event; the
+/// poll turns that race into a wait (T-1101d).
+const SWIPE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The interval the swipe poll uses (T-1101e's pattern).
+const POLL: Duration = Duration::from_millis(200);
 
 /// Signs A in, links B, and lands on the Feed with both mailboxes interleaved.
 ///
@@ -103,6 +111,30 @@ async fn two_mailbox_feed(
     Ok(ui)
 }
 
+/// The metric events written since `mark`, once the two `swipe`/`keep` events
+/// have landed (or the [`SWIPE_TIMEOUT`] elapses). The Feed advances from
+/// prefetched cards, so the tap that shows the next card can return before the
+/// api has handled that swipe and logged its event; polling removes that race
+/// without weakening the assertion - the caller still checks the exact set, so
+/// a wrong or extra event fails.
+async fn metric_events_with_two_keeps(
+    events: &EventLog,
+    mark: &LogMark,
+) -> Result<Vec<MetricEvent>, Box<dyn Error>> {
+    let deadline = Instant::now() + SWIPE_TIMEOUT;
+    loop {
+        let emitted = events.since_mark(mark.clone())?;
+        let keeps = emitted
+            .iter()
+            .filter(|event| event.event_type == "swipe" && event.outcome.as_deref() == Some("keep"))
+            .count();
+        if keeps >= 2 || Instant::now() >= deadline {
+            return Ok(emitted);
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
 /// Journey 3: the Feed interleaves the two mailboxes newest first.
 #[tokio::test]
 #[ignore = "run by scripts/e2e.sh"]
@@ -134,9 +166,10 @@ async fn fd_02_ac1_e2e_two_mailboxes_interleaved_newest_first() -> Result<(), Bo
 
     // Journey 3 taps Keep twice, so it emits exactly two `swipe` metrics, one
     // per tap, each carrying the kept action and no content (S10 8; T-1114
-    // restored the assertion ADR 0002 deferred).
-    let emitted = events.since_mark(mark)?;
-    let swipes: Vec<&e2e::MetricEvent> = emitted
+    // restored the assertion ADR 0002 deferred). The second event can lag the
+    // final tap, so wait for both before reading the exact set.
+    let emitted = metric_events_with_two_keeps(&events, &mark).await?;
+    let swipes: Vec<&MetricEvent> = emitted
         .iter()
         .filter(|event| event.event_type == "swipe")
         .collect();
