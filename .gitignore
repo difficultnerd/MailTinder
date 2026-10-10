@@ -57,6 +57,9 @@ tools/.cargo-mutants/
 crash.log
 *.tfplan
 # Terraform provider caches (114MB each) must never be committed.
+# Terraform
+*.tfvars
+!*.tfvars.example
 # Local e2e process state and synthetic service logs.
 /target/
 # cargo-mutants install roots (a built executable must never be committed)
