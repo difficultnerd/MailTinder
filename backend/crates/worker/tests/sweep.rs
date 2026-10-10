@@ -960,3 +960,80 @@ async fn api_int_2_failed_step_returns_500_and_others_run() -> TestResult {
     assert_eq!(counts["invites_deleted"].as_u64(), Some(1));
     Ok(())
 }
+
+/// OBS-EV AC3 (worker): a terminal job with no recorded outcome emits
+/// `history_missing` before the sweep deletes it (S10 8, T-1114). A terminal
+/// job that carries its outcome emits nothing.
+#[tokio::test]
+async fn obs_ev_ac3_unsub_after_undo_and_history_missing_emitted() -> TestResult {
+    let env = setup().await?;
+    let now = env.fakes.clock.now();
+    // Terminal, past retention, and (the anomaly) with no recorded outcome: it
+    // can never be collected into History, so the automated action has none.
+    let lost = seed_job(
+        &env,
+        &env.user,
+        &env.mailbox,
+        1,
+        JobMethod::OneClick,
+        JobStatus::Sent,
+        now,
+        now - Duration::seconds(1),
+    )
+    .await?;
+    // A normal terminal job (outcome recorded) is not a `history_missing`.
+    let ok = seed_job(
+        &env,
+        &env.user,
+        &env.mailbox,
+        2,
+        JobMethod::OneClick,
+        JobStatus::Sent,
+        now,
+        now - Duration::seconds(1),
+    )
+    .await?;
+    let versioned = env
+        .ports
+        .store
+        .jobs()
+        .get(&ok)
+        .await?
+        .ok_or("missing job")?;
+    let mut record = versioned.record;
+    record.outcome = Some(ports::store::JobOutcome {
+        code: JobOutcomeCode::OneClickAccepted,
+        at: now,
+    });
+    env.ports
+        .store
+        .jobs()
+        .put(&record, Precondition::Matches(versioned.version))
+        .await?;
+
+    let (capture, _guard) =
+        obs::capture("worker", obs::arc(obs::FixedClock(env.fakes.clock.now())));
+    let counts = run_sweep(&worker_state(&env)).await;
+    assert!(counts.failed_steps.is_empty(), "{:?}", counts.failed_steps);
+    assert_eq!(counts.jobs_deleted, 2, "both terminal jobs are purged");
+    assert!(env.ports.store.jobs().get(&lost).await?.is_none());
+    assert!(env.ports.store.jobs().get(&ok).await?.is_none());
+    // Parse the `metric` events, not a substring: only the terminal job with no
+    // outcome is a `history_missing` (T-1114, F7).
+    let missing: Vec<serde_json::Value> = capture
+        .lines()
+        .iter()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|v: &serde_json::Value| {
+            v.get("event").and_then(|e| e.as_str()) == Some("metric")
+                && v.get("action").and_then(|a| a.as_str()) == Some("history_missing")
+        })
+        .collect();
+    assert_eq!(
+        missing.len(),
+        1,
+        "only the terminal job with no outcome is a history_missing: {}",
+        capture.text()
+    );
+    Ok(())
+}
