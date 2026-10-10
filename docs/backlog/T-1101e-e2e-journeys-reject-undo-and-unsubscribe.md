@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b |
+| M11 | sonnet | small: about 100 to 150 lines plus tests | T-1101b, T-1101g |
 
 **Read only these spec sections:** S10 sections 3.3 (journey list), 6.2 (one-click route group), 6.3 (rows "Reject queues job", "Undo before due time", "Every outcome recorded") and 8 (events per journey) (`docs/specs/S10-test-strategy.md`); S2 AU-07 AC1, FD-02 AC1 and AC2, SW-04 AC2, SW-05 AC2, UN-01 AC1 and AC3, UN-02 AC1. Nothing else is needed.
 
@@ -27,8 +27,8 @@ Use the helpers from T-1101b (`Testbed`, `EventLog`, `signed_in_user`); add a he
 
 All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts and corpus fixtures from T-204 only.
 
-1. **Journey 4, reject then undo** (SW-05 AC2): seed one one-click list message (DKIM covers both headers) pointing at the testbed's one-click 200 route. Tap "Reject"; wait for "Trashed. Unsubscribing in 5 minutes."; tap "Undo"; wait for the card again. `advance_clock(6 minutes)`; then the testbed has received zero requests on that route, and fake-google shows the message back in INBOX with its exact label set.
-2. **Journey 5, reject and let it run** (UN-01 AC1, UN-02 AC1, UN-01 AC3): same seed; tap "Reject"; `advance_clock(6 minutes)`; poll the testbed up to 10 s: exactly one POST, body exactly `List-Unsubscribe=One-Click`, no `Cookie`, no `Authorization`. Pull to refresh the Feed (collects the outcome), open Settings, History, filter "Unsubscribes": one entry with outcome "Sent". Advance the clock again and refresh: still exactly one request (runs once).
+1. **Journey 4, reject then undo** (SW-05 AC2): seed one one-click list message (DKIM covers both headers) pointing at the testbed's one-click 200 route. Tap "Reject"; wait for "Trashed. Unsubscribing in 5 minutes."; tap "Undo"; wait for the card again. wait for the e2e due time from T-1101g (poll up to 10 s past it; use `advance_clock` only if T-1101g added it); then the testbed has received zero requests on that route, and fake-google shows the message back in INBOX with its exact label set.
+2. **Journey 5, reject and let it run** (UN-01 AC1, UN-02 AC1, UN-01 AC3): same seed; tap "Reject"; wait for the e2e due time from T-1101g (poll up to 10 s past it; use `advance_clock` only if T-1101g added it); poll the testbed up to 10 s: exactly one POST, body exactly `List-Unsubscribe=One-Click`, no `Cookie`, no `Authorization`. Pull to refresh the Feed (collects the outcome), open Settings, History, filter "Unsubscribes": one entry with outcome "Sent". Advance the clock again and refresh: still exactly one request (runs once).
 3. **Events** (S10 8): each journey takes `EventLog::mark()` at start and asserts the events the services actually emit: journey 5 exactly one `unsub_outcome` with outcome `sent`; journey 4 no `unsub_outcome` (read the log only after the 6-minute clock advance and the testbed zero-request check, so the negative assertion cannot pass vacuously). Do NOT assert `swipe` or `undo` events: the services do not emit them (ADR 0002); the swipe, undo and filing effects are already proven by the testbed and fake-google assertions above. Event field names come from T-307; if they differ from `event_type` and `outcome`, use T-307's.
 
 ## Acceptance criteria
@@ -54,7 +54,7 @@ All tests are `#[ignore = "run by scripts/e2e.sh"]`, use `example.com` accounts 
 - Each journey seeds its own accounts with unique `sub` values so tests do not see each other's mail.
 - Read events only after the mark, so earlier journeys' lines do not count.
 - No real hosts, no real mail.
-- First check that the `unsub` and `worker` e2e configurations (T-500b follow-up) let the unsubscribe reach the testbed over the test egress policy (loopback listener and any certificate trust it needs). If a missing piece is small and inside `backend/crates/e2e` and test configuration, add it; if it needs production code or a policy loosening, stop and report BLOCKED with the exact missing piece.
+- The unsub/worker test configuration, the shared virtual clock and the testbed TLS trust come from T-1101g; use them, do not rebuild them. If something from T-1101g is missing, report BLOCKED with the exact missing piece.
 
 ## Out of scope
 
