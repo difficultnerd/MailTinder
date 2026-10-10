@@ -20,6 +20,7 @@ egress = { path = "crates/egress", version = "0.1.0" }
 unsub-testbed = { path = "crates/unsub-testbed", version = "0.1.0" }
 unsub = { path = "crates/unsub", version = "0.1.0" }
 testkit = { path = "crates/testkit", version = "0.1.0" }
+worker = { path = "crates/worker", version = "0.1.0" }
 adapters-gmail = { path = "crates/adapters-gmail", version = "0.1.0" }
 adapters-gcp = { path = "crates/adapters-gcp", version = "0.1.0" }
 adapters-models = { path = "crates/adapters-models", version = "0.1.0" }

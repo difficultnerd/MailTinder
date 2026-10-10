@@ -12,7 +12,7 @@
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use e2e::{FakeGoogle, Stack, TestControl, Ui};
+use e2e::{finish_journey, FakeGoogle, Stack, TestControl, Ui};
 
 /// The invited copy shown on the Sign-in screen (S2 AU-03 AC1; `Copy.invited`).
 const INVITED_COPY: &str =
@@ -122,6 +122,6 @@ async fn au_03_ac1_e2e_invited_user_lands_on_feed() -> Result<(), Box<dyn std::e
     ui.wait_for_text(NEWEST_SENDER, FEED_TIMEOUT).await?;
     step_url(&ui, start, "feed_loaded").await;
 
-    ui.close().await?;
+    finish_journey(ui).await?;
     Ok(())
 }

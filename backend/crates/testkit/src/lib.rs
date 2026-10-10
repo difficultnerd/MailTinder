@@ -20,6 +20,7 @@ pub mod classifier;
 pub mod clock;
 pub mod contract;
 pub mod corpus;
+pub mod e2e;
 pub mod egress;
 pub mod fake_caller;
 pub mod fake_classifier;
@@ -39,7 +40,7 @@ pub mod store;
 
 pub use app_folder::InMemoryAppFolder;
 pub use classifier::FakeClassifier;
-pub use clock::{VirtualClock, T0};
+pub use clock::{OffsetClock, VirtualClock, T0};
 pub use egress::{EgressRecord, FakeHttpEgress, Route};
 pub use fake_caller::FakeCallerVerifier;
 pub use fake_ports::{fake_ports, Fakes};

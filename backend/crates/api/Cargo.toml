@@ -7,8 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# e2e configuration (S10 3.3). Never enabled in a release build.
-testkit = ["dep:testkit", "dep:reqwest"]
+# e2e configuration (S10 3.3). Never enabled in a release build. The worker is
+# here for the account-deletion sweep route only (`/internal/test/sweep`), so a
+# journey proves the production backstop without real hours passing (T-1101c).
+testkit = ["dep:testkit", "dep:reqwest", "dep:worker"]
 
 [dependencies]
 domain.workspace = true
@@ -41,6 +43,7 @@ tokio = { workspace = true, features = ["signal"] }
 # e2e only (feature `testkit`).
 testkit = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+worker = { workspace = true, optional = true }
 
 [dev-dependencies]
 testkit.workspace = true

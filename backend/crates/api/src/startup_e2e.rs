@@ -8,7 +8,7 @@
 //! does not use it.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use adapters_gcp::{FirestoreConfig, FirestoreStore, GcpHttp, StaticTokenSource, TokenSource};
@@ -34,6 +34,22 @@ const CLIENT_SECRET: &str = "test-only-not-a-secret";
 const E2E_PROJECT: &str = "demo-mailtinder";
 /// The maximum response body [`LoopbackEgress`] will accept, 1 MiB.
 const MAX_BODY: usize = 1024 * 1024;
+
+/// The one e2e clock handle. Created on first use over the production clock and
+/// installed into the ports, so the api's own `now` and the harness's
+/// `/internal/test/advance-clock` are the same clock (T-1101c).
+static E2E_CLOCK: OnceLock<Arc<testkit::OffsetClock>> = OnceLock::new();
+
+/// The adjustable e2e clock: real time plus whatever `advance-clock` has added.
+/// A journey jumps it to pass a queued job's due time, or the account-deletion
+/// sweep horizon, without real time passing (S10 6.3).
+#[must_use]
+pub fn e2e_clock() -> Arc<testkit::OffsetClock> {
+    Arc::clone(
+        E2E_CLOCK
+            .get_or_init(|| Arc::new(testkit::OffsetClock::new(adapters_gcp::production_clock()))),
+    )
+}
 
 /// Build e2e ports from the process environment.
 ///
@@ -94,8 +110,13 @@ where
 
     let (mut ports, fakes) = testkit::fake_ports();
     // Standalone services share real time: fake-google checks provider-token
-    // expiry against it, and OAuth claims must agree with the API clock.
-    ports.clock = adapters_gcp::production_clock();
+    // expiry against it, and OAuth claims must agree with the API clock, so the
+    // e2e clock cannot stop. It is the real clock plus an offset the harness
+    // moves forward (`/internal/test/advance-clock`), which is how a journey
+    // passes a queued job's due time or the 24-hour deletion horizon without
+    // waiting for real time to elapse (T-1101c, S10 6.3).
+    let clock: Arc<testkit::OffsetClock> = e2e_clock();
+    ports.clock = Arc::clone(&clock) as Arc<dyn Clock>;
     let clock = Arc::clone(&ports.clock);
     let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(&fake_google)?);
 

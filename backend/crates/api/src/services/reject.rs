@@ -94,7 +94,7 @@ pub async fn execute(
 ) -> Result<SwipeResultDto, ApiError> {
     let user = session.user;
     let now = app.ports.clock.now();
-    let tunables = app.tunables.clone();
+    let tunables = tunables_for_queue(app.tunables.clone());
 
     // Step 1: the rate limit runs before the provider change.
     if plan.unsubscribe.is_some() {
@@ -367,6 +367,21 @@ async fn seal_field(
         .await
         .map(Ciphertext)
         .map_err(|_| ApiError::Internal)
+}
+
+/// The tunables a reject plans its queued job with. The app's own, except that
+/// an e2e build lets `/internal/test/unsub-delay` override the unsubscribe delay
+/// for one journey: journey 8 of T-1101c must disconnect a mailbox while one of
+/// its unsubscribes is still queued, which needs the job's due time beyond the
+/// UI round trip the disconnect takes. Nothing sets the override in production.
+fn tunables_for_queue(tunables: Tunables) -> Tunables {
+    #[cfg(feature = "testkit")]
+    if let Some(delay) = testkit::e2e::unsub_delay() {
+        let mut overridden = tunables;
+        overridden.unsub_delay = delay;
+        return overridden;
+    }
+    tunables
 }
 
 /// Step 3: create the job record, then its task. `AlreadyExists` on the record

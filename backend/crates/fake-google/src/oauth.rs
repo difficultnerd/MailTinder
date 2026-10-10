@@ -409,6 +409,11 @@ async fn revoke(State(st): State<AppState>, body: axum::body::Body) -> Response 
         Err(_) => return json_400("invalid_token"),
     };
     let mut st = st.0.lock().unwrap();
+    // T-1101c: the e2e harness reads the recorded order of an account
+    // deletion's provider calls (the app folder file delete, then the token
+    // revoke) from `/__fake/events`, so a revoke is recorded like every other
+    // provider call. The token itself is never recorded, only the call.
+    super::gmail::record(&mut st, "POST", "oauth.revoke", vec![]);
     // Refresh token: revoke it and every access token from its grant.
     if let Some(rec) = st.refresh_tokens.remove(&form.token) {
         st.revocations.push("refresh".to_owned());
