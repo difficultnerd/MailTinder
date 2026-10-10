@@ -25,14 +25,19 @@ The owner pastes one command per project (staging and production). It shows what
 
 ## Algorithm
 
-1. **Refuse to run unsafely:** the active gcloud account must be a human user (not `*.gserviceaccount.com`), the project must exist, billing must be linked (print the console link and stop if not; linking billing needs a billing admin and is not scripted), and the project id must match `--env` rules the owner supplied (never guess production).
+1. **Refuse to run unsafely:** the active gcloud account must be a human user (not `*.gserviceaccount.com`), the project must exist, billing must be linked (print the console link and stop if not; linking billing needs a billing admin and is not scripted), and `--env production` additionally needs the explicit flag.
 2. **Print the plan** (resources and roles below) and wait for `y` unless `--yes`; `--dry-run` prints and stops.
 3. **Enable only what is needed to bootstrap:** `serviceusage`, `cloudresourcemanager`, `iam`, `iamcredentials`, `sts`, `storage`. Terraform enables the rest (`modules/foundation/apis.tf`).
-4. **State bucket** `gs://<project>-tfstate`: `us-central1`, uniform access, public access prevention, versioning on (the README commands).
-5. **Workload Identity:** pool `github-apply` and provider with `attribute_condition = "assertion.repository == '<repo>' && assertion.ref == 'refs/heads/main' && assertion.environment == '<env>'"` (copy the structure of `deploy_identity.tf`). A second provider for the planner whose condition pins the repository and pull-request runs but never `ref == main` apply rights.
-6. **Service accounts** `mt-planner` (project `roles/viewer`, `roles/iam.securityReviewer`, object viewer on the state bucket) and `mt-applier` (roles needed by `modules/foundation` and `modules/runtime`; derive the minimal predefined-role list by reading every resource type in those modules and record the table in the script header; no `roles/owner`; project IAM changes limited to what the modules bind). Each is impersonable only through its pool (`roles/iam.workloadIdentityUser` on `principalSet://…/attribute.repository/<repo>`).
+4. **State bucket** `gs://<project>-tfstate`: `us-central1`, uniform access, public access prevention, versioning on.
+5. **Two separate Workload Identity pools** (a principalSet is scoped to a pool, not a provider, so one pool with two providers is not safe):
+   - `github-plan` with one provider whose `attribute_condition` admits `assertion.repository == '<repo>'` AND (`assertion.event_name == 'pull_request'` OR (`assertion.event_name == 'push' && assertion.ref == 'refs/heads/main' && assertion.job_workflow_ref == '<repo>/.github/workflows/terraform.yml@refs/heads/main'`)).
+   - `github-apply` with one provider whose condition is `assertion.repository == '<repo>' && assertion.ref == 'refs/heads/main' && assertion.environment == '<env>' && assertion.job_workflow_ref == '<repo>/.github/workflows/terraform.yml@refs/heads/main'`. Only this provider maps `attribute.environment`, `attribute.ref` and `attribute.job_workflow_ref`.
+6. **Service accounts and bindings.**
+   - `mt-planner`: bound to `principalSet://…/github-plan/attribute.repository/<repo>`. Roles: narrow per-service viewers instead of `roles/viewer` (for example `cloudkms.viewer`, `datastore.viewer`, `run.viewer`, `secretmanager.viewer` (metadata only), `iam.securityReviewer`, `serviceusage.serviceUsageViewer`, `artifactregistry.reader`, `logging.viewer`, `cloudtasks.viewer`, `cloudscheduler.viewer`); confirm each with `gcloud iam roles describe` and record anything that exposes data-plane contents; state bucket: `objectViewer` only (the planner uses `-lock=false`).
+   - `mt-applier`: bound ONLY to `principalSet://…/github-apply/attribute.environment/<env>` combined with `attribute.ref/refs/heads/main` (not to `attribute.repository`). Roles: derive the list from every resource type in `modules/foundation` and `modules/runtime`, each mapped in a table in the script header to the resource that needs it, resource-level where possible. The project-level grant of `roles/resourcemanager.projectIamAdmin` MUST carry an IAM Condition (`api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly([...the roles the modules bind...])`; confirm in current Google documentation that this condition type is supported for that role); never `roles/owner`, `roles/editor` or `roles/iam.securityAdmin`.
 7. **Never** create a service account key, never read a secret value, never touch Terraform state.
 8. **Idempotent:** a second run changes nothing and says so; partial failures resume.
+9. **Print, last, the exact values** to store as GitHub Environment variables (`GCP_PROJECT_ID`, `GCP_WIF_PLAN_PROVIDER`, `GCP_WIF_APPLY_PROVIDER`, `GCP_PLANNER_SA`, `GCP_APPLIER_SA`, `TF_STATE_BUCKET`) and the repository variable `TF_APPLY_ENABLED=false` reminder.
 
 ## Acceptance criteria
 
@@ -42,17 +47,20 @@ The owner pastes one command per project (staging and production). It shows what
 | BOOT AC2 | A second run is a no-op |
 | BOOT AC3 | It refuses to run as a service account, without billing, or for production without the explicit flag |
 | BOOT AC4 | No service account key is ever created |
+| BOOT AC5 | A principal from the planner pool cannot impersonate `mt-applier`; the applier binding names the environment and ref attributes, never the repository alone |
+| BOOT AC6 | The project-IAM-admin grant to `mt-applier` carries a roles-limiting condition and no owner/editor/securityAdmin role is grantable |
 
 ## Tests that must pass
 
-- `boot_ac1_dry_run_creates_nothing`, `boot_ac2_second_run_is_noop`, `boot_ac3_refuses_unsafe_contexts`, `boot_ac4_no_key_creation_call` (bash tests with a `gcloud` stub that records every call; the last one fails if the stub ever sees `keys create`).
+- `boot_ac1_dry_run_creates_nothing`, `boot_ac2_second_run_is_noop`, `boot_ac3_refuses_unsafe_contexts`, `boot_ac4_no_key_creation_call` (bash tests with a `gcloud` stub that records every call; the last one fails if the stub ever sees `keys create`), `boot_ac5_planner_cannot_reach_applier` (asserts from the recorded calls that the applier's `workloadIdentityUser` member strings reference only the apply pool and its environment/ref attributes), `boot_ac6_iam_admin_grant_is_conditioned`.
 - `shellcheck` clean.
 
 ## Edge cases and traps
 
 - Production's log bucket lock is irreversible; the extra flag exists to make the owner say so.
 - The applier's role list is the main security decision: a reviewer from another vendor must confirm it grants no more than the modules need, and that the attribute condition cannot be satisfied from a branch, fork or pull request.
-- Do not print project numbers or emails beyond what the owner needs to set the GitHub variables.
+- Do not print project numbers or emails beyond what the owner needs to set the GitHub variables, and do not write any project id into the repository (the repo is public).
+- The role table is a deliverable: a reviewer from another vendor checks each role against the resource that needs it.
 
 ## Out of scope
 

@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | M11 | strong | about 200 lines of workflow plus tests | T-1116, T-1103 |
 
-**Read only these spec sections:** `docs/decisions/0003-infrastructure-changes-owner-decides-pipeline-applies.md`; `.github/workflows/ci.yml` (the `terraform` job and `ci-integrity`); `infra/terraform/README.md`; `docs/specs/S13-agent-working-rules.md` on workflows (owner-only). Nothing else is needed.
+**Read only these spec sections:** `docs/decisions/0003-infrastructure-changes-owner-decides-pipeline-applies.md`; `.github/workflows/ci.yml` (the `terraform` job and `ci-integrity`); `infra/terraform/README.md`; the rule that workflow files are merged by the owner is stated here and enforced by `CODEOWNERS` (this task adds it). Nothing else is needed.
 
 ## Goal
 
@@ -15,7 +15,9 @@ Infrastructure changes reach Google Cloud only as a plan the owner has seen, app
 | Action | Path | What |
 | --- | --- | --- |
 | Create | `.github/workflows/terraform.yml` | `plan` on pull requests touching `infra/terraform/**`; `plan-<env>` then `apply-<env>` on push to `main` |
+| Create | `.github/CODEOWNERS` | owner as code owner for `.github/workflows/**`, `infra/**`, `scripts/infra/**` |
 | Create | `tools/check_terraform_workflow.py` | static checks below, run in CI |
+| Create | `tools/terraform_plan_summary.py` | redacted summary + digest from `terraform show -json`, and the protected-address deny-list check |
 | Change | `.github/workflows/ci.yml` | run the static checks; `ci-integrity` waits for them |
 | Change | `tools/ac_coverage_enforced.txt` | add `T-1117` |
 
@@ -23,30 +25,38 @@ Infrastructure changes reach Google Cloud only as a plan the owner has seen, app
 
 ## Algorithm
 
-1. **Pull request:** job `plan` (permissions `contents: read`, `id-token: write`, `pull-requests: write`; same-repository PRs only; never `pull_request_target`). Authenticate with `google-github-actions/auth` using the planner provider (Environment variables `GCP_WIF_PROVIDER`, `GCP_PLANNER_SA`), `terraform init -backend-config="bucket=$TF_STATE_BUCKET"`, `terraform plan -lock-timeout=5m -out=tfplan`, then post a short summary comment: counts of add/change/destroy and a highlighted list of every destroy or replace.
-2. **Push to main:** `plan-staging` then `apply-staging` (Environment `staging`), then `plan-production` then `apply-production` (Environment `production`, which already requires the owner as reviewer). The apply job downloads the artifact created by the plan job of the SAME run, prints its sha256 and the summary to the job summary, and runs `terraform apply tfplan`. No second plan, no `-auto-approve` on a fresh plan.
-3. **Safety:** one concurrent apply per environment (`concurrency`); production runs only if the staging job of the same run succeeded or `infra/terraform/envs/staging/**` did not change; any plan containing a destroy of a resource with `prevent_destroy` fails the job before the approval prompt.
-4. **No keys, no secrets:** no `credentials_json`, no long-lived secrets in the workflow; every third-party action pinned by commit SHA (repository rule); minimal `permissions` per job; `id-token: write` only on jobs that authenticate.
+1. **Pull request:** job `plan` (permissions `contents: read`, `id-token: write`, `pull-requests: write`; same-repository PRs only; never `pull_request_target`). Authenticate with `google-github-actions/auth` using the planner provider (`GCP_WIF_PLAN_PROVIDER`, `GCP_PLANNER_SA`), `terraform init -lockfile=readonly -backend-config="bucket=$TF_STATE_BUCKET"` (provider hashes must match the committed lock file), `terraform plan -lock=false -out=tfplan` (the planner has read-only state access and takes no lock), then `tools/terraform_plan_summary.py` posts a PR comment with the **redacted summary only**: counts, and per change the resource address, type and action; never attribute values, never `terraform show` text. The plan file stays on the runner and is not uploaded.
+2. **Push to main** (jobs run only if repository variable `TF_APPLY_ENABLED == 'true'`):
+   - `plan-<env>`: planner identity (main-run condition), same read-only commands, writes the redacted summary and its SHA-256 **digest** to the job summary and to a small text artifact with `retention-days: 1`. The summary is the thing the owner approves.
+   - `apply-<env>` (`environment: staging` or `production`; production has the owner as required reviewer): authenticates as the applier, **re-plans**, recomputes the summary digest with the same tool, aborts if it differs from the approved digest, then applies that plan in the same job. No `-auto-approve` on a plan that was not just produced in this job and digest-checked.
+3. **Safety:** one concurrent apply per environment (`concurrency`); production runs only if the staging job of the same run succeeded or `infra/terraform/envs/staging/**` did not change; **`tools/terraform_plan_summary.py --check-protected` fails the plan job when any delete or replace touches a protected address** (log bucket, KMS key rings and keys, Firestore database), by address, independent of `prevent_destroy` (which vanishes if the block is deleted). Plan jobs also fail if a configuration uses `external` data sources, `local-exec` or `remote-exec` provisioners.
+4. **No keys, no secrets:** no `credentials_json`, no long-lived secrets in the workflow; every third-party action pinned by 40-character commit SHA (repository rule); minimal `permissions` per job; `id-token: write` only on jobs that authenticate; no project ids, numbers or service-account emails written to logs or comments (the repository is public): GitHub Actions masks values stored as variables only if they are secrets, so the summary tool must itself redact member emails and project ids.
+5. **CODEOWNERS and the switch:** add `.github/CODEOWNERS` as above. The apply jobs stay disabled until the owner sets `TF_APPLY_ENABLED=true`, which he does after turning on "Require review from Code Owners" on `main` (the T-1117 PR description says so).
 
 ## Acceptance criteria
 
 | ID | Behaviour (one line) |
 | --- | --- |
 | TFW AC1 | A pull request that changes `infra/terraform/**` gets a plan summary comment and applies nothing |
-| TFW AC2 | Apply runs only from `main`, only in an Environment, and applies the plan file produced in the same run |
+| TFW AC2 | Apply runs only from `main`, only in an Environment, re-plans and aborts if the summary digest differs from the approved one |
 | TFW AC3 | Production apply waits for the Environment's required reviewer |
-| TFW AC4 | The workflow contains no credential files, no `pull_request_target`, no unpinned action |
+| TFW AC4 | The workflow contains no credential files, no `pull_request_target`, no unpinned action, no plan-file upload |
+| TFW AC5 | A plan that deletes or replaces a protected address fails before the approval prompt |
+| TFW AC6 | Pull-request plans use `-lock=false` and a read-only state role; nothing a PR runs can write state |
+| TFW AC7 | Comments, summaries and artifacts contain no values, project ids or member emails; artifact retention is 1 day |
 
 ## Tests that must pass
 
-- `tools/check_terraform_workflow.py` (unit tests with good and bad fixture workflows) covering AC2 to AC4 statically: apply jobs have `environment:`, trigger is `push` on `main`, they use `actions/download-artifact` and `terraform apply tfplan`, no `-auto-approve`, no `credentials_json`, no `pull_request_target`, all `uses:` pinned to a 40-character SHA.
+- `tools/check_terraform_workflow.py` (unit tests with good and bad fixture workflows) covering AC2 to AC7 statically: apply jobs have `environment:`, trigger is `push` on `main`, the digest comparison step exists, no `upload-artifact` of a `*.tfplan` or `terraform show` output, no `-auto-approve` outside the apply job, `-lock=false` on PR plans, `retention-days: 1`, no `credentials_json`, no `pull_request_target`, all `uses:` pinned to a 40-character SHA.
+- `tools/terraform_plan_summary.py` unit tests with fixture plan JSON: redaction (no attribute values, project ids or emails survive), stable digest, and the protected-address deny-list (delete and replace of each protected type fail; a plain update passes).
 - `actionlint` clean.
 - AC1 and AC3 are verified by a documented dry run in a throwaway branch in the staging environment (the PR description records the run link).
 
 ## Edge cases and traps
 
 - The planner must not be able to read secret values (secrets are not in state by design; confirm in the plan summary job that no `sensitive` value is printed).
-- A plan from a pull request is advisory only; the plan that is applied is always the one created on `main`.
+- A plan from a pull request is advisory only; what is applied is always produced on `main`, inside the apply job, and digest-checked against what the owner approved.
+- Say plainly in the approval prompt text that the owner approves the redacted summary and digest, not a signed plan file.
 - Terraform refuses a plan file if state changed since it was made; treat that as a normal failure that re-runs the plan job.
 
 ## Out of scope
@@ -55,4 +65,4 @@ Infrastructure changes reach Google Cloud only as a plan the owner has seen, app
 
 ## Done when
 
-- Tests above pass, every required check is green (S10 10.1), cross-vendor security review of the identity conditions and of the apply gating, Definition of done in S10 10.4.
+- Tests above pass, every required check is green (S10 10.1), cross-vendor security review of the identity conditions and of the apply gating, Definition of done in S10 10.4. The owner merges the workflow and `CODEOWNERS` files and sets the repository variable.
