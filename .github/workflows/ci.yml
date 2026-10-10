@@ -122,6 +122,7 @@ jobs:
       - name: Absence checks
         run: |
           fail=0
+          mapfile -t tf_files < <(find modules envs -name '*.tf' | sort)
           guard() { # pattern message [globs...]
             pattern="$1"; message="$2"; shift 2
             if grep -rnE "$pattern" --include="$1" modules envs 2>/dev/null; then
@@ -146,14 +147,14 @@ jobs:
           # list form, and fails unless every role is one this task authorises.
           # It catches primitive roles (owner/editor/viewer), the impersonation
           # roles roles/iam.serviceAccountUser and serviceAccountTokenCreator,
-          # any roles/logging.* role other than the sink's bucketWriter, and any
-          # other role a later change adds.
+          # any roles/logging.* role at all (the same-project log-bucket sinks
+          # need no writer grant - review D1), and any other role a later change
+          # adds.
           allowed_roles=$(printf '%s\n' \
             roles/cloudkms.cryptoKeyEncrypterDecrypter \
             roles/aiplatform.user \
             roles/datastore.user \
             roles/secretmanager.secretAccessor \
-            roles/logging.bucketWriter \
             roles/run.invoker \
             roles/run.developer \
             roles/cloudtasks.enqueuer \
@@ -176,57 +177,74 @@ jobs:
             echo "OK   every scalar role value is a quoted literal"
           fi
 
-          # The guard above rejects an *unquoted* expression, but a quoted
-          # value can still carry an interpolation: `role = "roles/${"owner"}"`
-          # is valid HCL that resolves to a primitive role, and the allowlist
-          # extractor below reads only a literal `"roles/..."`, so such a line
-          # was invisible to every check. Fail closed on any scalar
-          # `role = "..."` whose value is not exactly a `roles/...` literal.
-          if awk '
-            /^[[:space:]]*role[[:space:]]*=[[:space:]]*"/ {
-              rest = $0
-              sub(/^[[:space:]]*role[[:space:]]*=[[:space:]]*"/, "", rest)
-              if (match(rest, /^roles\/[A-Za-z0-9._]+/)) rest = substr(rest, RLENGTH + 1)
-              else rest = "!"
-              if (rest !~ /^"/) { print FILENAME": "$0; bad = 1 }
-            }
-            END { exit bad ? 1 : 0 }
-          ' $(find modules envs -name '*.tf'); then
+          # scalar_role_guard(): a scalar `role = "..."` must be exactly one
+          # quoted roles/... literal - nothing after the closing quote but
+          # whitespace and an optional comment. The guard above rejects an
+          # *unquoted* expression, and the allowlist extractor below reads only
+          # a literal `"roles/..."`, but a quoted value can still carry an
+          # interpolation (`role = "roles/${"owner"}"`) or a conditional
+          # expression (`role = "roles/datastore.user" == "" ? var.r : var.r`)
+          # that starts with a literal and resolves to any role at apply time,
+          # including a primitive one. A quoted prefix is not a literal, so fail
+          # closed on all of them (review F5). It is a function so the self-tests
+          # at the end of this step run the same logic against a fixture.
+          scalar_role_guard() {
+            [ "$#" -gt 0 ] || return 1
+            awk '
+              /^[[:space:]]*role[[:space:]]*=[[:space:]]*"/ {
+                rest = $0
+                sub(/^[[:space:]]*role[[:space:]]*=[[:space:]]*"/, "", rest)
+                if (match(rest, /^roles\/[A-Za-z0-9._]+/)) rest = substr(rest, RLENGTH + 1)
+                else rest = "!x"
+                if (rest !~ /^"[[:space:]]*(#.*|\/\/.*)?$/) { print FILENAME": "$0; bad = 1 }
+              }
+              END { exit bad ? 1 : 0 }
+            ' "$@"
+          }
+
+          if bad=$(scalar_role_guard "${tf_files[@]}"); then
             echo "OK   every scalar role value is an exact roles/... literal"
           else
-            echo "FAIL a scalar role value is not an exact roles/... literal (interpolation or unsupported expression)"
+            echo "FAIL a scalar role value is not an exact roles/... literal (interpolation, conditional or unsupported expression):"
+            printf '%s\n' "$bad"
             fail=1
           fi
 
-          # The `roles = [...]` list form (an IAM binding grants several roles at
-          # once) is invisible to a line-oriented grep, so it is walked here:
-          # each literal element is emitted for the allowlist, and any element
-          # that is not a `roles/...` literal fails the guard.
-          if list_roles=$(awk '
-            BEGIN { inlist = 0; bad = 0 }
-            {
-              line = $0
-              sub(/[[:space:]]*#.*/, "", line)
-              if (!inlist) {
-                if (match(line, /roles?[[:space:]]*=[[:space:]]*\[/) == 0) next
-                line = substr(line, RSTART + RLENGTH)
-                inlist = 1
-              }
-              rest = line
-              while (length(rest) > 0) {
-                if (match(rest, /^[[:space:],]+/)) { rest = substr(rest, RLENGTH + 1); continue }
-                if (match(rest, /^"[^"]*"/)) {
-                  if (substr(rest, 2, RLENGTH - 2) ~ /^roles\//) print substr(rest, 2, RLENGTH - 2)
-                  else bad = 1
-                  rest = substr(rest, RLENGTH + 1); continue
+          # list_roles_guard(): the `roles = [...]` list form (an IAM binding
+          # grants several roles at once) is invisible to a line-oriented grep,
+          # so it is walked here: each literal element is emitted for the
+          # allowlist, and any element that is not a `roles/...` literal fails
+          # the guard. A function so the self-tests can reuse it.
+          list_roles_guard() {
+            [ "$#" -gt 0 ] || return 1
+            awk '
+              BEGIN { inlist = 0; bad = 0 }
+              {
+                line = $0
+                sub(/[[:space:]]*#.*/, "", line)
+                if (!inlist) {
+                  if (match(line, /roles?[[:space:]]*=[[:space:]]*\[/) == 0) next
+                  line = substr(line, RSTART + RLENGTH)
+                  inlist = 1
                 }
-                if (match(rest, /^\]/)) { inlist = 0; rest = substr(rest, 2); continue }
-                bad = 1
-                rest = substr(rest, 2)
+                rest = line
+                while (length(rest) > 0) {
+                  if (match(rest, /^[[:space:],]+/)) { rest = substr(rest, RLENGTH + 1); continue }
+                  if (match(rest, /^"[^"]*"/)) {
+                    if (substr(rest, 2, RLENGTH - 2) ~ /^roles\//) print substr(rest, 2, RLENGTH - 2)
+                    else bad = 1
+                    rest = substr(rest, RLENGTH + 1); continue
+                  }
+                  if (match(rest, /^\]/)) { inlist = 0; rest = substr(rest, 2); continue }
+                  bad = 1
+                  rest = substr(rest, 2)
+                }
               }
-            }
-            END { exit bad ? 1 : 0 }
-          ' $(find modules envs -name '*.tf')); then
+              END { exit bad ? 1 : 0 }
+            ' "$@"
+          }
+
+          if list_roles=$(list_roles_guard "${tf_files[@]}"); then
             echo "OK   every roles = [...] list holds literal roles"
           else
             echo "FAIL a roles = [...] list holds a non-literal role value"
@@ -283,13 +301,12 @@ jobs:
           # principal/resource/scope allowlist: an allowlisted role widened from
           # a resource to the whole project would pass every check above. The
           # only roles this work grants at project scope are the two runtime
-          # data roles, the log sink's writer and the deployer's Hosting admin;
-          # any other `roles/...` on a `google_project_iam_*` resource (a
-          # project-scoped KMS or secret role, say) fails here.
+          # data roles and the deployer's Hosting admin; any other `roles/...`
+          # on a `google_project_iam_*` resource (a project-scoped KMS or secret
+          # role, or the old sink writer, say) fails here.
           project_allowed=$(printf '%s\n' \
             roles/datastore.user \
             roles/aiplatform.user \
-            roles/logging.bucketWriter \
             roles/firebasehosting.admin | sort -u)
           project_used=$(awk '
             /^[a-z_]+[[:space:]]/ && $0 !~ /^[[:space:]]*resource[[:space:]]+"/ { type = "" }
@@ -312,27 +329,91 @@ jobs:
             echo "OK   project-level IAM grants stay within the allowed roles"
           fi
 
-          # Cloud Run invoker bindings. roles/run.invoker is allowlisted
-          # globally, so an added service_iam_member on `unsub` or `worker`
-          # would pass both the allowlist and the allUsers guard (that watches
-          # allUsers only). Pin the whole set: only the four known bindings may
-          # exist (V12.3.3, F6).
-          if awk '
-            /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service_iam_/ {
-              label = $0
-              sub(/^[[:space:]]*resource[[:space:]]+"[^"]+"[[:space:]]+"/, "", label)
-              sub(/".*/, "", label)
-              if (label != "api_public" && label != "unsub_tasks_invoker" &&
-                  label != "worker_scheduler_invoker" && label != "deployer_run_developer") {
-                print FILENAME": "label
-                bad = 1
+          # cloud_run_iam_guard(): roles/run.invoker is allowlisted globally, so
+          # an added service_iam_member on `unsub` or `worker` would pass both
+          # the allowlist and the allUsers guard (which watches allUsers only).
+          # Pin every Cloud Run service IAM binding by *type*, module file,
+          # target service, role and principal, so a duplicate label elsewhere
+          # (e.g. a second `api_public` in a root granting public invoker on
+          # `unsub`), a widened role, or a switched target all fail
+          # (V12.3.3, V13.2.2, F6). A function so the self-tests reuse it.
+          cloud_run_iam_guard() {
+            [ "$#" -gt 0 ] || return 1
+            awk '
+              function reset() {
+                type = ""; label = ""; fname = ""; nameexpr = ""; roleval = ""; member = ""
               }
-            }
-            END { exit bad ? 1 : 0 }
-          ' $(find modules envs -name '*.tf'); then
-            echo "OK   only the known Cloud Run service IAM bindings exist"
+              function check(   ef, er, en) {
+                if (type !~ /^google_cloud_run_v2_service_iam_/) return
+                if (type != "google_cloud_run_v2_service_iam_member") {
+                  print fname ": unexpected Cloud Run IAM resource type " type
+                  bad = 1
+                  return
+                }
+                if (label == "api_public") {
+                  ef = "modules/runtime/cloud_run\\.tf$"
+                  er = "roles/run.invoker"
+                  en = "google_cloud_run_v2_service.api.name"
+                  if (member !~ /"allUsers"/) { print fname " " label ": principal is not allUsers"; bad = 1 }
+                } else if (label == "unsub_tasks_invoker") {
+                  ef = "modules/runtime/cloud_run\\.tf$"
+                  er = "roles/run.invoker"
+                  en = "google_cloud_run_v2_service.unsub.name"
+                  if (!(index(member, "tasks_invoker") && index(member, "serviceAccount:"))) { print fname " " label ": principal is not the tasks-invoker identity"; bad = 1 }
+                } else if (label == "worker_scheduler_invoker") {
+                  ef = "modules/runtime/cloud_run\\.tf$"
+                  er = "roles/run.invoker"
+                  en = "google_cloud_run_v2_service.worker.name"
+                  if (!(index(member, "scheduler_invoker") && index(member, "serviceAccount:"))) { print fname " " label ": principal is not the scheduler-invoker identity"; bad = 1 }
+                } else if (label == "deployer_run_developer") {
+                  ef = "modules/runtime/deploy_identity\\.tf$"
+                  er = "roles/run.developer"
+                  en = "each.value"
+                  if (!(index(member, "serviceAccount:") && index(member, "deployer"))) { print fname " " label ": principal is not the deployer identity"; bad = 1 }
+                } else {
+                  print fname ": unexpected Cloud Run IAM binding label " label
+                  bad = 1
+                  return
+                }
+                if (fname !~ ef) { print fname " " label ": binding is outside its pinned module file"; bad = 1 }
+                if (roleval != er) { print fname " " label ": role " roleval " is not " er; bad = 1 }
+                if (nameexpr != en) { print fname " " label ": target " nameexpr " is not " en; bad = 1 }
+              }
+              /^[[:space:]]*resource[[:space:]]+"/ {
+                check()
+                reset()
+                split($0, parts, "\"")
+                type = parts[2]
+                label = parts[4]
+                fname = FILENAME
+                next
+              }
+              /^}/ { check(); reset(); next }
+              {
+                if (type ~ /^google_cloud_run_v2_service_iam_/) {
+                  t = $0
+                  sub(/[[:space:]]*#.*/, "", t)
+                  if (t ~ /^[[:space:]]*name[[:space:]]*=/) {
+                    nameexpr = t
+                    sub(/^[^=]*=[[:space:]]*/, "", nameexpr)
+                    sub(/[[:space:]]*,?[[:space:]]*$/, "", nameexpr)
+                  } else if (t ~ /^[[:space:]]*role[[:space:]]*=/) {
+                    split(t, roleparts, "\"")
+                    roleval = roleparts[2]
+                  } else if (t ~ /^[[:space:]]*member[[:space:]]*=/) {
+                    member = t
+                  }
+                }
+              }
+              END { check(); exit bad ? 1 : 0 }
+            ' "$@"
+          }
+
+          if bad=$(cloud_run_iam_guard "${tf_files[@]}"); then
+            echo "OK   every Cloud Run service IAM binding is the pinned (type, file, service, role, principal)"
           else
-            echo "FAIL an unexpected Cloud Run service IAM binding (V12.3.3, F6)"
+            echo "FAIL an unexpected or mis-targeted Cloud Run service IAM binding (V12.3.3, V13.2.2, F6):"
+            printf '%s\n' "$bad"
             fail=1
           fi
 
@@ -358,25 +439,50 @@ jobs:
           # must sit inside the service's own `ignore_changes` list: counting
           # occurrences anywhere in the file would let a stray comment (or a
           # second line) inflate the count and mask a service whose ignore list
-          # is missing (review F10).
-          img=$(awk '
-            /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service"[[:space:]]+"/ {
-              if (seen) { total++; if (has) good++ }
-              seen = 1; has = 0; in_ign = 0; next
-            }
-            /^[[:space:]]*resource[[:space:]]+"/ {
-              if (seen) { total++; if (has) good++ }
-              seen = 0; in_ign = 0; next
-            }
-            {
-              line = $0
-              sub(/[[:space:]]*#.*/, "", line)
-              if (seen && line ~ /ignore_changes[[:space:]]*=[[:space:]]*\[/) in_ign = 1
-              if (seen && in_ign && line ~ /template\[0\]\.containers\[0\]\.image/) has = 1
-              if (seen && in_ign && line ~ /\]/) in_ign = 0
-            }
-            END { if (seen) { total++; if (has) good++ } print good + 0, total + 0 }
-          ' modules/runtime/cloud_run.tf)
+          # is missing. Every HCL comment form - `#`, `//`, and `/* ... */`
+          # including across lines - is stripped before the list is read, so a
+          # traversal hidden inside any of them is not counted (review F10). A
+          # function so the self-tests reuse it.
+          image_guard() { # prints "<services that ignore the image> <services>"
+            [ "$#" -gt 0 ] || return 1
+            awk '
+              BEGIN { blk = 0 }
+              {
+                line = $0; out = ""; i = 1
+                while (i <= length(line)) {
+                  if (blk) {
+                    p = index(substr(line, i), "*/")
+                    if (p == 0) { i = length(line) + 1; continue }
+                    i = i + p + 1; blk = 0; continue
+                  }
+                  c2 = substr(line, i, 2); c1 = substr(line, i, 1)
+                  if (c2 == "/*") { blk = 1; i += 2; continue }
+                  if (c2 == "//") break
+                  if (c1 == "#") break
+                  out = out c1; i++
+                }
+                print out
+              }
+            ' "$1" | awk '
+              /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service"[[:space:]]+"/ {
+                if (seen) { total++; if (has) good++ }
+                seen = 1; has = 0; in_ign = 0; next
+              }
+              /^[[:space:]]*resource[[:space:]]+"/ {
+                if (seen) { total++; if (has) good++ }
+                seen = 0; in_ign = 0; next
+              }
+              {
+                line = $0
+                if (seen && line ~ /ignore_changes[[:space:]]*=[[:space:]]*\[/) in_ign = 1
+                if (seen && in_ign && line ~ /template\[0\]\.containers\[0\]\.image/) has = 1
+                if (seen && in_ign && line ~ /\]/) in_ign = 0
+              }
+              END { if (seen) { total++; if (has) good++ } print good + 0, total + 0 }
+            '
+          }
+
+          img=$(image_guard modules/runtime/cloud_run.tf)
           good=${img% *}
           total=${img#* }
           if [ "${total:-0}" -ge 1 ] && [ "${good:-0}" -eq "${total:-0}" ]; then
@@ -385,6 +491,65 @@ jobs:
             echo "FAIL image ignore_changes: ${good:-0} of ${total:-0} Cloud Run services (T-1102b)"
             fail=1
           fi
+
+          # ------------------------------------------------------------------
+          # Guard self-tests (review F5, F6, F10). Each guard above must reject
+          # its negative fixture, or a future edit that neuters it would keep CI
+          # green. The fixtures live under tests/guards/negative/ - outside
+          # modules/ and envs/, so the real-tree scans never see them - and are
+          # fed to the very functions that guard the repository.
+          # ------------------------------------------------------------------
+          neg=tests/guards/negative
+
+          # A missing fixture must fail, not read as "the guard rejected
+          # nothing": awk on a missing file exits non-zero and the exits below
+          # would otherwise look like a pass.
+          for fixture in \
+            role_conditional/main.tf \
+            dup_api_public_root/envs/prod/main.tf \
+            dup_api_public_wrong_service/modules/runtime/cloud_run.tf \
+            image_ignore_slash_comment/main.tf \
+            image_ignore_block_comment/main.tf; do
+            if [ ! -f "$neg/$fixture" ]; then
+              echo "FAIL guard self-test: missing negative fixture $neg/$fixture"
+              fail=1
+            fi
+          done
+
+          # Require the guard to both fail and say what it found, so neither a
+          # neutered guard nor a crash counts as "rejected".
+          if out=$(scalar_role_guard "$neg/role_conditional/main.tf") || [ -z "$out" ]; then
+            echo "FAIL guard self-test: the scalar-role guard did not reject the conditional role expression"
+            fail=1
+          else
+            echo "OK   guard self-test: the scalar-role guard rejects a conditional role expression"
+          fi
+
+          if out=$(cloud_run_iam_guard \
+              "$neg/dup_api_public_root/envs/prod/main.tf" \
+              "$neg/dup_api_public_wrong_service/modules/runtime/cloud_run.tf") || [ -z "$out" ]; then
+            echo "FAIL guard self-test: the Cloud Run IAM guard did not reject a duplicate public invoker on unsub"
+            fail=1
+          else
+            echo "OK   guard self-test: the Cloud Run IAM guard rejects a duplicate public invoker on unsub"
+          fi
+
+          # A read image guard reports "<ignored> <services>". A fixture with no
+          # service at all (total 0) means the fixture could not be read, which
+          # must fail too; otherwise a service that ignores the image (good ==
+          # total) is the regression we are testing for.
+          for fixture in image_ignore_slash_comment image_ignore_block_comment; do
+            fx=$(image_guard "$neg/$fixture/main.tf")
+            good=${fx% *}
+            total=${fx#* }
+            if [ "${total:-0}" -eq 0 ] || [ "${good:-0}" -eq "${total:-0}" ]; then
+              echo "FAIL guard self-test: the image guard did not reject $fixture (a commented traversal treated as ignored)"
+              fail=1
+            else
+              echo "OK   guard self-test: the image guard rejects $fixture"
+            fi
+          done
+
           exit $fail
 
   # End-to-end harness (T-1101a): builds and runs the whole local stack and
