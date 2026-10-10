@@ -90,7 +90,11 @@ pub fn parse_from(value: &str) -> Option<ParsedFrom> {
         mailparse::MailAddr::Single(s) => Some(s),
         mailparse::MailAddr::Group(g) => g.addrs.first(),
     })?;
-    let address = single.addr.trim().to_owned();
+    // The address is untrusted header text: strip control, bidirectional and
+    // zero-width characters (T-1110, property 4) before it is used or stored,
+    // the same reduction `display` and the other header facts get. A raw CR or
+    // LF here is a folded or injected header, not an address.
+    let address = sanitise_plain(single.addr.trim(), usize::MAX);
     if address.is_empty() || address.chars().count() > ADDRESS_MAX_CHARS {
         return None;
     }
