@@ -223,25 +223,21 @@ fn asvs_v14_2_3_only_allowlisted_fields_rendered() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-fn exp_2_from_domain_empty_for_hostile_from() -> Result<(), Box<dyn std::error::Error>> {
+fn exp_2_hostile_from_renders_empty_domain() -> Result<(), Box<dyn std::error::Error>> {
     let corpus = load()?;
     let mut metadata = meta(corpus.cases.first().ok_or("empty corpus")?)?;
-    // A hostile From carrying a second address, whitespace and a second domain.
+    metadata.from_display = String::new();
+    metadata.subject = String::new();
+    // Hostile, whitespace-laden From: no valid hostname can be extracted.
     metadata.from_address = "a@evil.example.com @other.com".to_owned();
+    metadata.facts = domain::HeaderFacts::default();
     let (input, _) = build_input(&metadata, "");
     let rendered = Sensitive::new(render_model_text(&input));
-    let rendered = rendered.expose();
-    // The literal rendered line, not a string built from `from_domain(...)`
-    // (which would make the assertion tautological): the domain feature is
-    // empty for a hostile sender.
-    let domain_line = rendered
-        .lines()
-        .find(|line| line.starts_with("from_domain: "))
-        .ok_or("missing from_domain line")?;
-    assert_eq!(domain_line, "from_domain: none");
-    for leaked in ["evil.example.com", "other.com"] {
-        assert!(!rendered.contains(leaked), "hostile From leaked {leaked}");
-    }
+    // The literal empty field line (not a value this test builds with
+    // from_domain itself), so a regression that leaks the domain fails here.
+    assert!(rendered.expose().contains("from_domain: none\n"));
+    assert!(!rendered.expose().contains("evil.example.com"));
+    assert!(!rendered.expose().contains("other.com"));
     Ok(())
 }
 
