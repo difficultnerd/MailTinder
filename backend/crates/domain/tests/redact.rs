@@ -32,9 +32,19 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         ("2026-10-03 123.456", "[number]"),
         ("1  2\t3\n4\u{a0}5 6", "[number]"),
         ("https://example.com/x user@example.com 123456 [url] [email] [number]", "[url] [email] [number] [url] [email] [number]"),
+        ("\"a b\"@x.example", "[email]"),
+        ("a@[192.0.2.1]", "[email]"),
+        ("a@localhost", "[email]"),
+        ("Mail \"x y\"@z.test now", "Mail [email] now"),
+        ("a@\"b", "[email]"),
+        ("\"@x", "[email]"),
+        ("a@<b>", "[email]"),
+        ("a@@b", "[email]"),
     ] {
         assert_eq!(redact(input), expected);
     }
+    let long_quoted = format!("\"{}\"@x.example", "a".repeat(65));
+    assert_eq!(redact(&long_quoted), "[email]");
     Ok(())
 }
 
@@ -64,6 +74,17 @@ proptest! {
         let address = format!("{local}@{host}.{tld}");
         let input = format!("{prefix} {address} {suffix}");
         prop_assert!(!redact(&input).contains(&address));
+    }
+
+    #[test]
+    fn exp_2_redact_no_at_sign_left_in_adjacent_text(
+        left in "[^\\s\\p{C}]{1,40}", right in "[^\\s\\p{C}]{1,40}"
+    ) {
+        // A whitespace-free run with `@` flanked by non-whitespace on both
+        // sides: the whole run must be redacted, leaving no `@` behind.
+        let input = format!("word {left}@{right} word");
+        let output = redact(&input);
+        prop_assert!(!output.contains('@'));
     }
 }
 
@@ -126,5 +147,19 @@ fn exp_2_from_domain_only() -> Result<(), Box<dyn std::error::Error>> {
     redaction_available()?;
     assert_eq!(from_domain("local@EXAMPLE.COM"), "example.com");
     assert_eq!(from_domain("no-address"), "");
+    for address in [
+        "a@evil.example.com @other.com",
+        "x@[1.2.3.4]",
+        "a@-bad.example",
+        "a@bad..example",
+        "a@nodot",
+        "\"\"@x.example y",
+    ] {
+        assert_eq!(
+            from_domain(address),
+            "",
+            "expected empty domain for {address}"
+        );
+    }
     Ok(())
 }
