@@ -86,6 +86,11 @@ const TEXT_CAP: usize = 200 * 1024;
 /// a control that is a few hundred milliseconds from existing.
 const FIND_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long `type_into` lets a just-focused text field settle before sending
+/// its keys. Flutter starts its text editing a framework round-trip after
+/// focus, so keys sent immediately can reach a field that is not yet listening.
+const FOCUS_SETTLE: Duration = Duration::from_millis(300);
+
 /// Directory the harness writes failure artifacts to. `scripts/e2e.sh` points
 /// `MT_E2E_LOG_DIR` at `target/e2e-logs`, the folder the `e2e` CI job uploads.
 fn log_dir() -> PathBuf {
@@ -299,12 +304,34 @@ impl Ui {
         }
     }
 
-    /// Type `text` into the labelled control.
+    /// Type `text` into the labelled text control.
+    ///
+    /// Flutter web renders a text field as an `<input>`/`<textarea>` inside its
+    /// `flt-semantics` host, carrying a field's label (the filing sheet's hint,
+    /// SW-04 AC3) as `aria-label` on that editable element. The control is
+    /// tagged by [`MARK_TYPE_JS`], then typed with WebDriver's native element
+    /// keys: Flutter attaches its text-editing listeners only once the field is
+    /// focused, so a scripted DOM value-set is overwritten by the framework's
+    /// own state sync, whereas real key events land on the installed listeners.
     pub async fn type_into(&self, label: &str, text: &str) -> Result<(), E2eError> {
-        let typed = self
-            .poll_script(TYPE_JS, vec![json!(label), json!(text)])
-            .await?;
-        if typed {
+        if !self.poll_script(MARK_TYPE_JS, vec![json!(label)]).await? {
+            self.capture_failure(label).await;
+            return Err(E2eError::NotFound(label.to_owned()));
+        }
+        let element = self
+            .client
+            .find(Locator::Css(MARKED_TYPE_SELECTOR))
+            .await
+            .map_err(wd)?;
+        // Focus the field first: the framework round-trips through its own
+        // event loop before editing is live, so let the focus settle before the
+        // keys arrive, or the first one is lost.
+        let _ = element.click().await;
+        tokio::time::sleep(FOCUS_SETTLE).await;
+        element.send_keys(text).await.map_err(wd)?;
+        // Confirm the framework took the text; a field that never received it
+        // is a miss, reported like any other control the harness cannot drive.
+        if self.poll_script(TYPED_VALUE_JS, vec![json!(text)]).await? {
             Ok(())
         } else {
             self.capture_failure(label).await;
@@ -1146,34 +1173,30 @@ node.click();
 return true;
 "#;
 
-/// Type `arguments[1]` into the labelled text control `arguments[0]`.
-///
-/// Flutter web labels a text field's `flt-semantics` node with the field's
-/// label as `aria-label`; a field that carries only a hint (the filing sheet's
-/// name field, SW-04 AC3) has it as `aria-description` instead, so both
-/// identify the field. A candidate that actually contains an `input`/`textarea`
-/// wins, so a label that also appears on a plain text node never captures the
-/// typing.
-const TYPE_JS: &str = r#"
-const [label, text] = arguments;
-const candidates = Array.from(document.querySelectorAll('flt-semantics[aria-label], flt-semantics[aria-description]'))
+/// DOM attribute [`MARK_TYPE_JS`] sets on the editable control and the CSS
+/// selector WebDriver finds it by.
+const MARKED_TYPE_SELECTOR: &str = "[data-e2e-type]";
+
+/// Tag the editable `input`/`textarea` carrying the label `arguments[0]`. A
+/// text field's label sits on the editable element (its `<input>`/`<textarea>`
+/// inside the `flt-semantics` host) as `aria-label`, or as `aria-description`
+/// for a hint or error - not on the host node, which is why the host's own
+/// `aria-label` is the wrong place to look. Returns false when nothing matches.
+const MARK_TYPE_JS: &str = r#"
+const label = arguments[0];
+const matches = Array.from(document.querySelectorAll('input, textarea'))
   .filter(el => el.getAttribute('aria-label') === label || el.getAttribute('aria-description') === label);
-if (candidates.length === 0) return false;
-const node = candidates.find(el => el.querySelector('input, textarea')) || candidates[0];
-const input = node.querySelector('input, textarea');
-if (!input) {
-  node.textContent = text;
-  node.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
-}
-input.focus();
-const proto = input.tagName === 'TEXTAREA'
-  ? HTMLTextAreaElement.prototype
-  : HTMLInputElement.prototype;
-const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-setter.call(input, text);
-input.dispatchEvent(new Event('input', { bubbles: true }));
+if (matches.length === 0) return false;
+document.querySelectorAll('[data-e2e-type]').forEach(el => el.removeAttribute('data-e2e-type'));
+matches[0].setAttribute('data-e2e-type', '');
 return true;
+"#;
+
+/// True when the tagged editable control holds `arguments[0]`: proves the
+/// framework took the keys, not just that they reached the DOM element.
+const TYPED_VALUE_JS: &str = r#"
+const el = document.querySelector('[data-e2e-type]');
+return !!el && el.value === arguments[0];
 "#;
 
 /// True when the page text or any `aria-label` contains `arguments[0]`.
