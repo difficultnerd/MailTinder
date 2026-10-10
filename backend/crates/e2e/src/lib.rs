@@ -86,6 +86,11 @@ const TEXT_CAP: usize = 200 * 1024;
 /// a control that is a few hundred milliseconds from existing.
 const FIND_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long `type_into` lets a just-focused text field settle before sending
+/// its keys. Flutter starts its text editing a framework round-trip after
+/// focus, so keys sent immediately can reach a field that is not yet listening.
+const FOCUS_SETTLE: Duration = Duration::from_millis(300);
+
 /// Directory the harness writes failure artifacts to. `scripts/e2e.sh` points
 /// `MT_E2E_LOG_DIR` at `target/e2e-logs`, the folder the `e2e` CI job uploads.
 fn log_dir() -> PathBuf {
@@ -299,12 +304,34 @@ impl Ui {
         }
     }
 
-    /// Type `text` into the labelled control.
+    /// Type `text` into the labelled text control.
+    ///
+    /// Flutter web renders a text field as an `<input>`/`<textarea>` inside its
+    /// `flt-semantics` host, carrying a field's label (the filing sheet's hint,
+    /// SW-04 AC3) as `aria-label` on that editable element. The control is
+    /// tagged by [`MARK_TYPE_JS`], then typed with WebDriver's native element
+    /// keys: Flutter attaches its text-editing listeners only once the field is
+    /// focused, so a scripted DOM value-set is overwritten by the framework's
+    /// own state sync, whereas real key events land on the installed listeners.
     pub async fn type_into(&self, label: &str, text: &str) -> Result<(), E2eError> {
-        let typed = self
-            .poll_script(TYPE_JS, vec![json!(label), json!(text)])
-            .await?;
-        if typed {
+        if !self.poll_script(MARK_TYPE_JS, vec![json!(label)]).await? {
+            self.capture_failure(label).await;
+            return Err(E2eError::NotFound(label.to_owned()));
+        }
+        let element = self
+            .client
+            .find(Locator::Css(MARKED_TYPE_SELECTOR))
+            .await
+            .map_err(wd)?;
+        // Focus the field first: the framework round-trips through its own
+        // event loop before editing is live, so let the focus settle before the
+        // keys arrive, or the first one is lost.
+        let _ = element.click().await;
+        tokio::time::sleep(FOCUS_SETTLE).await;
+        element.send_keys(text).await.map_err(wd)?;
+        // Confirm the framework took the text; a field that never received it
+        // is a miss, reported like any other control the harness cannot drive.
+        if self.poll_script(TYPED_VALUE_JS, vec![json!(text)]).await? {
             Ok(())
         } else {
             self.capture_failure(label).await;
@@ -542,6 +569,10 @@ struct LogEntry {
     message: String,
 }
 
+/// The Gmail scope the fake's list route requires (S8); the label read-back
+/// mints a token carrying it.
+const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+
 /// The fake Google control client (`/__fake`).
 pub struct FakeGoogle {
     base: Url,
@@ -655,6 +686,106 @@ impl FakeGoogle {
             .await?;
         }
         Ok(())
+    }
+
+    /// The label *names* on every message in `email`'s mailbox, newest first,
+    /// one inner list per message (journey 6's provider read-back, S10 3.3).
+    ///
+    /// The fake stores label IDs on a message, so the names come from the Gmail
+    /// labels list; an ID with no name is returned as itself, which keeps an
+    /// unexpected label visible to the caller's assertion.
+    pub async fn message_labels(&self, email: &str) -> Result<Vec<Vec<String>>, E2eError> {
+        let token = self.issue_read_token(email).await?;
+        let names = self.label_names(&token).await?;
+        let listed = self
+            .get_json("/gmail/v1/users/me/messages?maxResults=500", &token)
+            .await?;
+        let ids: Vec<String> = listed
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let message = self
+                .get_json(&format!("/gmail/v1/users/me/messages/{id}"), &token)
+                .await?;
+            let label_ids: Vec<String> = message
+                .get("labelIds")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(
+                label_ids
+                    .iter()
+                    .map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone()))
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
+    /// The mailbox's label ID -> name map, from the Gmail labels list.
+    async fn label_names(&self, token: &str) -> Result<HashMap<String, String>, E2eError> {
+        let labels = self.get_json("/gmail/v1/users/me/labels", token).await?;
+        Ok(labels
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|labels| {
+                labels
+                    .iter()
+                    .filter_map(|label| {
+                        Some((
+                            label.get("id")?.as_str()?.to_owned(),
+                            label.get("name")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Mint an access token for `email` with the scope the Gmail list route
+    /// requires.
+    async fn issue_read_token(&self, email: &str) -> Result<String, E2eError> {
+        let value = self
+            .post(
+                "/__fake/tokens",
+                json!({ "email": email, "scopes": [GMAIL_MODIFY_SCOPE], "ttl_s": 3600 }),
+            )
+            .await?;
+        value
+            .get("access_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| E2eError::State("token response had no access_token".to_owned()))
+    }
+
+    /// GET a fake-Google route with a bearer token and parse its JSON body.
+    async fn get_json(&self, path: &str, token: &str) -> Result<Value, E2eError> {
+        let response = self
+            .client
+            .get(endpoint(&self.base, path))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        let value: Value = response.json().await.map_err(http)?;
+        if status.is_success() {
+            Ok(value)
+        } else {
+            Err(E2eError::Http(format!("GET {path}: {status} {value}")))
+        }
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
@@ -1042,25 +1173,30 @@ node.click();
 return true;
 "#;
 
-/// Type `arguments[1]` into the labelled control `arguments[0]`.
-const TYPE_JS: &str = r#"
-const [label, text] = arguments;
-const node = document.querySelector(`flt-semantics[aria-label="${label}"]`);
-if (!node) return false;
-const input = node.querySelector('input, textarea');
-if (!input) {
-  node.textContent = text;
-  node.dispatchEvent(new Event('input', { bubbles: true }));
-  return true;
-}
-input.focus();
-const proto = input.tagName === 'TEXTAREA'
-  ? HTMLTextAreaElement.prototype
-  : HTMLInputElement.prototype;
-const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-setter.call(input, text);
-input.dispatchEvent(new Event('input', { bubbles: true }));
+/// DOM attribute [`MARK_TYPE_JS`] sets on the editable control and the CSS
+/// selector WebDriver finds it by.
+const MARKED_TYPE_SELECTOR: &str = "[data-e2e-type]";
+
+/// Tag the editable `input`/`textarea` carrying the label `arguments[0]`. A
+/// text field's label sits on the editable element (its `<input>`/`<textarea>`
+/// inside the `flt-semantics` host) as `aria-label`, or as `aria-description`
+/// for a hint or error - not on the host node, which is why the host's own
+/// `aria-label` is the wrong place to look. Returns false when nothing matches.
+const MARK_TYPE_JS: &str = r#"
+const label = arguments[0];
+const matches = Array.from(document.querySelectorAll('input, textarea'))
+  .filter(el => el.getAttribute('aria-label') === label || el.getAttribute('aria-description') === label);
+if (matches.length === 0) return false;
+document.querySelectorAll('[data-e2e-type]').forEach(el => el.removeAttribute('data-e2e-type'));
+matches[0].setAttribute('data-e2e-type', '');
 return true;
+"#;
+
+/// True when the tagged editable control holds `arguments[0]`: proves the
+/// framework took the keys, not just that they reached the DOM element.
+const TYPED_VALUE_JS: &str = r#"
+const el = document.querySelector('[data-e2e-type]');
+return !!el && el.value === arguments[0];
 "#;
 
 /// True when the page text or any `aria-label` contains `arguments[0]`.
