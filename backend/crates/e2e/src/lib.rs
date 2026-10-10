@@ -542,6 +542,10 @@ struct LogEntry {
     message: String,
 }
 
+/// The Gmail scope the fake's list route requires (S8); the label read-back
+/// mints a token carrying it.
+const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+
 /// The fake Google control client (`/__fake`).
 pub struct FakeGoogle {
     base: Url,
@@ -655,6 +659,106 @@ impl FakeGoogle {
             .await?;
         }
         Ok(())
+    }
+
+    /// The label *names* on every message in `email`'s mailbox, newest first,
+    /// one inner list per message (journey 6's provider read-back, S10 3.3).
+    ///
+    /// The fake stores label IDs on a message, so the names come from the Gmail
+    /// labels list; an ID with no name is returned as itself, which keeps an
+    /// unexpected label visible to the caller's assertion.
+    pub async fn message_labels(&self, email: &str) -> Result<Vec<Vec<String>>, E2eError> {
+        let token = self.issue_read_token(email).await?;
+        let names = self.label_names(&token).await?;
+        let listed = self
+            .get_json("/gmail/v1/users/me/messages?maxResults=500", &token)
+            .await?;
+        let ids: Vec<String> = listed
+            .get("messages")
+            .and_then(Value::as_array)
+            .map(|messages| {
+                messages
+                    .iter()
+                    .filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let message = self
+                .get_json(&format!("/gmail/v1/users/me/messages/{id}"), &token)
+                .await?;
+            let label_ids: Vec<String> = message
+                .get("labelIds")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(
+                label_ids
+                    .iter()
+                    .map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone()))
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
+    /// The mailbox's label ID -> name map, from the Gmail labels list.
+    async fn label_names(&self, token: &str) -> Result<HashMap<String, String>, E2eError> {
+        let labels = self.get_json("/gmail/v1/users/me/labels", token).await?;
+        Ok(labels
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|labels| {
+                labels
+                    .iter()
+                    .filter_map(|label| {
+                        Some((
+                            label.get("id")?.as_str()?.to_owned(),
+                            label.get("name")?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Mint an access token for `email` with the scope the Gmail list route
+    /// requires.
+    async fn issue_read_token(&self, email: &str) -> Result<String, E2eError> {
+        let value = self
+            .post(
+                "/__fake/tokens",
+                json!({ "email": email, "scopes": [GMAIL_MODIFY_SCOPE], "ttl_s": 3600 }),
+            )
+            .await?;
+        value
+            .get("access_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| E2eError::State("token response had no access_token".to_owned()))
+    }
+
+    /// GET a fake-Google route with a bearer token and parse its JSON body.
+    async fn get_json(&self, path: &str, token: &str) -> Result<Value, E2eError> {
+        let response = self
+            .client
+            .get(endpoint(&self.base, path))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        let value: Value = response.json().await.map_err(http)?;
+        if status.is_success() {
+            Ok(value)
+        } else {
+            Err(E2eError::Http(format!("GET {path}: {status} {value}")))
+        }
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, E2eError> {
@@ -1042,11 +1146,20 @@ node.click();
 return true;
 "#;
 
-/// Type `arguments[1]` into the labelled control `arguments[0]`.
+/// Type `arguments[1]` into the labelled text control `arguments[0]`.
+///
+/// Flutter web labels a text field's `flt-semantics` node with the field's
+/// label as `aria-label`; a field that carries only a hint (the filing sheet's
+/// name field, SW-04 AC3) has it as `aria-description` instead, so both
+/// identify the field. A candidate that actually contains an `input`/`textarea`
+/// wins, so a label that also appears on a plain text node never captures the
+/// typing.
 const TYPE_JS: &str = r#"
 const [label, text] = arguments;
-const node = document.querySelector(`flt-semantics[aria-label="${label}"]`);
-if (!node) return false;
+const candidates = Array.from(document.querySelectorAll('flt-semantics[aria-label], flt-semantics[aria-description]'))
+  .filter(el => el.getAttribute('aria-label') === label || el.getAttribute('aria-description') === label);
+if (candidates.length === 0) return false;
+const node = candidates.find(el => el.querySelector('input, textarea')) || candidates[0];
 const input = node.querySelector('input, textarea');
 if (!input) {
   node.textContent = text;
