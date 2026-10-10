@@ -1027,7 +1027,8 @@ async fn obs_ev_ac2_undo_emits_event_and_failure_emits_undo_failed() -> TestResu
         );
     }
 
-    // A restore the provider refuses emits `undo_failed`, never `undo`.
+    // A restore the provider refuses (a conclusive failure) emits `undo_failed`,
+    // never `undo`.
     {
         let w = World::new().await?;
         let session = w.session(1);
@@ -1041,7 +1042,7 @@ async fn obs_ev_ac2_undo_emits_event_and_failure_emits_undo_failed() -> TestResu
         let result = w.swipe(&session, 1, req).await?;
         w.fakes
             .mailbox
-            .fail_next(MailOp::RestoreLabels, MailError::Transient);
+            .fail_next(MailOp::RestoreLabels, MailError::Forbidden);
         assert!(
             w.undo(&session, &result.undo_token).await.is_err(),
             "a refused restore is an error"
@@ -1057,6 +1058,34 @@ async fn obs_ev_ac2_undo_emits_event_and_failure_emits_undo_failed() -> TestResu
         assert!(
             events.iter().all(|(event, _)| event != "undo"),
             "a failed restore emits no undo: {events:?}"
+        );
+    }
+
+    // A transient provider outage is retryable, so it is not the unrecoverable
+    // "failed to restore the exact previous state": no `undo_failed` (F3).
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed(&w.primary, "dave", 10);
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let req = w
+            .request(&session, &id, ActionDto::File, Some("Receipts"))
+            .await?;
+        let result = w.swipe(&session, 1, req).await?;
+        w.fakes
+            .mailbox
+            .fail_next(MailOp::RestoreLabels, MailError::Transient);
+        assert!(
+            w.undo(&session, &result.undo_token).await.is_err(),
+            "a transient restore failure is an error"
+        );
+
+        let events = metric_events(&capture);
+        assert!(
+            events.iter().all(|(event, _)| event != "undo_failed"),
+            "a retryable outage does not page: {events:?}"
         );
     }
 

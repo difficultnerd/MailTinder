@@ -1018,8 +1018,19 @@ async fn obs_ev_ac3_unsub_after_undo_and_history_missing_emitted() -> TestResult
     assert_eq!(counts.jobs_deleted, 2, "both terminal jobs are purged");
     assert!(env.ports.store.jobs().get(&lost).await?.is_none());
     assert!(env.ports.store.jobs().get(&ok).await?.is_none());
+    // Parse the `metric` events, not a substring: only the terminal job with no
+    // outcome is a `history_missing` (T-1114, F7).
+    let missing: Vec<serde_json::Value> = capture
+        .lines()
+        .iter()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|v: &serde_json::Value| {
+            v.get("event").and_then(|e| e.as_str()) == Some("metric")
+                && v.get("action").and_then(|a| a.as_str()) == Some("history_missing")
+        })
+        .collect();
     assert_eq!(
-        capture.text().matches("history_missing").count(),
+        missing.len(),
         1,
         "only the terminal job with no outcome is a history_missing: {}",
         capture.text()

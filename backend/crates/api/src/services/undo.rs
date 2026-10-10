@@ -82,7 +82,9 @@ pub async fn undo(
     if let Some(exact) = plan.restore_labels.as_ref() {
         if let Err(e) = restore(app, &user, &payload.record, exact).await {
             // The exact previous state was not restored (S10 8, `undo_failed`).
-            emit_undo_failed(app, &user, payload.record.action);
+            if restore_failed_conclusively(&e) {
+                emit_undo_failed(app, &user, payload.record.action);
+            }
             return Err(e);
         }
     }
@@ -196,10 +198,16 @@ pub async fn undo_reject(
     }
 
     // Step 1: cancel the queued job (conditional `queued -> cancelled`) before
-    // anything else. A terminal job is mapped to its answer.
-    let outcome = match record.job_id {
-        Some(job) => cancel_outcome(&cancel_queued_job(app, &job).await?),
-        None => JobCancelOutcome::NoJob,
+    // anything else. A terminal job is mapped to its answer. A job that had
+    // already left the queue means the runner sent (or is sending) the
+    // unsubscribe even though the undo succeeds: the one real "unsubscribe sent
+    // after a successful undo" (S10 8, `unsub_after_undo`; A1).
+    let (outcome, send_followed_undo) = match record.job_id {
+        Some(job) => {
+            let cancel = cancel_queued_job(app, &job).await?;
+            (cancel_outcome(&cancel), unsubscribe_sent(cancel))
+        }
+        None => (JobCancelOutcome::NoJob, false),
     };
 
     // Step 2: put the exact previous label set back. A failure changes nothing,
@@ -208,7 +216,9 @@ pub async fn undo_reject(
     if let Some(exact) = plan_undo(&record).restore_labels {
         if let Err(e) = restore(app, &user, &record, &exact).await {
             // The exact previous state was not restored (S10 8, `undo_failed`).
-            emit_undo_failed(app, &user, SwipeAction::Reject);
+            if restore_failed_conclusively(&e) {
+                emit_undo_failed(app, &user, SwipeAction::Reject);
+            }
             return Err(e);
         }
     }
@@ -241,6 +251,13 @@ pub async fn undo_reject(
     // The `undo` metric (S10 8), once the reversal has committed.
     emit_undo(app, &user, SwipeAction::Reject);
 
+    // The undo succeeded but the unsubscribe had already gone (or was in
+    // flight): the exact "unsubscribe sent after a successful undo" (S10 8),
+    // emitted only after the state change committed.
+    if send_followed_undo {
+        emit_unsub_after_undo(app, &user);
+    }
+
     // Step 5: with the cancel won, the job record goes last, so every earlier
     // failure leaves a retryable `Cancelled` record.
     if outcome == JobCancelOutcome::Cancelled {
@@ -256,6 +273,20 @@ pub async fn undo_reject(
     // Step 6: `unsubscribe_already_sent` is true only for `AlreadySent`.
     security_event(app, &user, outcome);
     Ok(undo_response(outcome))
+}
+
+/// True when the cancel found the job already out of the queue, so the runner
+/// had claimed it (`Running`, the send in flight) or already sent it (`Sent`),
+/// or the record was collected after it ran (`Missing`). Those are the cases
+/// where an unsubscribe follows the user's successful undo (S10 8); a job the
+/// undo itself cancelled, or that ended `NeedsAttention`/`Failed`/`Expired`
+/// without a send, is not.
+#[must_use]
+fn unsubscribe_sent(cancel: CancelResult) -> bool {
+    matches!(
+        cancel,
+        CancelResult::NotQueued(JobStatus::Running | JobStatus::Sent) | CancelResult::Missing
+    )
 }
 
 /// Map the store result to T-105b's outcome. The only place this mapping lives.
@@ -385,6 +416,17 @@ fn emit_undo_failed(app: &AppState, user: &UserId, action: SwipeAction) {
     });
 }
 
+/// The `unsub_after_undo` metric (S10 8; A1): an unsubscribe was sent after a
+/// successful undo. Content-free, like every metric event.
+fn emit_unsub_after_undo(app: &AppState, user: &UserId) {
+    obs::metric_event(&obs::MetricEvent {
+        event_type: "unsub_after_undo",
+        outcome: "sent",
+        user: Some(Pseudonymiser::new(app.config.rate_key.clone()).pseudo_id(&user.0)),
+        provider: None,
+    });
+}
+
 /// The user's wrapped `data_key`, needed to open the undo token.
 async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiError> {
     app.ports
@@ -394,6 +436,14 @@ async fn wrapped_key(app: &AppState, user: &UserId) -> Result<WrappedKey, ApiErr
         .await?
         .map(|u| u.record.wrapped_data_key)
         .ok_or(ApiError::Unauthenticated)
+}
+
+/// True when a restore failure is conclusive: the exact previous state cannot
+/// be restored by retrying. A retryable provider outage (`503`,
+/// `ProviderUnavailable`) is not the "failed to restore the exact previous
+/// state" the A1 event counts (S10 8), so it must not page.
+fn restore_failed_conclusively(e: &ApiError) -> bool {
+    !matches!(e, ApiError::ProviderUnavailable { .. })
 }
 
 /// Step 3: put the exact previous label set back. Returns `502`/`503` and

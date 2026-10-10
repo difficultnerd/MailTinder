@@ -1324,7 +1324,9 @@ async fn asvs_v16_5_3_job_never_marked_sent_on_error() -> TestResult {
 }
 
 /// OBS-EV AC3 (unsub): a delivery that finds a job a successful undo has
-/// already cancelled emits `unsub_after_undo` and sends nothing (S10 8, T-1114).
+/// already cancelled sends nothing and logs the benign race at `op` level; it
+/// must **not** fire the A1 metric `unsub_after_undo`, which pages on any event
+/// (S10 8, T-1114).
 #[tokio::test]
 async fn obs_ev_ac3_unsub_after_undo_and_history_missing_emitted() -> TestResult {
     let env = setup(SendResult::Sent {
@@ -1380,6 +1382,9 @@ async fn obs_ev_ac3_unsub_after_undo_and_history_missing_emitted() -> TestResult
         0,
         "an undone job is never sent"
     );
-    assert_eq!(events(&capture.text(), "unsub_after_undo"), 1);
+    // Nothing was sent, so this is the designed race, not an unrecoverable
+    // action: it is a non-A1 `op` log, never the paging `unsub_after_undo`.
+    assert_eq!(events(&capture.text(), "unsub_after_undo"), 0);
+    assert_eq!(events(&capture.text(), "unsub.run"), 1);
     Ok(())
 }
