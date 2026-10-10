@@ -1466,11 +1466,16 @@ return true;
 /// The point a pull to refresh starts from: inside the Feed's scroll view,
 /// above the card and below the header. The header's last row is the idle
 /// Blitz button (its Semantics label is `Copy.blitzSemantics`), so its bottom
-/// edge is the top of the scroll view. Returns null when the Feed is not
-/// showing, so the caller reports a miss instead of dragging blind.
+/// edge is the top of the scroll view. That node carries its label as text
+/// content (a `Semantics`-wrapped `TextButton`), while other controls carry it
+/// as `aria-label`, so both forms are matched. Returns null when the Feed is
+/// not showing, so the caller reports a miss instead of dragging blind.
 const PULL_START_JS: &str = r#"
+const label = 'Start a 60-second Blitz round';
 const blitz = Array.from(document.querySelectorAll('flt-semantics, [aria-label]'))
-  .find(el => (el.getAttribute('aria-label') || '').startsWith('Start a 60-second Blitz round'));
+  .find(el => (el.getAttribute('aria-label') || '').startsWith(label))
+  || Array.from(document.querySelectorAll('flt-semantics[role="button"]'))
+    .find(el => (el.textContent || '').trim().startsWith(label));
 if (!blitz) return null;
 const rect = blitz.getBoundingClientRect();
 return { x: rect.left + rect.width / 2, y: rect.bottom + 8 };

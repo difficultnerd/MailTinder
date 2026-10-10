@@ -178,6 +178,13 @@ fn assert_not_before_due(due: Duration, elapsed: Duration) {
     );
 }
 
+/// The S3 job outcome code a successful one-click run records (T-701): the
+/// `unsub_outcome` metric (and the `unsub_job_outcome` security event) carries
+/// this code, while History shows the job's terminal `Sent` status as "Sent"
+/// (T-609). The two are different vocabularies: the code, not the display
+/// word, is what the service emits.
+const ONE_CLICK_ACCEPTED: &str = "one_click_accepted";
+
 /// UN-01 AC1: the queued unsubscribe runs exactly once, after its due time.
 #[tokio::test]
 #[ignore = "run by scripts/e2e.sh"]
@@ -212,7 +219,9 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
         tokio::time::sleep(POLL).await;
     }
 
-    // S10 8: the unsub service writes one `unsub_outcome` metric per run.
+    // S10 8: the unsub service writes one `unsub_outcome` metric per run. A
+    // one-click POST that the sender accepted is T-701's `one_click_accepted`
+    // code (not the History display word "Sent").
     let outcomes = unsub_outcomes(&events, &mark).await?;
     assert_eq!(
         outcomes.len(),
@@ -221,8 +230,8 @@ async fn un_01_ac1_e2e_unsubscribe_runs_once() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         outcomes[0].outcome.as_deref(),
-        Some("sent"),
-        "the run's outcome is not `sent`"
+        Some(ONE_CLICK_ACCEPTED),
+        "the run's outcome is not `{ONE_CLICK_ACCEPTED}`"
     );
 
     finish_journey(journey.ui).await?;
