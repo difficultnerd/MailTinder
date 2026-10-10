@@ -162,6 +162,14 @@ where
     )?);
 
     let (mut ports, fakes) = testkit::fake_ports();
+    // Standalone e2e services share real time (S10 6.3): the `api` plans a
+    // queued job's `due_at` on its own real clock (`MT_E2E_UNSUB_DELAY_S`), so
+    // this process must judge `due_at` against the same real time or every job
+    // looks early and the run refuses forever. `fake-google` checks
+    // provider-token expiry against real time, and the Firestore emulator uses
+    // wall time, so a virtual clock would be wrong for those too. Production
+    // `unsub` is unaffected: this is the `testkit`-only e2e wiring (T-1101g).
+    ports.clock = adapters_gcp::production_clock();
     let clock = Arc::clone(&ports.clock);
 
     // The literal e2e client secret, from the testkit fakes (S10 3.3).
