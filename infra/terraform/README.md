@@ -70,6 +70,16 @@ the plan and runs `apply`**, from his own machine, one project at a time
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
 
+## Decision pending (owner): deletion semantics
+
+Crypto-shredding destroys a user's `data_key` so their Firestore data becomes
+unreadable immediately, whereas enabling point-in-time recovery or scheduled
+backups would keep a recent, still-decryptable copy of that data alive for the
+recovery window and so delay erasure (`firestore.tf`, S6 5, DEL-2). The owner
+must decide whether the recoverability PITR and backups give is worth that delay
+before production retention is finalised; until then the behaviour is unchanged
+(recovery disabled, no backup schedule).
+
 ## Checks
 
 CI runs the `terraform` job: `terraform fmt -check -recursive`, then inside
@@ -97,6 +107,11 @@ request log (`run.googleapis.com%2Frequests`) records the request URL, its query
 string and the client IP, so the sink excludes it and `_Default` drops it - those
 entries are never captured in the locked 90-day store (S5 bans URLs and
 addresses in logs).
+
+KMS and Secret Manager Data Access audit logs go to the same locked bucket
+through a second sink (`mailtinder-audit`), so the evidence the monthly
+elevation review and the leak investigation read is not confined to `_Default`'s
+30-day, unlocked window.
 
 To run the same checks locally:
 

@@ -28,14 +28,14 @@
     clippy::cast_possible_truncation
 )]
 
-mod auth_results;
+pub mod auth_results;
 mod client;
 mod drive;
 mod errors;
-mod headers;
+pub mod headers;
 pub mod identity;
 mod labels;
-mod list_unsubscribe;
+pub mod list_unsubscribe;
 mod messages;
 mod modify;
 pub mod pkce;
@@ -61,6 +61,10 @@ mod tests {
     /// T-502a makes the Google identity modules public (T-502b, T-503, T-504 and
     /// `svc-common` reach `GoogleIdentity` through them). Those modules hold no
     /// Gmail wire type, so the rule this test enforces is unchanged.
+    ///
+    /// T-1110 makes the hostile-input parsers public so their property tests can
+    /// live under `tests/`. `headers`, `list_unsubscribe` and `auth_results`
+    /// hold only parsers of untrusted text, no Gmail wire type.
     #[test]
     fn xc_02_gmail_types_not_public() {
         let lib = include_str!("lib.rs");
@@ -71,7 +75,14 @@ mod tests {
             "INVITE_SUBJECT",
             "INVITE_BODY_TEMPLATE",
         ];
-        let allowed_modules = ["pub mod identity;", "pub mod pkce;", "pub mod scopes;"];
+        let allowed_modules = [
+            "pub mod auth_results;",
+            "pub mod headers;",
+            "pub mod identity;",
+            "pub mod list_unsubscribe;",
+            "pub mod pkce;",
+            "pub mod scopes;",
+        ];
         for line in lib.lines() {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("pub use ") {

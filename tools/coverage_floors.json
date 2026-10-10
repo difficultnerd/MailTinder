@@ -2,7 +2,7 @@
   "rust": {
     "domain": 90,
     "default": 75,
-    "exclude_crates": ["testkit", "fake-google", "unsub-testbed"],
+    "exclude_crates": ["testkit", "fake-google", "unsub-testbed", "e2e"],
     "exclude_files": ["src/main.rs"]
   },
   "flutter": {

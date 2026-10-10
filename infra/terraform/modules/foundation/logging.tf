@@ -102,3 +102,29 @@ resource "google_project_iam_audit_config" "secretmanager" {
     log_type = "DATA_WRITE"
   }
 }
+
+# Audit logs (S6 5, S11 3.4/9, V16.4.2, V16.4.3). The monthly elevation review
+# (S11 144), alert A7 and leak investigation (S11 282) read who decrypted a KMS
+# key or read a secret. The audit configs above only produce those entries; on
+# their own they fall into _Default with the default 30-day, unlocked retention.
+# This sink routes KMS and Secret Manager Data/Admin Access entries to the same
+# locked 90-day bucket as the application logs, so the evidence outlives
+# _Default and cannot be edited away (review F1, second round).
+resource "google_logging_project_sink" "audit" {
+  project = var.project_id
+  name    = "mailtinder-audit"
+
+  destination = "logging.googleapis.com/projects/${var.project_id}/locations/${var.region}/buckets/${google_logging_project_bucket_config.app.bucket_id}"
+  filter      = "logName:\"cloudaudit.googleapis.com\" AND (protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\")"
+
+  unique_writer_identity = true
+}
+
+# The audit sink's own writer identity needs bucketWriter on the destination
+# bucket. As with the app sink, this is Google's logging writer, not an
+# application identity, so it grants no MailTinder service account any access.
+resource "google_project_iam_member" "audit_sink_writer" {
+  project = var.project_id
+  role    = "roles/logging.bucketWriter"
+  member  = google_logging_project_sink.audit.writer_identity
+}

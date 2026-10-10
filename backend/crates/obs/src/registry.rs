@@ -129,6 +129,12 @@ pub const OUTCOMES: &[&str] = &[
     "provider_error",
     "provider_unavailable",
     "internal_error",
+    // Swipe actions, carried by the `swipe` and `undo` metric outcomes
+    // (S10 8, T-1114).
+    "keep",
+    "skip",
+    "file",
+    "reject",
 ];
 
 pub const OPS: &[&str] = &[
@@ -158,6 +164,9 @@ pub const OPS: &[&str] = &[
     "join_missing_grant",
     // Unsubscribe token minting (T-703).
     "unsub.mint",
+    // The runner delivery of an unsubscribe job (T-1114), including the benign
+    // race where a successful undo cancelled the job before the delivery ran.
+    "unsub.run",
 ];
 
 pub const AMR_VALUES: &[&str] = &[

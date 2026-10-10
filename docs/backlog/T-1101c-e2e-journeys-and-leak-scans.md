@@ -2,7 +2,7 @@
 
 | Milestone | Tier | Size | Depends on |
 | --- | --- | --- | --- |
-| M11 | sonnet | about 400 lines of code plus tests | T-006, T-1005, T-1101b |
+| M11 | sonnet | about 400 lines of code plus tests | T-006, T-1005, T-1101b, T-1101d, T-1101e, T-1101f |
 
 **Read only these spec sections:** S10 sections 3.3, 6.3 (rows "Disconnect cancels", "Account deletion order"), 7.2 (row "CSP compatibility") and 7.3 (`docs/specs/S10-test-strategy.md`); S5 "Logs and telemetry", "Browser" and the LOG-1 row of "Deletion tests" (`docs/specs/S5-data-inventory.md`); S2 NA-01 AC2, AU-05 AC1, AU-06 AC1, FD-01 AC3, XC-01; S3 INV-1. Nothing else is needed.
 
@@ -41,7 +41,7 @@ pub async fn assert_no_csp_violation(ui: &Ui) -> Result<(), E2eError>;
 1. **Journey 7, Needs Attention** (NA-01 AC2): seed an https-only list message (DKIM covers `List-Unsubscribe`, no one-click). Reject it; open the Needs Attention tab; the item shows "This sender needs you to unsubscribe on their website."; tap "Done"; the item disappears and the Firestore emulator has no `needs_attention` document for the user. Assert the testbed received nothing (v1 never fetches the link).
 2. **Journey 8, disconnect** (AU-05 AC1): user with two mailboxes (reuse the journey 3 helper) and one queued unsubscribe job for mailbox B (reject a one-click card from B, do not advance the clock). Settings, Connected accounts, Disconnect B, confirm, Confirm it's you through the popup. Then: fake-google recorded a revoke for B's token; no `jobs` document for B remains; after `advance_clock(6 minutes)` the testbed received nothing; B's cards are gone from the Feed.
 3. **Journey 9, delete account** (AU-06 AC1): Settings, Account, delete with both confirmations and the popup step-up. Then fake-google's recorded call order is: app folder file delete, then token revoke; `jobs` hold nothing for the user; the browser is back on Sign-in; after `advance_clock(25 hours)` and a sweep (`TestControl`), no Firestore document references the user ID.
-4. Every journey (in T-1101b too: add the two calls there if missing) ends with `save_browser_dump` and `assert_no_csp_violation`.
+4. Every journey in T-1101b, T-1101d, T-1101e and T-1101f ends with `finish_journey` (T-1101b defines it as a stub that records a marker; **replace the stub body here** with `save_browser_dump` and `assert_no_csp_violation`, and make `zz_leak_scan.rs` fail if any journey test lacks its marker); check that all of them do, and add the call to any journey that lacks it. Journeys 7 to 9 call it too.
 5. **Leak scan** (`zz_leak_scan.rs`, after all journeys):
    - Logs (XC-01, LOG-1): every line of `target/e2e-logs/*.jsonl` has no canary, corpus address or unsubscribe URL.
    - Firestore (INV-1, FD-01 AC3): every document from `FirestoreDump` has no canary in plaintext. Encrypted fields hold ciphertext, so a plaintext match is a failure wherever it appears.

@@ -10,6 +10,7 @@ from tools.check_ac_coverage import (
     KnownId,
     dart_test_keys,
     has_test,
+    is_task_local_story_ac,
     main,
     parse_register,
     parse_s2,
@@ -131,6 +132,17 @@ The tests are JEV-1, BAKE-2, EXP-1, GUARD-1, and STAT-1.
         self.assertEqual(test_key("INV-T1"), "inv_t1")
         self.assertEqual(test_key("GUARD-1"), "guard_1")
         self.assertEqual(test_key("XC-01"), "xc_01")
+        # A task-local story (T-1101g) keys off the whole row ID.
+        self.assertEqual(test_key("E2E-INFRA AC1"), "e2e_infra_ac1")
+
+    def test_task_local_story_ac_shape(self):
+        self.assertTrue(is_task_local_story_ac("E2E-INFRA AC1"))
+        self.assertTrue(is_task_local_story_ac("E2E-INFRA AC12b"))
+        # A plain unknown ID, a known-story row and a state test name keep the
+        # existing handling.
+        self.assertFalse(is_task_local_story_ac("UNKNOWN-99"))
+        self.assertFalse(is_task_local_story_ac("SW-03 AC2"))
+        self.assertFalse(is_task_local_story_ac("s9_feed_empty"))
 
     def test_rust_names_found_in_proptest_block(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,6 +296,26 @@ void main() {
             )
             code = main(["--root", str(tmp_root)])
             self.assertEqual(code, 1)
+
+    def test_task_local_story_ac_missing_test_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            self._setup_tree(tmp_root)
+            (tmp_root / "docs/backlog/T-101-sample.md").write_text(
+                """# T-101
+## Acceptance criteria
+| ID | Behaviour |
+| --- | --- |
+| E2E-INFRA AC1 | Something |
+"""
+            )
+            # Deliberately missing: the row's own key must name a real test.
+            self.assertEqual(main(["--root", str(tmp_root)]), 1)
+
+            rs_dir = tmp_root / "backend/crates/e2e/tests"
+            rs_dir.mkdir(parents=True)
+            (rs_dir / "unsub_infra.rs").write_text("fn e2e_infra_ac1_job_due_and_posted_once() {}\n")
+            self.assertEqual(main(["--root", str(tmp_root)]), 0)
 
     def test_inactive_id_in_task_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

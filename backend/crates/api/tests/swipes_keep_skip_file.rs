@@ -951,3 +951,143 @@ async fn run_sequence(seq: &[ActionDto]) -> TestResult {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// OBS-EV AC1/AC2: the `swipe` and `undo` metric events (T-1114, S10 8)
+// ---------------------------------------------------------------------------
+
+/// The `(action, outcome)` pairs of every `metric` line captured in `sink`.
+fn metric_events(sink: &obs::CaptureSink) -> Vec<(String, String)> {
+    sink.lines()
+        .iter()
+        .filter_map(|line| {
+            let parsed: serde_json::Value = serde_json::from_str(line).ok()?;
+            if parsed.get("event")?.as_str()? != "metric" {
+                return None;
+            }
+            Some((
+                parsed.get("action")?.as_str()?.to_owned(),
+                parsed.get("outcome")?.as_str()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// OBS-EV AC1: a swipe emits exactly one `swipe` event carrying the action and
+/// no content.
+#[tokio::test]
+async fn obs_ev_ac1_swipe_emits_one_event() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let id = w.seed(&w.primary, "alice", 10);
+    let clock = obs::arc(obs::FixedClock(w.app.ports.clock.now()));
+    let (capture, _guard) = obs::capture("api", clock);
+
+    let req = w.request(&session, &id, ActionDto::Keep, None).await?;
+    w.swipe(&session, 1, req).await?;
+
+    let events = metric_events(&capture);
+    let swipes: Vec<&(String, String)> = events
+        .iter()
+        .filter(|(event, _)| event == "swipe")
+        .collect();
+    assert_eq!(swipes.len(), 1, "exactly one swipe metric: {events:?}");
+    assert_eq!(swipes[0].1, "keep", "the swipe carries its action");
+    // No content: the sender's address never reaches the metric line (S10 8).
+    assert!(!capture.text().contains("alice@example.com"));
+    Ok(())
+}
+
+/// OBS-EV AC2: an undo emits exactly one `undo`; a failed restore emits
+/// `undo_failed`.
+#[tokio::test]
+async fn obs_ev_ac2_undo_emits_event_and_failure_emits_undo_failed() -> TestResult {
+    // A successful undo of a `file` emits one `undo` (outcome `file`).
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed(&w.primary, "bob", 10);
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let req = w
+            .request(&session, &id, ActionDto::File, Some("Receipts"))
+            .await?;
+        let result = w.swipe(&session, 1, req).await?;
+        w.undo(&session, &result.undo_token).await?;
+
+        let events = metric_events(&capture);
+        let undos: Vec<&(String, String)> =
+            events.iter().filter(|(event, _)| event == "undo").collect();
+        assert_eq!(undos.len(), 1, "exactly one undo metric: {events:?}");
+        assert_eq!(undos[0].1, "file", "the undo carries the undone action");
+        assert!(
+            events.iter().all(|(event, _)| event != "undo_failed"),
+            "a successful undo emits no undo_failed: {events:?}"
+        );
+    }
+
+    // A restore the provider refuses (a conclusive failure) emits `undo_failed`,
+    // never `undo`.
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed(&w.primary, "carol", 10);
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let req = w
+            .request(&session, &id, ActionDto::File, Some("Receipts"))
+            .await?;
+        let result = w.swipe(&session, 1, req).await?;
+        w.fakes
+            .mailbox
+            .fail_next(MailOp::RestoreLabels, MailError::Forbidden);
+        assert!(
+            w.undo(&session, &result.undo_token).await.is_err(),
+            "a refused restore is an error"
+        );
+
+        let events = metric_events(&capture);
+        let failed: Vec<&(String, String)> = events
+            .iter()
+            .filter(|(event, _)| event == "undo_failed")
+            .collect();
+        assert_eq!(failed.len(), 1, "exactly one undo_failed: {events:?}");
+        assert_eq!(failed[0].1, "file");
+        assert!(
+            events.iter().all(|(event, _)| event != "undo"),
+            "a failed restore emits no undo: {events:?}"
+        );
+    }
+
+    // A transient provider outage is retryable, so it is not the unrecoverable
+    // "failed to restore the exact previous state": no `undo_failed` (F3).
+    {
+        let w = World::new().await?;
+        let session = w.session(1);
+        let id = w.seed(&w.primary, "dave", 10);
+        let (capture, _guard) =
+            obs::capture("api", obs::arc(obs::FixedClock(w.app.ports.clock.now())));
+
+        let req = w
+            .request(&session, &id, ActionDto::File, Some("Receipts"))
+            .await?;
+        let result = w.swipe(&session, 1, req).await?;
+        w.fakes
+            .mailbox
+            .fail_next(MailOp::RestoreLabels, MailError::Transient);
+        assert!(
+            w.undo(&session, &result.undo_token).await.is_err(),
+            "a transient restore failure is an error"
+        );
+
+        let events = metric_events(&capture);
+        assert!(
+            events.iter().all(|(event, _)| event != "undo_failed"),
+            "a retryable outage does not page: {events:?}"
+        );
+    }
+
+    Ok(())
+}

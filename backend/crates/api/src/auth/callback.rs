@@ -103,7 +103,7 @@ pub async fn callback_handler(
     let ip = client_ip(&headers, state.config.xff_trusted_hops);
     if let Err(e) = state
         .limits
-        .check(&policies::SIGN_IN_IP, LimitSubject::Ip(&ip), request_id)
+        .check(policies::sign_in_ip(), LimitSubject::Ip(&ip), request_id)
         .await
     {
         return e.into_response();

@@ -8,21 +8,24 @@
 //! does not use it.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use adapters_gcp::{FirestoreConfig, FirestoreStore, GcpHttp, StaticTokenSource, TokenSource};
 use adapters_gmail::identity::{GoogleIdentity, GoogleIdentityConfig};
 use adapters_gmail::{DriveAppFolder, GmailHttp, GmailProvider};
 use async_trait::async_trait;
+use domain::Tunables;
 use obs::Sensitive;
 use ports::{
-    AppFolderStore, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
-    IdentityProvider, InviteMailer, MailProvider, OneClickOutcome, Ports, Rng, SecretName,
-    ServerStore,
+    AppFolderStore, Clock, EgressError, EgressRequest, EgressResponse, HttpEgress, HttpMethod,
+    IdentityProvider, InviteMailer, JobScheduler, MailProvider, OneClickOutcome, Ports, Rng,
+    SecretName, ServerStore,
 };
 use url::Url;
 
 use crate::config::{ApiConfig, Mode};
+use crate::local_runner::{LocalJobRunner, LocalJobRunnerConfig};
 use crate::startup::SetupError;
 
 /// The literal client secret for e2e. Never a real secret (S10 3.3).
@@ -31,6 +34,22 @@ const CLIENT_SECRET: &str = "test-only-not-a-secret";
 const E2E_PROJECT: &str = "demo-mailtinder";
 /// The maximum response body [`LoopbackEgress`] will accept, 1 MiB.
 const MAX_BODY: usize = 1024 * 1024;
+
+/// The one e2e clock handle. Created on first use over the production clock and
+/// installed into the ports, so the api's own `now` and the harness's
+/// `/internal/test/advance-clock` are the same clock (T-1101c).
+static E2E_CLOCK: OnceLock<Arc<testkit::OffsetClock>> = OnceLock::new();
+
+/// The adjustable e2e clock: real time plus whatever `advance-clock` has added.
+/// A journey jumps it to pass a queued job's due time, or the account-deletion
+/// sweep horizon, without real time passing (S10 6.3).
+#[must_use]
+pub fn e2e_clock() -> Arc<testkit::OffsetClock> {
+    Arc::clone(
+        E2E_CLOCK
+            .get_or_init(|| Arc::new(testkit::OffsetClock::new(adapters_gcp::production_clock()))),
+    )
+}
 
 /// Build e2e ports from the process environment.
 ///
@@ -85,8 +104,19 @@ where
     let fake_google_raw = required(&lookup, "FAKE_GOOGLE_URL")?;
     let fake_google =
         Url::parse(&fake_google_raw).map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))?;
+    // The browser-facing origin, set only in phone mode (Behaviour 0c). Unset,
+    // the authorisation URL is the loopback fake-google exactly as before.
+    let public_base = public_base_url(&lookup)?;
 
     let (mut ports, fakes) = testkit::fake_ports();
+    // Standalone services share real time: fake-google checks provider-token
+    // expiry against it, and OAuth claims must agree with the API clock, so the
+    // e2e clock cannot stop. It is the real clock plus an offset the harness
+    // moves forward (`/internal/test/advance-clock`), which is how a journey
+    // passes a queued job's due time or the 24-hour deletion horizon without
+    // waiting for real time to elapse (T-1101c, S10 6.3).
+    let clock: Arc<testkit::OffsetClock> = e2e_clock();
+    ports.clock = Arc::clone(&clock) as Arc<dyn Clock>;
     let clock = Arc::clone(&ports.clock);
     let egress: Arc<dyn HttpEgress> = Arc::new(LoopbackEgress::new(&fake_google)?);
 
@@ -109,7 +139,7 @@ where
         GoogleIdentityConfig {
             client_id: base.google_client_id.clone(),
             client_secret: Sensitive::new(CLIENT_SECRET.to_owned()),
-            auth_endpoint: join(&fake_google, "o/oauth2/v2/auth")?,
+            auth_endpoint: public_auth_endpoint(&fake_google, public_base.as_ref())?,
             token_endpoint: join(&fake_google, "token")?,
             revoke_endpoint: join(&fake_google, "revoke")?,
             jwks_uri: join(&fake_google, "oauth2/v3/certs")?,
@@ -135,10 +165,78 @@ where
     ports.invite_mailer = Arc::clone(&gmail) as Arc<dyn InviteMailer>;
     ports.app_folder = app_folder;
 
+    // T-1112c: when e2e is pointed at a loopback `unsub` (both `UNSUB_BASE_URL`
+    // and `UNSUB_E2E_CALLER_TOKEN` set), deliver due jobs with the local runner
+    // instead of the fake scheduler; otherwise behaviour is exactly as before.
+    if let Some(runner) = e2e_local_runner(&lookup, Arc::clone(&ports.clock))? {
+        let running = Arc::clone(&runner);
+        tokio::spawn(async move { running.run().await });
+        ports.scheduler = runner as Arc<dyn JobScheduler>;
+    }
+
     Ok((
         ports,
         base.with_keys(Sensitive::new(rate_key), Sensitive::new(email_key)),
     ))
+}
+
+/// The local job runner to use in e2e (T-1112c), or `None` to keep the testkit
+/// fake scheduler.
+///
+/// The runner is built only when both `UNSUB_BASE_URL` and
+/// `UNSUB_E2E_CALLER_TOKEN` are set to non-blank values, so with either unset
+/// behaviour is exactly today's (Behaviour 1). `clock` is the api's own clock,
+/// so the runner shares the api's notion of time; `MT_E2E_TIME_SCALE` scales
+/// the waits it owns (default `1.0`).
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when `UNSUB_BASE_URL` is not a URL, or its
+/// host is not a loopback IP literal (the runner refuses anything else).
+pub fn e2e_local_runner(
+    lookup: &impl Fn(&str) -> Option<String>,
+    clock: Arc<dyn Clock>,
+) -> Result<Option<Arc<LocalJobRunner>>, SetupError> {
+    let (Some(base), Some(caller_token)) = (
+        nonblank(lookup, "UNSUB_BASE_URL"),
+        nonblank(lookup, "UNSUB_E2E_CALLER_TOKEN"),
+    ) else {
+        return Ok(None);
+    };
+    let unsub_base = Url::parse(&base).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
+    let time_scale = lookup("MT_E2E_TIME_SCALE")
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .unwrap_or(1.0);
+    let runner = LocalJobRunner::new(
+        LocalJobRunnerConfig {
+            unsub_base,
+            caller_token,
+            time_scale,
+        },
+        clock,
+    )
+    .map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
+    Ok(Some(Arc::new(runner)))
+}
+
+/// A non-blank variable from `lookup`, if present.
+fn nonblank(lookup: &impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    lookup(name).filter(|value| !value.trim().is_empty())
+}
+
+/// The e2e tunables (T-1112b). The production defaults, except that when
+/// `MT_E2E_UNSUB_DELAY_S` is set to a whole number of seconds it replaces
+/// `unsub_delay`, so a demo's undo window is seconds rather than the production
+/// five minutes. Unset, blank or unparsable keeps the production value.
+#[must_use]
+pub fn e2e_tunables(lookup: impl Fn(&str) -> Option<String>) -> Tunables {
+    let mut tunables = Tunables::default();
+    if let Some(secs) =
+        lookup("MT_E2E_UNSUB_DELAY_S").and_then(|raw| raw.trim().parse::<u64>().ok())
+    {
+        tunables.unsub_delay = Duration::from_secs(secs);
+    }
+    tunables
 }
 
 /// A loopback-only [`HttpEgress`]: it allows requests to exactly one socket,
@@ -275,6 +373,49 @@ fn required(
 fn join(base: &Url, path: &str) -> Result<Url, SetupError> {
     base.join(path)
         .map_err(|_| SetupError::Invalid("FAKE_GOOGLE_URL"))
+}
+
+/// The optional browser-facing base URL (`MT_PUBLIC_BASE_URL`).
+///
+/// In `demo.sh --phone` mode the laptop's loopback is unreachable from the
+/// phone, so the authorisation page the *browser* is sent to lives behind the
+/// tunnel; this is that public origin. Unset, blank or absent keeps today's
+/// behaviour. Server-to-server calls never use it: they keep `FAKE_GOOGLE_URL`.
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when the variable is set but is not a URL.
+pub fn public_base_url(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<Url>, SetupError> {
+    match lookup("MT_PUBLIC_BASE_URL").filter(|value| !value.trim().is_empty()) {
+        Some(raw) => Url::parse(raw.trim())
+            .map(Some)
+            .map_err(|_| SetupError::Invalid("MT_PUBLIC_BASE_URL")),
+        None => Ok(None),
+    }
+}
+
+/// The browser-facing authorisation endpoint (Behaviour 0c).
+///
+/// With a public base URL set, the browser is redirected to the tunnel's
+/// `/fake-google/o/oauth2/v2/auth` (the one path `e2e_host.py` proxies to the
+/// loopback fake-google); without one it is the loopback `fake-google`,
+/// exactly as before.
+///
+/// # Errors
+///
+/// Returns [`SetupError::Invalid`] when the join fails.
+pub fn public_auth_endpoint(
+    fake_google: &Url,
+    public_base: Option<&Url>,
+) -> Result<Url, SetupError> {
+    match public_base {
+        Some(base) => base
+            .join("fake-google/o/oauth2/v2/auth")
+            .map_err(|_| SetupError::Invalid("MT_PUBLIC_BASE_URL")),
+        None => join(fake_google, "o/oauth2/v2/auth"),
+    }
 }
 
 /// A random 32-byte HMAC key from the injected `Rng`.

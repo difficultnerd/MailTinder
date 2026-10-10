@@ -7,8 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# e2e configuration (S10 3.3). Never enabled in a release build.
-testkit = ["dep:testkit", "dep:reqwest"]
+# e2e configuration (S10 3.3). Never enabled in a release build. The worker is
+# here for the account-deletion sweep route only (`/internal/test/sweep`), so a
+# journey proves the production backstop without real hours passing (T-1101c).
+testkit = ["dep:testkit", "dep:reqwest", "dep:worker"]
 
 [dependencies]
 domain.workspace = true
@@ -17,6 +19,7 @@ obs.workspace = true
 svc-common.workspace = true
 adapters-gcp.workspace = true
 adapters-gmail.workspace = true
+adapters-models.workspace = true
 egress.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,6 +43,7 @@ tokio = { workspace = true, features = ["signal"] }
 # e2e only (feature `testkit`).
 testkit = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+worker = { workspace = true, optional = true }
 
 [dev-dependencies]
 testkit.workspace = true
@@ -49,6 +53,10 @@ tokio = { workspace = true, features = ["test-util"] }
 aes-gcm = { workspace = true, features = ["aes", "zeroize"] }
 zeroize.workspace = true
 async-trait.workspace = true
+# T-1112c: the reject -> unsubscribe proof drives the real `unsub` e2e router
+# and the `unsub-testbed`, in process, on free loopback ports.
+unsub = { workspace = true, features = ["testkit"] }
+unsub-testbed.workspace = true
 
 [lints]
 workspace = true

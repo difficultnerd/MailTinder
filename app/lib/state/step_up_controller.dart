@@ -156,9 +156,11 @@ class StepUpController extends ChangeNotifier {
       if (_status != StepUpStatus.redirecting) {
         return; // cancelled while the request was in flight
       }
+      // The e2e build reaches the local fake-google over loopback http, exactly
+      // as `SignInModel` does; a production build keeps the https-only rule.
       final target = safeNavigationTarget(
         url.toString(),
-        allowLoopbackHttp: false,
+        allowLoopbackHttp: kE2eBuild,
       );
       if (target == null) {
         _completeStepUp(false);

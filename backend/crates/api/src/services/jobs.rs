@@ -4,7 +4,7 @@
 //! the undo race (T-606) and account deletion (T-803) reuse; the runner's claim
 //! (T-701) is the other side of the same conditional write.
 
-use domain::{apply, Applied, JobEvent, JobId, JobState, JobStatus, Tunables};
+use domain::{apply, Applied, JobEvent, JobId, JobState, JobStatus};
 use ports::{JobOutcome, JobOutcomeCode, JobRecord, Precondition, StoreError, TaskName};
 
 use crate::error::ApiError;
@@ -56,7 +56,7 @@ pub async fn cancel_queued_job(app: &AppState, job: &JobId) -> Result<CancelResu
         expires_at: versioned.record.expires_at,
     };
     // The domain owns the terminal retention rule (S3 terminal job, S10 6.3).
-    match apply(state, JobEvent::Cancel { now }, &Tunables::default()) {
+    match apply(state, JobEvent::Cancel { now }, &app.tunables) {
         Ok(Applied::Changed(next)) => {
             let record = JobRecord {
                 status: next.status,

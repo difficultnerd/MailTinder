@@ -30,6 +30,11 @@ allow = [
 confidence-threshold = 0.9
 unused-allowed-license = "allow"
 
+# MPL is limited to the WebDriver protocol dependency of the dev-only harness.
+[[licenses.exceptions]]
+name = "webdriver"
+allow = ["MPL-2.0"]
+
 # The workspace's own crates are UNLICENSED; skip them.
 [licenses.private]
 ignore = true

@@ -103,7 +103,7 @@ impl TestControl {
 
 ## Out of scope
 
-- Journeys 2 to 6 (T-1101b); journeys 7 to 9, leak scans, storage and CSP checks (T-1101c).
+- Journeys 2 to 6 (T-1101b, T-1101d, T-1101e, T-1101f); journeys 7 to 9, leak scans, storage and CSP checks (T-1101c).
 - Bake-off e2e (JEV-1, EXP-1 against fake-vertex and fake-jev): follow-up after T-906.
 - Editing `CLAUDE.md` (protected file; the owner adds the one-line `scripts/e2e.sh` pointer after merge).
 

@@ -754,7 +754,7 @@ async fn un_01_ac4_job_holds_no_access_token() -> TestResult {
         .keys
         .open(&w.user, &w.wrapped().await?, &aad, &sealed.0)
         .await?;
-    assert_eq!(String::from_utf8(plain)?, format!("one_click\n{ONE_CLICK}"));
+    assert_eq!(String::from_utf8(plain)?, ONE_CLICK);
     Ok(())
 }
 

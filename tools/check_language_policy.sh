@@ -12,4 +12,6 @@ if [ -n "$bad" ]; then
   echo "$bad"
   exit 1
 fi
+# Binary policy (2026-10-09): no built executables, unknown binaries, files over 1 MB or tool/cache directories in the tree.
+python3 tools/check_no_binaries.py --tree || exit 1
 echo "Language policy OK."
