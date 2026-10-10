@@ -354,13 +354,35 @@ jobs:
           # `ignore_changes` on the container image cannot be read from a
           # Terraform expression, so terraform test cannot prove it. Without it
           # every apply would roll production back to the placeholder image
-          # (T-1102b edge case), so guard it per service here.
-          services=$(grep -cE '^resource "google_cloud_run_v2_service" "' modules/runtime/cloud_run.tf)
-          ignores=$(grep -cE 'template\[0\]\.containers\[0\]\.image' modules/runtime/cloud_run.tf)
-          if [ "$services" -ge 1 ] && [ "$ignores" -eq "$services" ]; then
-            echo "OK   every Cloud Run service ignores the container image"
+          # (T-1102b edge case), so guard it per service here. The image path
+          # must sit inside the service's own `ignore_changes` list: counting
+          # occurrences anywhere in the file would let a stray comment (or a
+          # second line) inflate the count and mask a service whose ignore list
+          # is missing (review F10).
+          img=$(awk '
+            /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service"[[:space:]]+"/ {
+              if (seen) { total++; if (has) good++ }
+              seen = 1; has = 0; in_ign = 0; next
+            }
+            /^[[:space:]]*resource[[:space:]]+"/ {
+              if (seen) { total++; if (has) good++ }
+              seen = 0; in_ign = 0; next
+            }
+            {
+              line = $0
+              sub(/[[:space:]]*#.*/, "", line)
+              if (seen && line ~ /ignore_changes[[:space:]]*=[[:space:]]*\[/) in_ign = 1
+              if (seen && in_ign && line ~ /template\[0\]\.containers\[0\]\.image/) has = 1
+              if (seen && in_ign && line ~ /\]/) in_ign = 0
+            }
+            END { if (seen) { total++; if (has) good++ } print good + 0, total + 0 }
+          ' modules/runtime/cloud_run.tf)
+          good=${img% *}
+          total=${img#* }
+          if [ "${total:-0}" -ge 1 ] && [ "${good:-0}" -eq "${total:-0}" ]; then
+            echo "OK   every Cloud Run service ignores the container image inside ignore_changes"
           else
-            echo "FAIL image ignore_changes: $ignores of $services Cloud Run services (T-1102b)"
+            echo "FAIL image ignore_changes: ${good:-0} of ${total:-0} Cloud Run services (T-1102b)"
             fail=1
           fi
           exit $fail

@@ -17,12 +17,11 @@ resource "google_logging_project_bucket_config" "app" {
 }
 
 locals {
-  # Every entry the application and its runtime produce.
-  app_log_resource_filter = join(" OR ", [
-    "resource.type=\"cloud_run_revision\"",
-    "resource.type=\"cloud_tasks_queue\"",
-    "resource.type=\"cloud_scheduler_job\"",
-  ])
+  # The application's own stdout/stderr only: Cloud Run revision logs. Cloud
+  # Tasks and Cloud Scheduler write their own platform logs, which are not
+  # application output, so the locked bucket that S5/S6 present as the
+  # application log stream does not capture them (review F7).
+  app_log_resource_filter = "resource.type=\"cloud_run_revision\""
 
   # Cloud Run additionally writes a platform "request log" per inbound request
   # (`logName` .../logs/run.googleapis.com%2Frequests). Those entries record the
@@ -54,11 +53,12 @@ resource "google_project_iam_member" "log_sink_writer" {
   member  = google_logging_project_sink.app.writer_identity
 }
 
-# Keep the app logs out of _Default as well, so they are not retained for 30
-# days in a second, less-protected place. This uses the full resource filter
-# (including the Cloud Run request log): those entries are dropped entirely
-# rather than retained anywhere, so the banned request URL and client IP are
-# never captured (review F3).
+# Keep the application logs out of _Default as well, so they are not retained
+# for 30 days in a second, less-protected place. The exclusion uses the
+# resource filter without the sink's `NOT logName` clause, so it drops every
+# Cloud Run revision entry including the platform request log: those entries
+# are removed entirely rather than retained anywhere, so the banned request URL
+# and client IP are never captured (review F3).
 resource "google_logging_project_exclusion" "app_default" {
   project     = var.project_id
   name        = "mailtinder-app-default"

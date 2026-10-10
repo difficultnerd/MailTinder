@@ -39,7 +39,7 @@ the plan and runs `apply`**, from his own machine, one project at a time
    there, so no value ever enters state:
 
    ```
-   for v in oauth-client-secret jev-api-key email-lookup-hmac-key log-pseudonym-hmac-key; do
+   for v in google-oauth-client-secret jev-api-key email-lookup-hmac-key log-pseudonym-hmac-key; do
      printf '%s' "$VALUE" | gcloud secrets versions add "$v" --data-file=-
    done
    ```

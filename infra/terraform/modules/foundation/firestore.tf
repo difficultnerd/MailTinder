@@ -36,7 +36,25 @@ resource "google_firestore_field" "ttl" {
   field      = "expires_at"
 
   ttl_config {}
-  index_config {}
+
+  # An empty `index_config {}` disables *every* single-field index on the
+  # field (see the google_firestore_field docs), which takes `expires_at` out
+  # of the automatic single-field indexing the sweeper's queries rely on.
+  # Declare the default single-field indexes explicitly instead: Firestore
+  # serves ascending and descending single-field queries from an order index.
+  # The array-contains default is not declared: `expires_at` is a timestamp,
+  # never an array (review F2).
+  index_config {
+    indexes {
+      order       = "ASCENDING"
+      query_scope = "COLLECTION"
+    }
+
+    indexes {
+      order       = "DESCENDING"
+      query_scope = "COLLECTION"
+    }
+  }
 }
 
 # Firestore has no per-collection IAM, so the least-privilege equivalent is the

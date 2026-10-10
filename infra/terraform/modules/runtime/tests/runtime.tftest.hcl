@@ -69,7 +69,7 @@ variables {
   }
 
   secret_ids = {
-    oauth_client_secret = "oauth-client-secret"
+    oauth_client_secret = "google-oauth-client-secret"
     jev_api_key         = "jev-api-key"
     email_lookup_hmac   = "email-lookup-hmac-key"
     log_pseudonym_hmac  = "log-pseudonym-hmac-key"

@@ -170,6 +170,16 @@ run "ttl_on_every_ttl_collection" {
     condition     = alltrue([for f in values(google_firestore_field.ttl) : f.field == "expires_at" && f.database == google_firestore_database.default.name])
     error_message = "every TTL field must be `expires_at` on the (default) database"
   }
+
+  assert {
+    condition     = alltrue([for f in values(google_firestore_field.ttl) : length(f.ttl_config) == 1])
+    error_message = "every TTL field must have ttl_config enabled, or the retention backstop is not configured (S5 Retention, review F9)"
+  }
+
+  assert {
+    condition     = alltrue([for f in values(google_firestore_field.ttl) : length(f.index_config) == 1 && length(f.index_config[0].indexes) > 0])
+    error_message = "every TTL field must keep a declared single-field index; an empty index_config disables all indexing on the field (review F2)"
+  }
 }
 
 run "jev_and_email_lookup_secrets_have_api_only" {
@@ -187,7 +197,7 @@ run "jev_and_email_lookup_secrets_have_api_only" {
 
   assert {
     condition = (
-      toset(google_secret_manager_secret_iam_binding.accessor["oauth-client-secret"].members) == toset([
+      toset(google_secret_manager_secret_iam_binding.accessor["google-oauth-client-secret"].members) == toset([
         "serviceAccount:${google_service_account.service["api"].email}",
         "serviceAccount:${google_service_account.service["unsub"].email}",
         "serviceAccount:${google_service_account.service["worker"].email}",
@@ -211,7 +221,7 @@ run "no_secret_versions_in_state" {
   }
 
   assert {
-    condition     = toset([for s in values(google_secret_manager_secret.secret) : s.secret_id]) == toset(["oauth-client-secret", "jev-api-key", "email-lookup-hmac-key", "log-pseudonym-hmac-key"])
+    condition     = toset([for s in values(google_secret_manager_secret.secret) : s.secret_id]) == toset(["google-oauth-client-secret", "jev-api-key", "email-lookup-hmac-key", "log-pseudonym-hmac-key"])
     error_message = "exactly the four S4 2 secret containers"
   }
 }
@@ -231,9 +241,11 @@ run "log_bucket_90_days_locked_in_region" {
   assert {
     condition = (
       strcontains(google_logging_project_sink.app.filter, "resource.type=\"cloud_run_revision\"") &&
+      !strcontains(google_logging_project_sink.app.filter, "cloud_tasks_queue") &&
+      !strcontains(google_logging_project_sink.app.filter, "cloud_scheduler_job") &&
       strcontains(google_logging_project_sink.app.filter, "NOT logName:\"run.googleapis.com%2Frequests\"")
     )
-    error_message = "the sink routes app logs but must keep the Cloud Run request log (request URL and client IP, S5 88-90) out of the locked bucket (review F3)"
+    error_message = "the sink must route application stdout/stderr only, keep the Cloud Run request log out (request URL and client IP, S5 88-90), and leave platform Cloud Tasks/Scheduler logs out of the locked bucket (review F3, F7)"
   }
 
   assert {
