@@ -25,4 +25,8 @@ pub struct AppState {
     pub bakeoff_gate: crate::classify::BakeoffGate,
     /// National holiday defaults, injectable for delivery checks.
     pub business_calendar: Arc<domain::delivery::BusinessCalendar>,
+    /// The tunables the services apply (S2 `UNSUB_DELAY` and friends). The
+    /// production defaults, except for the e2e due-delay override
+    /// ([`crate::startup::runtime_tunables`]).
+    pub tunables: domain::Tunables,
 }

@@ -316,5 +316,6 @@ pub fn app_state_with_classifiers(
         classifiers,
         bakeoff_gate: classify::BakeoffGate::default(),
         business_calendar: Arc::new(crate::services::delivery_check::national_calendar()),
+        tunables: crate::startup::runtime_tunables(),
     }
 }

@@ -94,7 +94,7 @@ pub async fn execute(
 ) -> Result<SwipeResultDto, ApiError> {
     let user = session.user;
     let now = app.ports.clock.now();
-    let tunables = Tunables::default();
+    let tunables = app.tunables.clone();
 
     // Step 1: the rate limit runs before the provider change.
     if plan.unsubscribe.is_some() {

@@ -87,7 +87,7 @@ pub async fn swipe(
     let wrapped = wrapped_key(app, &user).await?;
     let sealer = SealedTokens::new(Arc::clone(&app.ports.keys), Arc::clone(&app.ports.clock));
     let now = app.ports.clock.now();
-    let tunables = Tunables::default();
+    let tunables = app.tunables.clone();
     let sid = swipe_id(&user, idempotency_key);
     let expires_at = now + Duration::hours(SWIPE_TOKEN_TTL_HOURS);
     let store = UserStateStore::new(Arc::new(app.clone()));
