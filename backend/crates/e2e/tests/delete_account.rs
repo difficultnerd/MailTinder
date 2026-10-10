@@ -3,17 +3,16 @@
 //! Journey 9 (AU-06 AC1): in a real browser the user deletes their account. The
 //! deletion runs the app folder file delete and then the token revoke at the
 //! provider (the fake records the order), leaves nothing in the store that names
-//! the user, and, past the 24-hour horizon, the worker's sweep finds no leftover
-//! to remove.
+//! the user, and the worker's sweep removes an orphan the request left behind.
 //!
 //! Run only by `scripts/e2e.sh` (`cargo test -p e2e -- --ignored`), the job that
 //! has fake-google, the Firestore emulator and ChromeDriver. Run with
 //! `--test-threads=1` (as the script does): the tests share the global
 //! `fake-google`, so parallel execution would corrupt state.
 //!
-//! The clock is jumped 25 hours rather than waited (`/internal/test/advance-clock`,
-//! S10 6.3), and put back before the journey ends: one api process serves every
-//! journey of the run.
+//! The sweep is driven directly (`/internal/test/sweep`, S10 6.3): its horizon
+//! is a fixed far-future constant, so no clock jump makes it run, and the
+//! journey never waits real hours.
 
 use std::error::Error;
 use std::time::Duration;
@@ -56,9 +55,6 @@ const SIGN_IN_TAGLINE: &str = "Swipe through your inbox and clear the mail you d
 
 /// A route nested under Settings, so the step-up popup's own URL never matches.
 const SETTINGS_ROUTE: &str = "/settings";
-/// The deletion's own backstop horizon (S2 AU-06 AC1: every server record is
-/// swept within 24 hours).
-const TWENTY_FIVE_HOURS_S: i64 = 25 * 60 * 60;
 /// How long the deletion's round trip (the provider calls, the store deletes and
 /// the app's wipe) may take.
 const DELETION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -91,6 +87,17 @@ async fn au_06_ac1_e2e_delete_account_order_and_sweep() -> Result<(), Box<dyn Er
     let emulator = firestore_emulator_url()?;
     let before = FirestoreDump::all_documents(&emulator, E2E_FIRESTORE_PROJECT).await?;
     let user = user_of_the_seeded_mailbox(&before)?;
+    // The user's mailbox document, kept to plant an orphan the sweep must
+    // finish after the deletion: the request removes every record, so the
+    // backstop would otherwise have nothing to do (T-1101c review F1).
+    let mailbox_path = mailbox_path_for_subject(&before, SUB)
+        .ok_or_else(|| format!("no mailbox document for {SUB}"))?
+        .to_owned();
+    let mailbox = before
+        .iter()
+        .find(|(path, _)| path == &mailbox_path)
+        .map(|(_, json)| json.clone())
+        .ok_or_else(|| format!("mailbox document {mailbox_path} vanished from the dump"))?;
 
     // Settings, Account, Delete account, both confirmations (S9 7.5). The
     // deletion needs a fresh sign-in, so the Confirm-it's-you overlay appears
@@ -146,18 +153,37 @@ async fn au_06_ac1_e2e_delete_account_order_and_sweep() -> Result<(), Box<dyn Er
         "the deleted account's refresh token must be revoked once"
     );
 
-    // Past the 24-hour horizon the worker's sweep runs (S2 AU-06 AC1). The
-    // request's own deletion already removed the user's records, so the sweep
-    // has nothing to finish - which is the point: the check below is over the
-    // whole database afterwards.
-    control.advance_clock(TWENTY_FIVE_HOURS_S).await?;
-    control.sweep().await?;
-    // Back to real time: one api process serves every journey of the run.
-    control.advance_clock(-TWENTY_FIVE_HOURS_S).await?;
+    // AU-06 AC1: the 24-hour backstop the worker's sweep runs. The request's
+    // own deletion removed every record, so the sweep would have nothing to do:
+    // plant an orphan instead - the user's own mailbox document, whose user
+    // document is now gone - and prove the sweep removes it. The sweep's horizon
+    // is a fixed far-future constant (`worker::sweeps::deleted_users`), so no
+    // clock jump makes it run; a jump here would prove nothing (T-1101c review
+    // F1).
+    FirestoreDump::plant_document(&emulator, E2E_FIRESTORE_PROJECT, &mailbox_path, &mailbox)
+        .await?;
+    let planted = FirestoreDump::all_documents(&emulator, E2E_FIRESTORE_PROJECT).await?;
+    assert!(
+        documents_in(&planted, "mailboxes")
+            .iter()
+            .any(|(path, _)| path.as_str() == mailbox_path.as_str()),
+        "the orphan must be in the store before the sweep runs"
+    );
+    let deleted = control.sweep().await?;
+    assert!(
+        deleted > 0,
+        "the sweep must finish the deletion the request could not: deleted_records = {deleted}"
+    );
 
-    // AU-06 AC1, DEL-1: no document of any S5 collection names the user, and no
-    // job document survives either.
+    // AU-06 AC1, DEL-1: the sweep removed the orphan, no document of any S5
+    // collection names the user, and no job document survives either.
     let after = FirestoreDump::all_documents(&emulator, E2E_FIRESTORE_PROJECT).await?;
+    assert!(
+        !documents_in(&after, "mailboxes")
+            .iter()
+            .any(|(path, _)| path.as_str() == mailbox_path.as_str()),
+        "the sweep must delete the orphaned record {mailbox_path}"
+    );
     let left = documents_holding(&after, &user);
     assert!(
         left.is_empty(),

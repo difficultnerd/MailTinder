@@ -922,6 +922,14 @@ impl FakeGoogle {
     ) -> Result<(), E2eError> {
         self.post("/__fake/gmail/mailboxes", json!({ "email": email }))
             .await?;
+        // The address and the sub are runtime values no fixture carries, so
+        // record them for the leak scan (T-1101c review F2). Both are stored in
+        // the clear in a linked mailbox's `provider_subject_id` (the fake uses
+        // the address as a second mailbox's `sub`), so they are canaries in
+        // service logs - where XC-01 forbids an address outright - rather than
+        // in documents, which hold the account identifier by design.
+        record_log_canary(email)?;
+        record_log_canary(sub)?;
         self.accounts
             .lock()
             .map_err(|_| E2eError::State("accounts poisoned".to_owned()))?
@@ -1008,6 +1016,10 @@ impl FakeGoogle {
         let text = String::from_utf8(case.eml.clone())
             .map_err(|e| E2eError::State(format!("corpus case {fixture} is not UTF-8: {e}")))?;
         let target = format!("{}{route}", testbed_https.trim_end_matches('/'));
+        // The rewritten target is this run's own unsubscribe URL (S5 C2/C3
+        // forbid it in logs and Firestore) and no fixture carries it, so record
+        // it for the leak scan (T-1101c review F2).
+        record_canary(&target)?;
         let eml = text.replace(fixture_target, &target);
         self.post(
             "/__fake/gmail/messages",
@@ -1075,6 +1087,9 @@ impl FakeGoogle {
         &self,
         email: &str,
     ) -> Result<(), E2eError> {
+        // The address doubles as the mailbox's sub; both land in the clear in
+        // `provider_subject_id`, so it is a log-only canary (T-1101c review F2).
+        record_log_canary(email)?;
         self.post(
             "/__fake/identity/next-login",
             json!({
@@ -1991,39 +2006,127 @@ return JSON.stringify({ count: nodes.length, nodes: out });
 // Leak, storage and CSP scans (T-1101c).
 // ---------------------------------------------------------------------------
 
-/// Every canary token, corpus address and unsubscribe URL the T-204 fixture
-/// corpus plants (S10 5, 7.3). A log line, a Firestore document or a browser
+/// The runtime canaries a journey records for the scan, written under the log
+/// directory by [`record_canary`] and read by [`Canaries::load`].
+const RUNTIME_CANARIES_FILE: &str = "runtime-canaries.txt";
+
+/// Like [`RUNTIME_CANARIES_FILE`], for account values a Firestore document
+/// holds by design, so the scans read this set against service logs only.
+///
+/// A seeded account's address and `sub` are stored in the clear in
+/// `mailboxes.provider_subject_id` (`mailbox_id_for`, S5) - the fake uses the
+/// address as a second mailbox's `sub` - so a log line holding either is a leak
+/// (XC-01 forbids an address in a log outright) but a document is not.
+const RUNTIME_LOG_CANARIES_FILE: &str = "runtime-log-canaries.txt";
+
+/// Every canary token, corpus address, corpus URL and recorded runtime value a
+/// leak can hold (S10 5, 7.3). A log line, a Firestore document or a browser
 /// store that holds one of these is a leak: they exist only so a leak is
 /// impossible to miss.
+///
+/// The corpus alone is blind to the values a journey mints at run time - the
+/// one-click target rewritten to this run's testbed, and the addresses and
+/// `sub`s the accounts are seeded with - so those are recorded as they are
+/// created (`record_canary`, `record_log_canary`; T-1101c review F2).
 pub struct Canaries {
-    /// `CANARY-<case>-<field>` tokens, corpus addresses and corpus URLs.
+    /// `CANARY-<case>-<field>` tokens, corpus addresses and URLs, and the run's
+    /// rewritten unsubscribe target, scanned against logs, documents and
+    /// browser stores alike.
     pub strings: Vec<String>,
+    /// Runtime account values a Firestore document may hold by design (a seeded
+    /// account's address and `sub`), scanned against service logs only.
+    logs_only: Vec<String>,
 }
 
 impl Canaries {
-    /// Load the corpus's canaries, addresses and URLs.
+    /// Load the corpus's canaries, addresses and URLs plus everything the run
+    /// recorded, from the harness log directory (`MT_E2E_LOG_DIR`).
     ///
     /// # Errors
     ///
     /// `E2eError::State` when the fixture corpus cannot be loaded.
     pub fn load() -> Result<Self, E2eError> {
+        Self::load_from(&log_dir())
+    }
+
+    /// Load the corpus and the runtime canaries recorded in `dir` (T-1101c
+    /// review F2). A missing runtime file is an empty set, not an error: a
+    /// journey that recorded nothing is tested by its own absence checks.
+    fn load_from(dir: &Path) -> Result<Self, E2eError> {
         let corpus = testkit::corpus::load().map_err(E2eError::State)?;
         let mut strings = corpus.all_canaries();
         strings.extend(corpus.all_addresses());
         strings.extend(corpus.all_urls());
+        strings.extend(canary_file_lines(&dir.join(RUNTIME_CANARIES_FILE)));
         strings.sort();
         strings.dedup();
-        Ok(Self { strings })
+        let mut logs_only = canary_file_lines(&dir.join(RUNTIME_LOG_CANARIES_FILE));
+        // A value already scanned everywhere need not be scanned again.
+        logs_only.retain(|value| strings.binary_search(value).is_err());
+        logs_only.sort();
+        logs_only.dedup();
+        Ok(Self { strings, logs_only })
     }
 
     /// Every canary that appears in `text`, in the corpus's order.
     pub fn find_in(&self, text: &str) -> Vec<String> {
-        self.strings
-            .iter()
-            .filter(|needle| text.contains(needle.as_str()))
-            .cloned()
-            .collect()
+        find_any(&self.strings, text)
     }
+
+    /// Like [`Self::find_in`], and also the log-only values: a service log line
+    /// must not hold a seeded account's `sub` either.
+    pub fn find_in_logs(&self, text: &str) -> Vec<String> {
+        let mut found = self.find_in(text);
+        found.extend(find_any(&self.logs_only, text));
+        found
+    }
+}
+
+/// The values of `needles` that appear in `text`, in order.
+fn find_any(needles: &[String], text: &str) -> Vec<String> {
+    needles
+        .iter()
+        .filter(|needle| text.contains(needle.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Append `value` as a runtime canary the scans check everywhere.
+fn record_canary(value: &str) -> Result<(), E2eError> {
+    record_canary_in(&log_dir(), RUNTIME_CANARIES_FILE, value)
+}
+
+/// Append `value` as a runtime canary the log scans check, for a value a
+/// Firestore document holds by design.
+fn record_log_canary(value: &str) -> Result<(), E2eError> {
+    record_canary_in(&log_dir(), RUNTIME_LOG_CANARIES_FILE, value)
+}
+
+/// Append `value` to `file` under `dir`, one value per line.
+fn record_canary_in(dir: &Path, file: &str, value: &str) -> Result<(), E2eError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| E2eError::State(format!("canary dir {}: {e}", dir.display())))?;
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(file))
+        .map_err(|e| E2eError::State(format!("canary file {file}: {e}")))?;
+    writeln!(out, "{value}").map_err(|e| E2eError::State(format!("canary file {file}: {e}")))?;
+    Ok(())
+}
+
+/// The non-empty, trimmed lines of `path`, or an empty vector when it does not
+/// exist.
+fn canary_file_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|text| {
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The Firestore project `scripts/e2e.sh` starts the emulator with, the same one
@@ -2104,6 +2207,49 @@ impl FirestoreDump {
             }
         }
         Ok(documents)
+    }
+
+    /// Write `document`'s fields back under `path` through the emulator's REST
+    /// API (T-1101c review F1). A journey that must give the worker's sweep a
+    /// leftover to finish plants one of the records it captured before a
+    /// deletion: its user document is gone, so the record is an orphan.
+    ///
+    /// `document` is one entry of [`Self::all_documents`], whose `fields` are
+    /// replayed unchanged, so the store decodes it exactly as it wrote it.
+    ///
+    /// # Errors
+    ///
+    /// `E2eError::State` when `document` is not JSON, and `E2eError::Http` when
+    /// the emulator rejects the write or cannot be reached.
+    pub async fn plant_document(
+        emulator: &Url,
+        project: &str,
+        path: &str,
+        document: &str,
+    ) -> Result<(), E2eError> {
+        let parsed: Value = serde_json::from_str(document)
+            .map_err(|e| E2eError::State(format!("planted document is not JSON: {e}")))?;
+        let fields = parsed
+            .get("fields")
+            .cloned()
+            .ok_or_else(|| E2eError::State("planted document has no fields".to_owned()))?;
+        let url = format!(
+            "{}/v1/projects/{project}/databases/(default)/documents/{path}",
+            emulator.as_str().trim_end_matches('/')
+        );
+        let response = reqwest::Client::new()
+            .patch(url)
+            .json(&json!({ "fields": fields }))
+            .send()
+            .await
+            .map_err(http)?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            Err(E2eError::Http(format!("PATCH {path}: {status} {body}")))
+        }
     }
 }
 
@@ -2510,6 +2656,50 @@ mod tests {
         let quiet = log.mark();
         assert!(log.since_mark(quiet)?.is_empty());
 
+        std::fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    /// A runtime value a journey records - this run's rewritten one-click
+    /// target, a seeded account address, a seeded `sub` - reaches the scan, and
+    /// the scan fires on it once it is planted: the positive control the review
+    /// asked for (T-1101c review F2). The address and the `sub` are planted as
+    /// log-only canaries because the `mailboxes` collection holds them in the
+    /// clear.
+    #[test]
+    fn canaries_load_reads_the_values_a_journey_recorded() -> Result<(), E2eError> {
+        let dir = temp_log_dir();
+        record_canary_in(
+            &dir,
+            RUNTIME_CANARIES_FILE,
+            "https://127.0.0.1:9/oneclick/200",
+        )?;
+        record_canary_in(&dir, RUNTIME_LOG_CANARIES_FILE, "au-06-ac1-e2e@example.com")?;
+        record_canary_in(&dir, RUNTIME_LOG_CANARIES_FILE, "sub-au-06-ac1-e2e")?;
+
+        let canaries = Canaries::load_from(&dir)?;
+        let target = "the testbed saw https://127.0.0.1:9/oneclick/200 today";
+        assert!(
+            canaries
+                .find_in(target)
+                .contains(&"https://127.0.0.1:9/oneclick/200".to_owned()),
+            "a recorded unsubscribe target must fire the scan"
+        );
+        // The address and the `sub` are log-only canaries:
+        // `mailboxes.provider_subject_id` holds them in the clear, so a document
+        // is not a leak for them, but a log line is (XC-01 forbids an address in
+        // a log outright).
+        let document = "{\"provider_subject_id\":\"sub-au-06-ac1-e2e\"}";
+        assert!(
+            canaries.find_in(document).is_empty(),
+            "an account identifier must not make a Firestore document a leak"
+        );
+        for value in ["au-06-ac1-e2e@example.com", "sub-au-06-ac1-e2e"] {
+            assert!(
+                canaries.find_in_logs(value).contains(&value.to_owned()),
+                "a recorded account identifier must fire the log scan: {value}"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
     }

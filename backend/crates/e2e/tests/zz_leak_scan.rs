@@ -102,7 +102,10 @@ async fn xc_01_e2e_logs_hold_no_canary() -> Result<(), Box<dyn Error>> {
     let canaries = Canaries::load()?;
     let mut offenders = Vec::new();
     for (file, line) in service_log_lines()? {
-        let found = canaries.find_in(&line);
+        // `find_in_logs`: a service log must not hold a seeded account's `sub`
+        // either, though a Firestore document holds it by design (T-1101c
+        // review F2).
+        let found = canaries.find_in_logs(&line);
         if !found.is_empty() {
             offenders.push(format!("{file}: {found:?}"));
         }
@@ -134,7 +137,7 @@ async fn log_1_e2e_logs_hold_no_corpus_value() -> Result<(), Box<dyn Error>> {
             continue;
         }
         scanned += 1;
-        let found = canaries.find_in(&line);
+        let found = canaries.find_in_logs(&line);
         if !found.is_empty() {
             offenders.push(format!("{file}: {event}: {found:?}"));
         }
