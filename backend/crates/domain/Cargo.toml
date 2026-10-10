@@ -16,7 +16,7 @@ html5ever.workspace = true
 unicode-segmentation.workspace = true
 percent-encoding = "2"
 regex = "1"
-whatlang = "0.16"
+whatlang = "0.18"
 tracing = "0.1"
 
 [lints]
