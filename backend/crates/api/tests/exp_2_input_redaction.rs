@@ -223,6 +223,29 @@ fn asvs_v14_2_3_only_allowlisted_fields_rendered() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn exp_2_from_domain_empty_for_hostile_from() -> Result<(), Box<dyn std::error::Error>> {
+    let corpus = load()?;
+    let mut metadata = meta(corpus.cases.first().ok_or("empty corpus")?)?;
+    // A hostile From carrying a second address, whitespace and a second domain.
+    metadata.from_address = "a@evil.example.com @other.com".to_owned();
+    let (input, _) = build_input(&metadata, "");
+    let rendered = Sensitive::new(render_model_text(&input));
+    let rendered = rendered.expose();
+    // The literal rendered line, not a string built from `from_domain(...)`
+    // (which would make the assertion tautological): the domain feature is
+    // empty for a hostile sender.
+    let domain_line = rendered
+        .lines()
+        .find(|line| line.starts_with("from_domain: "))
+        .ok_or("missing from_domain line")?;
+    assert_eq!(domain_line, "from_domain: none");
+    for leaked in ["evil.example.com", "other.com"] {
+        assert!(!rendered.contains(leaked), "hostile From leaked {leaked}");
+    }
+    Ok(())
+}
+
+#[test]
 fn exp_2_field_caps_and_facts_before_truncation() -> Result<(), Box<dyn std::error::Error>> {
     let corpus = load()?;
     let mut metadata = meta(corpus.cases.first().ok_or("empty corpus")?)?;
