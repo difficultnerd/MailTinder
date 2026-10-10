@@ -451,7 +451,7 @@ jobs:
   # jobs sharing one name would make it ambiguous which run gates a merge.
   ci-integrity:
     runs-on: ubuntu-latest
-    needs: [rust, dart, language-policy, ac-coverage, e2e, terraform]
+    needs: [rust, dart, language-policy, ac-coverage, terraform, e2e]
     if: always()
     env:
       R_RUST: ${{ needs.rust.result }}

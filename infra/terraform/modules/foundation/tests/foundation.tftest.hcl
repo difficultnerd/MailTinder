@@ -67,6 +67,14 @@ override_resource {
   }
 }
 
+override_resource {
+  target          = google_logging_project_sink.audit
+  override_during = plan
+  values = {
+    writer_identity = "serviceAccount:mock-audit-writer@example.com"
+  }
+}
+
 variables {
   project_id = "mailtinder-test"
   env        = "prod"
@@ -257,6 +265,23 @@ run "log_bucket_90_days_locked_in_region" {
   }
 }
 
+# The audit evidence S11 reads (elevation review, alert A7, leak investigation)
+# must land in the locked 90-day bucket, not only in _Default (V16.4.2,
+# V16.4.3). The sinks are declared resources, so this is checkable at plan time.
+run "audit_logs_are_routed_to_the_locked_bucket" {
+  command = plan
+
+  assert {
+    condition = (
+      strcontains(google_logging_project_sink.audit.destination, "/buckets/mailtinder-logs") &&
+      strcontains(google_logging_project_sink.audit.filter, "cloudaudit.googleapis.com") &&
+      strcontains(google_logging_project_sink.audit.filter, "cloudkms.googleapis.com") &&
+      strcontains(google_logging_project_sink.audit.filter, "secretmanager.googleapis.com")
+    )
+    error_message = "KMS and Secret Manager Data Access audit logs must reach the locked 90-day bucket (V16.4.2, V16.4.3, review F1)"
+  }
+}
+
 # Checks the module's declared bindings only (see the file header): it proves
 # that none of the project-level grants the module makes gives an app identity a
 # roles/logging.* role. Absence of a logging grant added elsewhere is enforced
@@ -269,6 +294,7 @@ run "declared_bindings_give_app_identities_no_logging_role" {
       for m in concat(
         [google_project_iam_member.aiplatform_user],
         [google_project_iam_member.log_sink_writer],
+        [google_project_iam_member.audit_sink_writer],
         values(google_project_iam_member.datastore_user),
         ) : !(startswith(m.role, "roles/logging.") && contains([
           "serviceAccount:${google_service_account.service["api"].email}",

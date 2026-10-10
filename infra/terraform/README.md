@@ -72,13 +72,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
 ## Decision pending (owner): deletion semantics
 
-Firestore point-in-time recovery is currently disabled
-(`modules/foundation/firestore.tf`), which makes crypto-shredding immediate when
-an account's documents are deleted but leaves an operator mistake unrecoverable.
-Enabling PITR would add a rollback window, at the cost of retaining a
-recoverable copy of every wrapped `data_key` for the retention period, so a
-deleted account's data would survive its deletion - the owner (James) decides
-which trade-off production takes; the behaviour is unchanged in this change.
+Crypto-shredding destroys a user's `data_key` so their Firestore data becomes
+unreadable immediately, whereas enabling point-in-time recovery or scheduled
+backups would keep a recent, still-decryptable copy of that data alive for the
+recovery window and so delay erasure (`firestore.tf`, S6 5, DEL-2). The owner
+must decide whether the recoverability PITR and backups give is worth that delay
+before production retention is finalised; until then the behaviour is unchanged
+(recovery disabled, no backup schedule).
 
 ## Deploy identity and its real blast radius (T-1102b)
 
@@ -165,6 +165,11 @@ request log (`run.googleapis.com%2Frequests`) records the request URL, its query
 string and the client IP, so the sink excludes it and `_Default` drops it - those
 entries are never captured in the locked 90-day store (S5 bans URLs and
 addresses in logs).
+
+KMS and Secret Manager Data Access audit logs go to the same locked bucket
+through a second sink (`mailtinder-audit`), so the evidence the monthly
+elevation review and the leak investigation read is not confined to `_Default`'s
+30-day, unlocked window.
 
 To run the same checks locally:
 
