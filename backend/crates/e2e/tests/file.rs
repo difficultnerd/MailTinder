@@ -9,8 +9,8 @@
 //! opens straight on the category name field (SW-04 AC3), where the new
 //! category's name is typed. Confirming files the message; the fake's Gmail
 //! read-back then proves the label is applied and `INBOX` is gone (SW-04 AC2).
-//! A file emits no metric event today - the `swipe` assertion is deferred to
-//! T-1114 (ADR 0002) - so none may appear after the mark.
+//! The file emits exactly one `swipe` metric, carrying the filed action and no
+//! content (S10 8; the assertion ADR 0002 deferred to T-1114).
 
 use std::error::Error;
 use std::time::Duration;
@@ -80,11 +80,22 @@ async fn sw_04_ac2_e2e_file_applies_label_and_leaves_inbox() -> Result<(), Box<d
         "the filed message is still in the inbox: {labels:?}"
     );
 
-    // Journey 6 emits no metric event today (S10 8; `swipe` is T-1114).
+    // Journey 6 emits exactly one `swipe` carrying the filed action (S10 8;
+    // T-1114 restored the assertion ADR 0002 dropped).
     let emitted = events.since_mark(mark)?;
-    assert!(
-        emitted.is_empty(),
-        "journey 6 emitted metric events: {emitted:?}"
+    let swipes: Vec<&e2e::MetricEvent> = emitted
+        .iter()
+        .filter(|event| event.event_type == "swipe")
+        .collect();
+    assert_eq!(
+        swipes.len(),
+        1,
+        "journey 6 must emit exactly one swipe: {emitted:?}"
+    );
+    assert_eq!(
+        swipes[0].outcome.as_deref(),
+        Some("file"),
+        "the swipe carries the filed action"
     );
 
     finish_journey(ui).await?;

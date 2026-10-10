@@ -135,6 +135,13 @@ async fn expire_and_purge_jobs(
     for versioned in due {
         let job = versioned.record;
         if job.status.is_terminal() {
+            // A terminal job with no recorded outcome can never be collected
+            // into the user's History (`collect_job_outcomes` skips it), so an
+            // automated action would leave no History entry (S10 8,
+            // `history_missing`; A1). Report it before the record goes.
+            if job.outcome.is_none() {
+                log_history_missing(ports, &job).await;
+            }
             // Its outcome retention has ended; delete it conditionally so a
             // concurrent delete is a skip, never an error.
             if delete_ignoring_conflict(
@@ -475,6 +482,19 @@ async fn log_expired_outcome(ports: &Ports, job: &JobRecord) {
         event_type: "unsub_outcome",
         outcome: "expired",
         user: pseudo,
+        provider: Some("gmail"),
+    });
+}
+
+/// A terminal job with no recorded outcome can never reach the user's History
+/// (`collect_job_outcomes` skips a record with no outcome), so the automated
+/// action behind it has no History entry (S10 8, `history_missing`; A1). The
+/// user appears only as a pseudonym.
+async fn log_history_missing(ports: &Ports, job: &JobRecord) {
+    obs::metric_event(&obs::MetricEvent {
+        event_type: "history_missing",
+        outcome: "failure",
+        user: pseudo_id(ports, &job.user_id.0).await,
         provider: Some("gmail"),
     });
 }
