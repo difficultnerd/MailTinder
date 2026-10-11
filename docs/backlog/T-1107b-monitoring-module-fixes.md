@@ -34,18 +34,18 @@ The monitoring module's alerts count what they claim to count and can be created
 3. **N3.** Add the `depends_on` on the module call in both roots (staging and prod).
 4. Do not change thresholds, durations, notification routing or any IAM. Do not touch `ci.yml` (finding F2 of PR #82, 'run the monitoring tests in CI', needs an owner-merged `ci.yml` change and is a separate item).
 
-## Acceptance criteria
+## Behaviours that must hold (no ID-shaped labels: the AC gate resolves IDs against S2/S3/S5/S10/ASVS or a `<STORY> AC<n>` form and reports anything else as unknown, as the review of PR #87 reproduced; the task's own ID is enrolled in `tools/ac_coverage_enforced.txt` when it merges, per CLAUDE.md)
 
-| ID | Behaviour (one line) |
+| # | Behaviour (one line) |
 | --- | --- |
-| MON-1 | The `auth_failures` metric filter contains no success outcome and matches each failure outcome of `outcome.rs` |
-| MON-2 | The uptime alert aggregates on a label that exists on the metric and only over this module's checks |
-| MON-3 | `module "monitoring"` depends on `module.foundation` in both roots |
+| B1 | The `auth_failures` metric filter contains no success outcome and matches each failure outcome of `outcome.rs` |
+| B2 | The uptime alert aggregates on a label that exists on the metric and only over this module's checks |
+| B3 | `module "monitoring"` depends on `module.foundation` in both roots |
 
 ## Tests that must pass
 
 - `terraform fmt -check`, `validate` and `terraform test` for `modules/monitoring` and both roots.
-- New assertions in `monitoring.tftest.hcl`: MON-1 (every failure code appears in the filter, none of `signed_in`, `stepped_up`, `joined`, `linked`, `reconnected`, `success`), MON-2 (`group_by_fields` equals exactly `["metric.label.check_id"]`; the filter names both created checks), each written so that reverting the fix makes it fail.
+- New assertions in `monitoring.tftest.hcl`: B1 (every failure code appears in the filter, none of `signed_in`, `stepped_up`, `joined`, `linked`, `reconnected`, `success`), B2 (`group_by_fields` equals exactly `["metric.label.check_id"]`; the filter names both created checks), each written so that reverting the fix makes it fail.
 - A Rust test that scans `backend/crates/api/src/auth/*.rs` for outcome strings passed to the `sign_in`/`step_up` security events and asserts each is either a success code or in the monitoring failure list (so adding an outcome forces a decision); if the module and the Rust crates cannot share the list directly, the Terraform local carries a comment naming this test.
 - All required checks green (S10 10.1); Definition of done S10 10.4.
 
