@@ -168,6 +168,90 @@ What it holds, directly and transitively:
   (S11 3, T-1104). Approving a production deploy is a decision to run a
   specific image as those identities - treat it as one.
 
+## Deploying and rolling back (T-1104)
+
+`.github/workflows/deploy.yml` builds the three service images once for every
+commit on `main`, deploys them and the web app to staging, and then promotes the
+same image digests to production after the `production` environment's reviewer
+approves. Nothing is rebuilt for production: the promote job copies the manifest
+digests staging ran into the production repository (`crane`, pinned to one
+release and checksum checked), so the bytes staging ran are the bytes that ship.
+
+T-1105 owns the staging smoke tests and adds its reusable workflow to the job
+slot in `deploy.yml` marked `# T-1105 adds the smoke job here`; it depends on
+this task, so it is not wired up yet. **Until T-1105 lands that smoke job,
+`deploy-prod` depends on `deploy-staging` alone and the `production`
+environment's required reviewer (James) is the only gate between a staging
+deploy and production** - nothing automatically checks the staging deployment
+before the promotion is approved.
+
+Images are tagged with the commit sha and pushed to
+`us-central1-docker.pkg.dev/<project>/mailtinder/<service>` (T-1102a). Keeping
+every image is the default while S11 is open: nothing prunes Artifact Registry.
+Cloud Run is deployed with `--image` only, so Terraform keeps owning the
+environment variables, the service accounts and the scaling.
+
+GitHub repository variables the workflow reads, all set by James:
+
+| Variable | What it is |
+| --- | --- |
+| `STAGING_PROJECT` | the staging project id (T-1103) |
+| `STAGING_WIF_PROVIDER` | the staging Workload Identity provider resource name |
+| `STAGING_DEPLOYER` | the staging `mt-deployer` service account email |
+| `PROD_PROJECT` | the production project id (T-1102b) |
+| `PROD_WIF_PROVIDER` | the production Workload Identity provider resource name |
+| `PROD_DEPLOYER` | the production `mt-deployer` service account email |
+| `STAGING_URL` | the staging Hosting URL (T-1105 reads it) |
+
+GitHub environments, and why each deploy job must name one:
+
+- `staging` - no required reviewer. Its WIF provider pins
+  `assertion.environment == 'staging'`.
+- `production` - James as required reviewer. Its WIF provider pins
+  `assertion.environment == 'production'`, so GitHub withholds that claim, and
+  therefore the token, until he approves.
+
+One binding the promote job needs is not in Terraform yet: the production
+`mt-deployer` has to read the staging `mailtinder` repository, because the
+digest copy crosses projects. Add it to the staging root (T-1103):
+
+```
+gcloud artifacts repositories add-iam-policy-binding mailtinder \
+  --location=us-central1 --project=<staging-project> \
+  --member=serviceAccount:mt-deployer@<prod-project>.iam.gserviceaccount.com \
+  --role=roles/artifactregistry.reader
+```
+
+**needs owner (ci.yml).** The grant belongs in the staging root as Terraform
+(`google_artifact_registry_repository_iam_member`, `role =
+"roles/artifactregistry.reader"`, member the production deployer passed in as a
+variable - no project id committed). It is not there yet because the role
+allowlist in `.github/workflows/ci.yml` does not list
+`roles/artifactregistry.reader`, and that workflow is owner-only: the new role
+has to be allowlisted there first, or the `ci-integrity` job fails and the pull
+request cannot merge. The manual command above stays the interim step until the
+owner makes the Terraform and allowlist change together.
+
+Container scanning stays off in CI (CLAUDE.md); if Artifact Registry scanning
+is ever enabled it runs in Google Cloud, and nothing in this pipeline reads its
+findings. Smoke failures stop the deploy and GitHub notifies the committer
+(S11 default).
+
+### Rolling back
+
+There is no rollback automation, by design: the previous revision is already
+there, so a rollback is a traffic move rather than a redeploy.
+
+```
+gcloud run services update-traffic <svc> --to-revisions=<previous>=100 --region=us-central1
+firebase hosting:rollback --project <prod-project>
+```
+
+Cloud Run keeps the earlier revisions, and Hosting keeps the earlier release,
+so both are minutes. The image for a known-good revision stays in Artifact
+Registry under its commit sha, so `gcloud run deploy --image ...@<digest>` can
+also put a specific digest back.
+
 ## Checks
 
 CI runs the `terraform` job: `terraform fmt -check -recursive`, then inside
