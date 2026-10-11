@@ -370,6 +370,34 @@ run "auth_failures_metric_names_every_failure_outcome_and_no_success" {
   }
 }
 
+# T-1107b F1: Cloud Logging gives OR higher precedence than AND
+# (logging-query-language, "Boolean operators": NOT, then OR, then AND), so the
+# two unconditional actions must be siblings of the whole `(sign_in OR step_up)
+# AND <failures>` conjunction and not another OR term inside its parentheses.
+# Written the ungrouped way the filter parses as
+# `security AND (sign_in OR step_up) AND (<failures> OR csrf OR authz)`, and
+# neither csrf_failure nor authz_failure can ever be counted. Dropping either
+# parenthesis around the conjunction fails this run.
+run "auth_failures_filter_groups_the_unconditional_actions_outside_the_conjunction" {
+  command = plan
+
+  assert {
+    condition = strcontains(
+      google_logging_metric.metric["auth_failures"].filter,
+      " AND (((jsonPayload.${var.log_fields.event}=\"sign_in\" OR jsonPayload.${var.log_fields.event}=\"step_up\") AND ("
+    )
+    error_message = "the sign_in/step_up conjunction must be one closed group: security AND (((sign_in OR step_up) AND (failures)) OR csrf OR authz); without the group Cloud Logging's OR-over-AND precedence makes csrf_failure and authz_failure unreachable (T-1107b F1, S6 7)"
+  }
+
+  assert {
+    condition = endswith(
+      google_logging_metric.metric["auth_failures"].filter,
+      ")) OR jsonPayload.${var.log_fields.event}=\"csrf_failure\" OR jsonPayload.${var.log_fields.event}=\"authz_failure\")"
+    )
+    error_message = "the closed (sign_in OR step_up) AND failures group must be followed directly by the two unconditional actions and the end of the filter, so csrf_failure and authz_failure count on their own (T-1107b F1, S6 7)"
+  }
+}
+
 # T-1107b B2: the uptime alert aggregates on a label the metric actually has
 # and covers only this module's checks. The uptime_url resource carries
 # project_id and host, not check_id - check_id is a METRIC label - so the old

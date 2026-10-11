@@ -90,7 +90,21 @@ locals {
     # alike, so the metric names the failure codes explicitly
     # (local.auth_failure_outcomes) rather than excluding a fixed pair of
     # success codes (T-1107b N1; review F1 of PR #87).
-    auth_failures = "jsonPayload.event=\"security\" AND ((jsonPayload.${local.event_field}=\"sign_in\" OR jsonPayload.${local.event_field}=\"step_up\") AND (${local.auth_failure_outcome_clause}) OR jsonPayload.${local.event_field}=\"csrf_failure\" OR jsonPayload.${local.event_field}=\"authz_failure\")"
+    #
+    # The grouping is load-bearing, not cosmetic: Cloud Logging's query
+    # language gives OR higher precedence than AND (logging-query-language,
+    # "Boolean operators": NOT, then OR, then AND), so a bare
+    # `A AND B OR C OR D` parses as `A AND ((B OR C) OR D)`. Without the
+    # parentheses around the complete `(sign_in OR step_up) AND failures`
+    # conjunction, an event of an unconditional action still had to be
+    # sign_in or step_up as well, so neither csrf_failure nor authz_failure
+    # could ever match - the counter and the security-spike alert built on it
+    # were deaf to both (T-1107b security review F1). The extra group makes
+    # the two unconditional actions siblings of the conjunction:
+    #   security AND (((sign_in OR step_up) AND failures) OR csrf OR authz)
+    # The Rust test t_1107b_auth_failures_filter_groups_the_security_actions
+    # parses this filter with that precedence and evaluates synthetic events.
+    auth_failures = "jsonPayload.event=\"security\" AND (((jsonPayload.${local.event_field}=\"sign_in\" OR jsonPayload.${local.event_field}=\"step_up\") AND (${local.auth_failure_outcome_clause})) OR jsonPayload.${local.event_field}=\"csrf_failure\" OR jsonPayload.${local.event_field}=\"authz_failure\")"
 
     # S6 7: rate-limit hits. The security event's action is `rate_limit_hit`
     # with outcome `refused` (api/src/limits.rs); `rate_limited` is the S7 4
