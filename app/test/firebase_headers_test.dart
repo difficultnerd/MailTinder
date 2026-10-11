@@ -81,7 +81,7 @@ void main() {
     expect(spaIndex, isNot(-1));
     expect(apiIndex, lessThan(spaIndex));
     final api = rewrites[apiIndex]['run'] as Map<String, Object?>;
-    expect(api['serviceId'], 'api');
+    expect(api['serviceId'], 'mt-api');
     expect(api['region'], 'us-central1');
   });
 }
