@@ -22,8 +22,8 @@ No part of a quoted local part survives redaction, whether the quoted string is 
 ## Algorithm
 
 0. **Reproduce first.** Add the failing row `Mail "private name\"@example.com now` (expected `Mail [email] now`) and run `cargo test -p domain --test redact` to see it fail. Write the observed output in the PR description.
-1. After the quoted-pair pattern, add a fallback `"[^"\n]*@\S+` (an opening quote, any text without a closing quote, then an `@` run) so an unterminated or escaped-closing quote does not stop the match at the quote. Keep the whole thing linear time (the `regex` crate guarantees this) and idempotent.
-2. Do not weaken any existing table row or the committed `redact.proptest-regressions` cases (including `word ®@[𐞀]@ word`).
+1. After the quoted-pair pattern, add a fallback that is itself quoted-pair-aware: `"(?:[^"\\]|\\.)*@\S+` (an opening quote, then any run of ordinary characters or backslash pairs, then an `@` run). The simpler `"[^"\n]*@\S+` does NOT work: its class cannot cross the escaped closing quote, so on `Mail "private name\"@example.com now` it matches only from the escaped quote and leaves `private name\` (review finding D1 of PR #88, reproduced by reading the pattern: it would also regress the row `"\"@x`). Keep the whole thing linear time (the `regex` crate guarantees this) and idempotent.
+2. Do not weaken any existing table row or the committed `redact.proptest-regressions` file (it holds one seed, `word a@[!]@ word`); the earlier counterexample `word ®@[𐞀]@ word` is a table row in `redact.rs`, not a persisted seed: keep that row.
 
 ## Acceptance criteria
 
