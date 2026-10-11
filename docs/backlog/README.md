@@ -170,6 +170,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1108c](T-1108c-demo-phone-access.md) | demo --phone: HTTPS tunnel and access code | M11 | sonnet | T-1108a |
 | [T-1113](T-1113-front-end-hot-reload-dev-mode.md) | Front-end hot-reload dev mode for the demo | M11 | sonnet | T-1108a, T-1108c |
 | [T-1114](T-1114-emit-swipe-undo-metric-events.md) | Emit the swipe, undo and unrecoverable-action metric events | M11 | sonnet | T-307, T-1101b, T-1101e, T-1101f |
+| [T-1107b](T-1107b-monitoring-module-fixes.md) | Monitoring module: fix alert definitions found by review before the first apply | M11 | sonnet | T-1107 |
 | [T-1104b](T-1104b-deploy-preflight-and-path-filter.md) | Deploy workflow: skip cleanly when unconfigured; path filter | M11 | sonnet | T-1104 |
 | [T-1115](T-1115-redaction-hardening.md) | Model input redaction hardening: quoted and bracketed addresses, sender-domain validation | M9 | sonnet | T-903 |
 | [T-1116](T-1116-bootstrap-project-script.md) | One-command project bootstrap (state bucket, first APIs, planner and applier identities) | M11 | strong | T-1102b |
