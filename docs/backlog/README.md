@@ -179,6 +179,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1119](T-1119-service-config-boot-check.md) | Service config boot check: Terraform must set every variable a service requires | M11 | sonnet | T-1102b |
 | [T-1120a](T-1120a-synthetic-mailbox-generator.md) | Synthetic mailbox generator v1 (deterministic, with ground truth) | M11 | sonnet | T-204, T-205a |
 | [T-1120b](T-1120b-gmail-seed-tool.md) | Gmail seed, reset and verify tool for synthetic test mailboxes | M11 | sonnet | T-1120a, T-1106 |
+| [T-1104d](T-1104d-deploy-policy-test-hardening.md) | Harden the deploy workflow policy test (review findings S-1 to S-7 of PR #89) | M11 | sonnet | T-1104b |
 | [T-1115b](T-1115b-redaction-escaped-quote-and-flaky-property.md) | Redaction: escaped quotes in quoted local parts; deterministic `@` property | M9 | sonnet | T-1115 |
 | [T-1115c](T-1115c-swipe-token-clear-type-400.md) | Swipe: unrecognised clear token type is a 400 | M9 | sonnet | T-1114 |
 | [T-1115d](T-1115d-redaction-unterminated-quote.md) | Redaction: unterminated quote with an escaped quote leaves the name prefix | M9 | sonnet | T-1115b |
