@@ -171,12 +171,19 @@ What it holds, directly and transitively:
 ## Deploying and rolling back (T-1104)
 
 `.github/workflows/deploy.yml` builds the three service images once for every
-commit on `main`, deploys them and the web app to staging, runs T-1105's smoke
-workflow against staging, and then promotes the same image digests to
-production after the `production` environment's reviewer approves. Nothing is
-rebuilt for production: the promote job copies the manifest digests staging ran
-into the production repository (`crane`, pinned to one release and checksum
-checked), so the bytes that were smoke tested are the bytes that ship.
+commit on `main`, deploys them and the web app to staging, and then promotes the
+same image digests to production after the `production` environment's reviewer
+approves. Nothing is rebuilt for production: the promote job copies the manifest
+digests staging ran into the production repository (`crane`, pinned to one
+release and checksum checked), so the bytes staging ran are the bytes that ship.
+
+T-1105 owns the staging smoke tests and adds its reusable workflow to the job
+slot in `deploy.yml` marked `# T-1105 adds the smoke job here`; it depends on
+this task, so it is not wired up yet. **Until T-1105 lands that smoke job,
+`deploy-prod` depends on `deploy-staging` alone and the `production`
+environment's required reviewer (James) is the only gate between a staging
+deploy and production** - nothing automatically checks the staging deployment
+before the promotion is approved.
 
 Images are tagged with the commit sha and pushed to
 `us-central1-docker.pkg.dev/<project>/mailtinder/<service>` (T-1102a). Keeping
@@ -214,6 +221,16 @@ gcloud artifacts repositories add-iam-policy-binding mailtinder \
   --member=serviceAccount:mt-deployer@<prod-project>.iam.gserviceaccount.com \
   --role=roles/artifactregistry.reader
 ```
+
+**needs owner (ci.yml).** The grant belongs in the staging root as Terraform
+(`google_artifact_registry_repository_iam_member`, `role =
+"roles/artifactregistry.reader"`, member the production deployer passed in as a
+variable - no project id committed). It is not there yet because the role
+allowlist in `.github/workflows/ci.yml` does not list
+`roles/artifactregistry.reader`, and that workflow is owner-only: the new role
+has to be allowlisted there first, or the `ci-integrity` job fails and the pull
+request cannot merge. The manual command above stays the interim step until the
+owner makes the Terraform and allowlist change together.
 
 Container scanning stays off in CI (CLAUDE.md); if Artifact Registry scanning
 is ever enabled it runs in Google Cloud, and nothing in this pipeline reads its

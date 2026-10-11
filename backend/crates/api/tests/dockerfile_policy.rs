@@ -226,3 +226,171 @@ fn asvs_v13_4_2_dockerfile_builds_release_without_features(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The build context (backend/.dockerignore) must keep every file a manifest
+// names. Cargo loads every workspace manifest before it builds anything, so a
+// `[[test]]`/`[[bench]]`/`[[example]]` target whose file the ignore list strips
+// makes `cargo build -p <service>` fail on manifest loading, and every image
+// build with it. The Dockerfile policy above cannot see that - it reads the
+// Dockerfile, not the ignore list - so this checks the two together.
+// ---------------------------------------------------------------------------
+
+/// Every pattern line of `backend/.dockerignore` (comments and blanks removed).
+fn dockerignore_patterns() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.dockerignore");
+    let text = std::fs::read_to_string(path)?;
+    Ok(text
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect())
+}
+
+/// Every workspace manifest, as a path relative to `backend/`.
+fn workspace_manifests() -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates");
+    let mut out = vec![std::path::PathBuf::from("Cargo.toml")];
+    for entry in std::fs::read_dir(crates)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            out.push(
+                Path::new("crates")
+                    .join(entry.file_name())
+                    .join("Cargo.toml"),
+            );
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The value of a `key = "..."` line, if the line is exactly that assignment.
+///
+/// A hand parser rather than the `toml` crate on purpose: the `api` crate's
+/// manifest is not this task's to change, and the shape read here (a small
+/// `[[table]]` with string `name`/`path`) is all a manifest target needs.
+fn toml_string(line: &str, key: &str) -> Option<String> {
+    let rest = line.strip_prefix(key)?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    rest.find('"').map(|end| rest[..end].to_owned())
+}
+
+/// The targets a manifest declares with `[[test]]`, `[[bench]]` or
+/// `[[example]]`: `(default directory, name, explicit path)`.
+fn declared_targets(text: &str) -> Vec<(&'static str, String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut kind: Option<&'static str> = None;
+    let mut name: Option<String> = None;
+    let mut path: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            if let (Some(directory), Some(target)) = (kind, name.take()) {
+                out.push((directory, target, path.take()));
+            }
+            path = None;
+            kind = match line {
+                "[[test]]" => Some("tests"),
+                "[[bench]]" => Some("benches"),
+                "[[example]]" => Some("examples"),
+                _ => None,
+            };
+        } else if kind.is_some() {
+            if let Some(value) = toml_string(line, "name") {
+                name = Some(value);
+            } else if let Some(value) = toml_string(line, "path") {
+                path = Some(value);
+            }
+        }
+    }
+    if let (Some(directory), Some(target)) = (kind, name.take()) {
+        out.push((directory, target, path));
+    }
+    out
+}
+
+/// Split a `/`-separated path into its non-empty, non-`.` segments.
+fn segments(path: &str) -> Vec<&str> {
+    path.split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect()
+}
+
+/// Match one pattern segment against one path segment: `*` is any run of
+/// characters, and a segment never contains `/`.
+fn segment_matches(pattern: &str, segment: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == segment,
+        Some((head, tail)) => {
+            segment.starts_with(head) && {
+                let rest = &segment[head.len()..];
+                (0..=rest.len())
+                    .any(|n| rest.is_char_boundary(n) && segment_matches(tail, &rest[n..]))
+            }
+        }
+    }
+}
+
+/// Whether a `.dockerignore` pattern matches a path relative to the build
+/// context, where `**` crosses `/` and `*` does not.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    fn rec(pats: &[&str], segs: &[&str]) -> bool {
+        match pats.split_first() {
+            None => true,
+            Some((&"**", rest)) => (0..=segs.len()).any(|skip| rec(rest, &segs[skip..])),
+            Some((pat, rest)) => match segs.split_first() {
+                Some((seg, tail)) => segment_matches(pat, seg) && rec(rest, tail),
+                None => false,
+            },
+        }
+    }
+    let pats = segments(pattern);
+    if pats.is_empty() {
+        return false;
+    }
+    rec(&pats, &segments(path))
+}
+
+/// Whether `path` is excluded by `pattern`, itself or through a parent
+/// directory (a `.dockerignore` entry naming a directory hides everything under
+/// it, which is the shape both the rule and the failure take).
+fn ignored_by(pattern: &str, path: &str) -> bool {
+    let pattern = pattern.trim_end_matches('/');
+    let parts = segments(path);
+    (1..=parts.len()).any(|n| glob_matches(pattern, &parts[..n].join("/")))
+}
+
+/// `.dockerignore` must not hide a file a manifest names: cargo fails to load
+/// the manifest, so the image never builds (F1).
+#[test]
+fn asvs_v13_4_1_dockerignore_keeps_manifest_named_targets() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let patterns = dockerignore_patterns()?;
+    let mut checked = 0_usize;
+    for manifest in workspace_manifests()? {
+        let text = std::fs::read_to_string(root.join(&manifest))?;
+        let directory = manifest.parent().unwrap_or_else(|| Path::new(""));
+        for (kind, name, explicit) in declared_targets(&text) {
+            let file = explicit.unwrap_or_else(|| format!("{kind}/{name}.rs"));
+            let target = directory.join(&file).to_string_lossy().replace('\\', "/");
+            checked += 1;
+            for pattern in &patterns {
+                assert!(
+                    !ignored_by(pattern, &target),
+                    "manifest {} declares the target `{name}` at {target}, but the \
+                     .dockerignore pattern {pattern:?} excludes it: cargo cannot load the \
+                     manifest, so every `cargo build -p <service>` in the image build fails",
+                    manifest.display()
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no manifest-declared `[[test]]`/`[[bench]]`/`[[example]]` target was parsed; the check is not reading the manifests"
+    );
+    Ok(())
+}

@@ -1,8 +1,13 @@
 name: deploy
 
-# T-1104. Every commit on `main` is built once, deployed to staging, smoke
-# tested (T-1105's reusable workflow) and then promoted to production, where the
-# `production` environment's required reviewer (James) has to approve it.
+# T-1104. Every commit on `main` is built once, deployed to staging and then
+# promoted to production, where the `production` environment's required reviewer
+# (James) has to approve it.
+#
+# T-1105 owns the staging smoke tests and adds its reusable workflow to the job
+# slot marked below; it depends on this task, so it is not wired up yet. Until
+# it lands, the required reviewer is the only gate between a staging deploy and
+# production (infra/terraform/README.md, "Deploying and rolling back").
 #
 # Build once, promote by digest: production runs the exact bytes staging
 # tested, and no job rebuilds an image for production (S4 1).
@@ -18,7 +23,7 @@ on:
 
 # One deployment at a time, and a running one is never cancelled: images are
 # pushed in `build`, so a cancelled run could leave staging (or production)
-# pointing at a digest the smoke job never saw.
+# pointing at a digest a later job never saw.
 concurrency:
   group: deploy
   cancel-in-progress: false
@@ -157,19 +162,24 @@ jobs:
         # token is ever printed.
         run: npx --yes firebase-tools@15.33.0 deploy --only hosting --project staging
 
-  # T-1105's reusable workflow: it runs the smoke binary as `mt-smoke` against
-  # this staging deployment. Production waits for it.
-  smoke:
-    name: smoke
-    needs: deploy-staging
-    uses: ./.github/workflows/smoke.yml
+  # T-1105 adds the smoke job here: a reusable workflow that runs the smoke
+  # binary as `mt-smoke` against this staging deployment. `deploy-prod` then
+  # `needs:` it. Until it exists `deploy-prod` depends on `deploy-staging` alone
+  # and the production environment's required reviewer is the only gate before
+  # production (infra/terraform/README.md).
+  #
+  # smoke:
+  #   name: smoke
+  #   needs: deploy-staging
+  #   uses: ./.github/workflows/smoke.yml
 
-  # Promote the digests staging passed to production, after the `production`
-  # environment's reviewer approves the run. Nothing is rebuilt here.
+  # Promote the digests deployed to staging to production, after the
+  # `production` environment's reviewer approves the run. Nothing is rebuilt
+  # here; when T-1105 lands this job also `needs:` the smoke job above.
   deploy-prod:
     name: deploy-prod
     runs-on: ubuntu-latest
-    needs: [build, deploy-staging, smoke]
+    needs: deploy-staging
     # The production WIF provider pins `assertion.environment == 'production'`,
     # and GitHub withholds that claim until the required reviewer (James)
     # approves. Approving is a decision to run these exact images as the
@@ -207,7 +217,7 @@ jobs:
           merge-multiple: true
           path: digests
 
-      - name: Copy the smoke tested digests into the production repository
+      - name: Copy the digests staging ran into the production repository
         # A copy, not a build: the production repository receives the same
         # manifest digest staging ran, so what was tested is what ships.
         # `mt-deployer@<prod>` reads the staging repository (T-1103).
