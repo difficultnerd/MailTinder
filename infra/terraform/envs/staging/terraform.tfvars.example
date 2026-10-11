@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored - never commit a real project id) and
+# fill in the STAGING project (`<name>-staging`), not production. Then, from
+# this directory:
+#
+#   terraform init -backend-config="bucket=<staging-project>-tfstate"
+#   terraform plan
+#   terraform apply
+#
+# The bootstrap steps (staging project, billing link, its own state bucket, the
+# staging OAuth client in Testing mode) are in ../../README.md.
+
+project_id = "REPLACE_WITH_STAGING_PROJECT_ID"
+
+# Same region as production; the Firestore location is permanent once created.
+region = "us-central1"
+
+# Staging's own OAuth client id (Testing mode, James's test users only). Never
+# the production client: each environment presents its own.
+google_oauth_client_id = "REPLACE_WITH_STAGING_OAUTH_CLIENT_ID.apps.googleusercontent.com"
