@@ -24,6 +24,7 @@ A push to `main` runs the deploy pipeline only when deployable files changed, an
 | Change | `.github/workflows/deploy.yml` | `on.push.paths` filter; a first job `configured` and a guard on `build`; plain-language notice |
 | Change | `infra/terraform/README.md` | one sentence in "Deploying" about the skip and the filter; correct the line that claims smoke failures stop the deploy (line 237) until T-1105 exists |
 | Create | `backend/crates/api/tests/deploy_workflow_policy.rs` | the policy test described under 'Tests that must pass' |
+| Change | `tools/ac_coverage_enforced.txt` | add `T-1104b` |
 
 (Workflow files are owner-merged; the builder prepares the PR.)
 
@@ -57,7 +58,7 @@ A push to `main` runs the deploy pipeline only when deployable files changed, an
 - A skipped required status can read as a pass or a fail depending on branch protection: this workflow is not a required check; keep it that way.
 - Do not weaken the WIF conditions or the production reviewer gate. This task only decides WHETHER the pipeline starts.
 - Accepted, unchanged by this task (review F7): the build step's image path contains the staging project id and repository variables are not masked in public Actions logs. Supporting fact (checked in `main`): the staging project id is already committed in `docs/gcp-setup.md` of the public repository (also noted by the review of PR #80, finding F4); it is an identifier, not a credential. S11's publication boundary concerns real IDs of production and secrets; this task adds no new place where one appears.
-- **AC enrolment (review F2, resolved).** `tools/check_ac_coverage.py` only knows IDs from S2/S3/S5/S10/ASVS and collects Rust test names, so this task names no task-local ID, adds no row to `tools/ac_coverage_enforced.txt`, and puts the proofs in a Rust test. If the gate nevertheless complains, fix the task text, not the gate.
+- **AC enrolment (reviews F2 / P1, resolved).** CLAUDE.md requires a merged task's ID to enter `tools/ac_coverage_enforced.txt` in the same pull request: ADD `T-1104b` there. The task names no S2/S3/S5/S10/ASVS ID, so the checker has nothing further to resolve (like T-1103); the behaviours table uses plain numbers (B1 to B5), not ID-shaped labels the checker would report as unknown. The proofs are the Rust tests of `deploy_workflow_policy.rs`; the PR description lists B1 to B5 and shows one mutation test failing (S10 10.4).
 - Do not touch `ci.yml` or other workflows.
 
 ## Out of scope
