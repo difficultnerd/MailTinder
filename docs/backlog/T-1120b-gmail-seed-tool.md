@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | M11 | sonnet | medium: about 400 lines of Python (stdlib) plus tests | T-1120a, T-1106 |
 
-**Read only these spec sections:** `docs/backlog/T-1106-nightly-live-gmail-contract-run.md` (as amended 11 Oct 2026: seeding is by import; `tools/gmail_sandbox_reauth.py` mints the token), `docs/backlog/T-1120a-synthetic-mailbox-generator.md` (manifest format), `backend/crates/adapters-gmail/src/scopes.rs` (scope names). Nothing else is needed.
+**Read only these spec sections:** `docs/backlog/T-1106-nightly-live-gmail-contract-run.md` (as amended by PR #92, 11 Oct 2026: the live account is seeded by `messages.import`, never by sending; `tools/gmail_sandbox_reauth.py` mints the token). Until #92 is merged this task must not start (the picker's dependency on T-1106 enforces that), `docs/backlog/T-1120a-synthetic-mailbox-generator.md` (manifest format), `backend/crates/adapters-gmail/src/scopes.rs` (scope names). Nothing else is needed.
 
 ## Why this task exists
 
@@ -25,28 +25,33 @@ The owner decided (11 Oct 2026) that staging is tested with dedicated test Gmail
 
 ## Algorithm
 
+**Scopes and the no-send boundary.** The tool requests `gmail.modify`, `openid` and `email` only. Google accepts `gmail.modify` for `messages.send` too, so a missing `gmail.send` scope is NOT the boundary: the tool contains no send code path and its HTTP layer REFUSES any request whose path ends in `/messages/send` or `/drafts/send`, which a test proves. If Google rejects `messages.import` with these scopes, STOP and report; do not widen scopes on your own.
+
 Credentials come from the environment (`GMAIL_SEED_CLIENT_ID`, `GMAIL_SEED_CLIENT_SECRET`, `GMAIL_SEED_REFRESH_TOKEN`); a workflow maps the per-account GitHub secret into these names, so the tool never knows which account's secret it holds. Mint an access token (`grant_type=refresh_token`; `invalid_grant` exits with its own code and message "needs re-authorising").
 
-0. **Guard first.** Call `users.getProfile`, lowercase the address, hash it, and refuse (exit 2, no other call) unless the hash equals the registry entry for `--account`. Refuse any manifest message flagged `hostile: true` (T-1120a). Never print an address, token or message body: output is ids, counts and the account NAME only.
-1. **seed:** make sure the label `MT Synthetic` exists (`labels.list`, `labels.create` once). For each manifest message not already present (look up by RFC 822 id: `messages.list` with `q=rfc822msgid:<id>`), call `users.messages.import` with the raw RFC 822 bytes (base64url), `internalDateSource=dateHeader`, `neverMarkSpam=true`, `labelIds` mapped from the manifest labels (`INBOX`, `UNREAD`, plus `MT Synthetic`). Batch with a pause and exponential back-off on 429 and 5xx. Idempotent: a second run imports nothing.
-2. **reset:** for each manifest message found by RFC 822 id: if in trash, `messages.untrash`; then `messages.modify` so its label set equals the manifest baseline (add `INBOX` and `UNREAD` as the manifest says, remove `TRASH`, `SPAM` and any non-baseline label, keep `MT Synthetic`). Never delete. Messages missing from the mailbox are reported; `--reimport-missing` imports them. Messages in the account NOT in the manifest are reported, not touched.
-3. **verify:** compare the mailbox to the manifest (present, label set, trashed or not) and print a JSON summary (`present`, `missing`, `drifted`, `extra` counts and up to 20 ids each); exit 1 on any drift.
+0. **Guard first.** Validate the whole manifest before any write: the header object must match the registry entry (`persona`, `seed`, `slice`) for `--account`, every `Message-ID` must match the generator's `<synth-...@reserved-host>` shape, and every file must carry `X-MT-Synthetic-Corpus` equal to the header's `corpus_hash`. Then call `users.getProfile`, lowercase the address, hash it, and refuse (exit 2, no other call) unless the hash equals the registry entry. Refuse any manifest message flagged `hostile: true` (T-1120a). Output is COUNTS, OUTCOME CODES and the account NAME only. Never print an address, token, message body, subject, Gmail message id, thread id or RFC 822 Message-ID, on any stream or error path.
+1. **seed:** make sure the label `MT Synthetic` exists (`labels.list`, `labels.create` once). For each manifest message not already present (look up by RFC 822 id: `messages.list` with `q=rfc822msgid:<id>` AND `includeSpamTrash=true`, following every page), call `users.messages.import` with the raw RFC 822 bytes (base64url), `internalDateSource=dateHeader`, `neverMarkSpam=true`, `labelIds` mapped from the manifest labels (`INBOX`, `UNREAD`, plus `MT Synthetic`). Batch with a pause and exponential back-off on 429 and 5xx. Idempotent: a second run imports nothing.
+2. **reset:** for each manifest message found by RFC 822 id (`includeSpamTrash=true`, all pages, `format=metadata` reading only `Message-ID` and `X-MT-Synthetic-Corpus`): require exactly ONE match and that it carries the matching `X-MT-Synthetic-Corpus` header; zero matches are `missing`, several or a missing/foreign header are `ambiguous` and are skipped and counted, never modified. If the `MT Synthetic` label has gone missing, recreate it and re-apply it ONLY to messages that carry the header. For each accepted message: if in trash, `messages.untrash`; then `messages.modify` so its label set equals the manifest baseline (add `INBOX` and `UNREAD` as the manifest says, remove `TRASH`, `SPAM` and any non-baseline label, keep `MT Synthetic`). Never delete. Messages missing from the mailbox are reported; `--reimport-missing` imports them. Messages in the account NOT in the manifest are counted as `extra`, never touched and never listed.
+3. **verify:** compare the mailbox to the manifest (present, label set, trashed or not; same lookup rules as reset) and print a JSON summary of COUNTS only (`present`, `missing`, `drifted`, `ambiguous`, `extra`); exit 1 on any drift.
 
 ## Behaviours that must hold
 
 | # | Behaviour |
 | --- | --- |
-| B1 | Without `--apply`, no write call is made (the fake server records zero POST/modify) |
+| B1 | Without `--apply`, no mailbox-mutating request is made: the fake records no label-create, import, untrash, modify, delete or send call (the OAuth token exchange is allowed) |
 | B2 | An unknown account name, or a profile whose address hash is not in the registry, exits 2 before any mailbox call other than `getProfile` |
 | B3 | seed twice imports each message once |
 | B4 | reset after the fake server changed labels, trashed messages and read some restores the baseline exactly; no delete endpoint is ever called |
 | B5 | verify exits 1 on drift and 0 after reset |
 | B6 | 429 and 5xx responses are retried with back-off; `invalid_grant` gives its own exit code |
-| B7 | No output line contains the token, the address, or any message subject or body (tests scan stdout and stderr) |
+| B7 | No output line on stdout, stderr or any error path contains the token, the address, a subject or body, a Gmail message id, a thread id or an RFC 822 Message-ID (tests scan all streams for each of these classes) |
+| B8 | The fake excludes spam and trash from `messages.list` unless `includeSpamTrash=true`; reset finds and restores trashed messages without importing |
+| B9 | A message with the right Message-ID but no `X-MT-Synthetic-Corpus` header is never modified; a manifest whose header disagrees with the registry is refused before any write |
+| B10 | A request to a `/messages/send` or `/drafts/send` path is refused by the tool's HTTP layer |
 
 ## Tests that must pass
 
-`tools/test_gmail_seed.py` for B1 to B7 against a local fake server (no network, no credentials), plus all required checks. The first live run against the real test account is the owner-gated acceptance, recorded in the PR after he has finished the setup in `docs/ONTASK1`/the runbook; it also settles whether `gmail.modify` alone allows `messages.import` (if Google rejects it, add `gmail.insert` to the reauth scopes in a follow-up and say so).
+`tools/test_gmail_seed.py` for B1 to B10 against a local fake server (no network, no credentials), plus all required checks. The first live run against the real test account is the owner-gated acceptance, recorded in the PR after he has finished the setup in `docs/ONTASK1`/the runbook; Google's documentation states `gmail.modify` is accepted for `messages.import`; if the live call is rejected, stop and report.
 
 ## Edge cases and traps
 

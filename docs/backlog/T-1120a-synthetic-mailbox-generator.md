@@ -27,10 +27,11 @@ The only mail data today is the 24 hand-written cases of T-204: right for correc
 ## Rules (non-negotiable)
 
 1. **Deterministic:** an in-tree SplitMix64 generator (about 15 lines); NO new dependency, no `HashMap` iteration order, no wall clock, no `rand`. Same seed and arguments give identical bytes.
-2. **Reserved domains only:** every address and URL host uses `example.com/net/org`, `*.test`, `*.invalid`. Reuse the corpus rule checks that already enforce this (`all_addresses`, `all_urls`); also provide `--domain D` (default none) that replaces `example.com` for sender infrastructure subdomains in the real-account tier. No real brand names, logos or real people.
-3. **Ground truth on every message:** `expected.class` (one of the S3 names `list, bulk_no_header, notice, personal, suspect`), `bulk_score_min/max`, `method` (as `ExpectedMethod`), `reason`, `labels`, `internal_date`, a unique `canary`, and `hostile: bool`.
-4. **Hostile content is flagged:** phishing-style, header-injection, huge-body and odd-encoding cases carry `hostile: true`; `--no-hostile` omits them (the loader for a real account always sets it).
-5. **No send, no network.**
+2. **Reserved domains only (v1 has no exception):** every address and every URL host, in headers AND in text and HTML bodies, uses `example.com/net/org`, `*.test` or `*.invalid`. There is NO `--domain` option in v1; a real-domain tier is a separate owner-approved task with its own parsing, allow-list and egress rules. `Corpus::all_addresses` / `all_urls` are collectors, not validators (`backend/crates/testkit/tests/corpus.rs:55-94` holds the actual check): write a validator in the synth tests that extracts every email address and every `http(s)` URL from every emitted `.eml` (headers, text part, HTML part, including `href` and `src`) and asserts the host is reserved. No real brand names, logos or real people.
+3. **Provenance marker:** every `.eml` carries the header `X-MT-Synthetic-Corpus: <corpus-hash>` (the hash of `SHA256SUMS` at generation) and a `Message-ID` of the form `<synth-<id>@<reserved-host>>`; the seed tool (T-1120b) relies on both. The manifest's first line is a header object `{corpus_hash, persona, seed, slice, generator_version}`.
+4. **Ground truth on every message:** `expected.class` (one of the S3 names `list, bulk_no_header, notice, personal, suspect`), `bulk_score_min/max`, `method` (as `ExpectedMethod`), `reason`, `labels`, `internal_date`, a unique `canary`, and `hostile: bool`.
+5. **Hostile content is flagged:** phishing-style, header-injection, huge-body and odd-encoding cases carry `hostile: true`; `--no-hostile` omits them (the loader for a real account always sets it).
+6. **No send, no network.**
 
 ## Shape (v1)
 
@@ -47,15 +48,16 @@ The only mail data today is the 24 hand-written cases of T-204: right for correc
 | --- | --- |
 | B1 | Same arguments twice give byte-identical output (compare `SHA256SUMS`) |
 | B2 | 5000 messages contain at least 100 of each of the five classes and every bulk band decile has at least 50 |
-| B3 | Every address and URL host is reserved; no `hostile` message appears with `--no-hostile` |
+| B3 | The validator finds every address and URL host (headers, text, HTML `href`/`src`) in every emitted file reserved; no `hostile` message appears with `--no-hostile`; there is no `--domain` option |
 | B4 | Every canary is unique and absent from `Corpus::all_canaries()` (no collision with the T-204 corpus) |
 | B5 | Threads are consistent: every `In-Reply-To` and `References` id exists earlier in the same mailbox |
 | B6 | The demo slice has exactly 500 messages and the same class proportions within 3 points |
+| B8 | Every `.eml` has the `X-MT-Synthetic-Corpus` header equal to the manifest header's `corpus_hash` and a unique `synth-` Message-ID |
 | B7 | Loading the manifest into `fake-google` with `FakeGoogleSeeder::seed` reproduces the message count and labels |
 
 ## Tests that must pass
 
-`backend/crates/testkit/tests/synth_mailbox.rs` covering B1 to B7 (B2 may use 5000 messages if the runtime stays under 20 s; otherwise 2000 with proportional bounds and say so), plus all existing tests and required checks.
+`backend/crates/testkit/tests/synth_mailbox.rs` covering B1 to B8 (B2 may use 5000 messages if the runtime stays under 20 s; otherwise 2000 with proportional bounds and say so), plus all existing tests and required checks.
 
 ## Edge cases and traps
 
@@ -66,7 +68,7 @@ The only mail data today is the 24 hand-written cases of T-204: right for correc
 
 ## Out of scope
 
-Loading into Gmail (T-1120b), the seed workflow (owner-merged follow-up), real-account domains beyond the `--domain` flag, attachments (v2).
+Loading into Gmail (T-1120b), the seed workflow (owner-merged follow-up), any real-domain tier, attachments (v2).
 
 ## Done when
 
