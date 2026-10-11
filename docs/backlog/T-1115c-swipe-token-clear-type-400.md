@@ -4,6 +4,8 @@
 | --- | --- | --- | --- |
 | M9 | sonnet | tiny: about 10 lines of code plus tests | T-1114 |
 
+**Acceptance IDs:** BAKE-5 (S10 `docs/specs/S10-test-strategy.md:335`, test `bake_5_sealed_token_carries_both`); not SW-05 (that is Undo in S2).
+
 **Read only these spec sections:** S7 section 5.5 and the swipe request row (`docs/specs/S7-api-contract.md:390`). Nothing else is needed.
 
 **Why this task exists (verified 11 Oct 2026 from `main`; review finding N1 of PR #20).** S7 says: "`classification_token` is required. If its clear type field is not `classification`, the server returns `400 invalid_request`. Any other failure to open it (an earlier session, expiry or tampering) is not an error." The code does not do that for an unrecognised type name:
@@ -31,8 +33,8 @@ A well-formed token (prefix and four parts) whose clear type is anything other t
 
 | ID | Behaviour (one line) |
 | --- | --- |
-| SW-05 | A token whose clear type is not `classification` (known other type or an unknown name) gets `400 invalid_request` naming `classification_token` |
-| SW-05 | A token that is expired, from an earlier session, tampered inside the ciphertext or structurally malformed (wrong prefix or part count) still proceeds with no `classifier_eval` record |
+| BAKE-5 | A token whose clear type is not `classification` (known other type or an unknown name) gets `400 invalid_request` naming `classification_token` |
+| BAKE-5 | A token that is expired, from an earlier session, tampered inside the ciphertext or structurally malformed (wrong prefix or part count) still proceeds with no `classifier_eval` record |
 
 ## Tests that must pass
 
