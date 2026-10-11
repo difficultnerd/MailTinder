@@ -731,6 +731,56 @@ async fn asvs_v9_2_2_undo_token_as_classification_refused() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn bake_5_unknown_clear_type_is_invalid_request() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let id = w.seed(&w.primary, "alice", 10);
+    let token = w.classification_token(&session, id.as_str(), 3600).await?;
+    let parts: Vec<&str> = token.splitn(4, '.').collect();
+    // A well-formed token (prefix and four parts) whose clear type is not
+    // `classification` is a client error: 400 invalid_request naming the token
+    // field (S7 5.5, BAKE-5). An unrecognised name is the same 400 as a known
+    // token of another type, not a silently accepted token.
+    let unknown = format!("{}.foo.{}.{}", parts[0], parts[2], parts[3]);
+    let other = format!("{}.undo.{}.{}", parts[0], parts[2], parts[3]);
+    for clear_type in [unknown, other] {
+        let mut req = w.request(&session, &id, ActionDto::Keep, None).await?;
+        req.classification_token = clear_type;
+        let err = err_of(w.swipe(&session, 1, req).await);
+        assert_eq!(
+            err,
+            ApiError::InvalidRequest {
+                fields: vec!["classification_token".to_owned()],
+            }
+        );
+    }
+    // Neither refusal applied the action.
+    assert!(w.labels_of(&id).is_some_and(|l| l.contains("INBOX")));
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn bake_5_malformed_token_shape_swipe_proceeds() -> TestResult {
+    let w = World::new().await?;
+    let session = w.session(1);
+    let id = w.seed(&w.primary, "alice", 10);
+    let token = w.classification_token(&session, id.as_str(), 3600).await?;
+    let parts: Vec<&str> = token.splitn(4, '.').collect();
+    // Garbage that is not token-shaped keeps the "proceed" behaviour: the type
+    // check runs only after the prefix and part-count checks (S7 5.5, BAKE-5).
+    let wrong_prefix = format!("mt0.{}.{}.{}", parts[1], parts[2], parts[3]);
+    let wrong_count = format!("{}.{}.{}", parts[0], parts[1], parts[2]);
+    for (key, malformed) in [(1_u128, wrong_prefix), (2_u128, wrong_count)] {
+        let mut req = w.request(&session, &id, ActionDto::Keep, None).await?;
+        req.classification_token = malformed;
+        // Not an error, and no eval record is written.
+        let result = w.swipe(&session, key, req).await?;
+        assert_eq!(result.outcome, SwipeOutcome::Kept);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Idempotency and ownership
 // ---------------------------------------------------------------------------
