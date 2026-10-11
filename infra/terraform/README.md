@@ -137,11 +137,11 @@ locked default. Once staging is applied, record its Hosting URL
   with their display names. Override `vertex_billing_service` in
   `terraform.tfvars` if the catalogue has moved; the module rejects an API
   hostname in that variable.
-- `firebase.json` names the Hosting `/api/**` rewrite target `serviceId: "api"`,
-  but the runtime module creates the Cloud Run service as `mt-api`. Known
-  follow-up (review F5): T-1107's file list does not include `firebase.json`, so
-  it was left as it is and needs an owner decision (fix the rewrite, or align
-  the service name).
+- `firebase.json` names the Hosting `/api/**` rewrite target
+  `serviceId: "mt-api"`, which is the Cloud Run service the runtime module
+  creates. T-1107 left it as `"api"` (review F5); T-1104b aligned the rewrite
+  with the Terraform name and with the `gcloud run deploy "mt-${svc}"` target in
+  `deploy.yml`.
 - The `terraform` CI job runs `init`/`validate`/`test` for `modules/foundation`
   and `modules/runtime`, and `init`/`validate` for both roots, but **not**
   `modules/monitoring`. Its `tests/monitoring.tftest.hcl` suite therefore does
@@ -224,6 +224,15 @@ environment's required reviewer (James) is the only gate between a staging
 deploy and production** - nothing automatically checks the staging deployment
 before the promotion is approved.
 
+The workflow starts only for a push to `main` that can change a deployed
+artifact (`on.push.paths`: `backend/**`, `app/**`, `firebase.json`,
+`.firebaserc` and the workflow itself - it deploys with `--image` only and never
+applies Terraform, so nothing under `infra/` is deployable here), and its first
+job `configured` ends the run GREEN-SKIPPED with one warning until the staging
+variables below are set instead of failing on every push; a manual
+`workflow_dispatch` is never filtered and always fails while they are unset
+(T-1104b).
+
 Images are tagged with the commit sha and pushed to
 `us-central1-docker.pkg.dev/<project>/mailtinder/<service>` (T-1102a). Keeping
 every image is the default while S11 is open: nothing prunes Artifact Registry.
@@ -231,6 +240,11 @@ Cloud Run is deployed with `--image` only, so Terraform keeps owning the
 environment variables, the service accounts and the scaling.
 
 GitHub repository variables the workflow reads, all set by James:
+
+**The `configured` job names no environment on purpose (it holds no WIF token
+there), and a job without an environment cannot see an environment-scoped
+variable - so all of these have to be *repository* variables, not variables
+scoped to the `staging` or `production` environment.**
 
 | Variable | What it is |
 | --- | --- |
@@ -240,6 +254,7 @@ GitHub repository variables the workflow reads, all set by James:
 | `PROD_PROJECT` | the production project id (T-1102b) |
 | `PROD_WIF_PROVIDER` | the production Workload Identity provider resource name |
 | `PROD_DEPLOYER` | the production `mt-deployer` service account email |
+| `DEPLOY_ENABLED` | set to `true` after the first successful staging deploy (T-1104b): a missing staging variable then fails the run loudly, naming it, instead of skipping the deploy quietly |
 | `STAGING_URL` | the staging Hosting URL (T-1105 reads it) |
 
 GitHub environments, and why each deploy job must name one:
@@ -273,8 +288,9 @@ owner makes the Terraform and allowlist change together.
 
 Container scanning stays off in CI (CLAUDE.md); if Artifact Registry scanning
 is ever enabled it runs in Google Cloud, and nothing in this pipeline reads its
-findings. Smoke failures stop the deploy and GitHub notifies the committer
-(S11 default).
+findings. There is no smoke test yet (T-1105), so nothing automatically stops a
+bad staging deployment before the promotion: the `production` environment's
+required reviewer is the only gate between staging and production.
 
 ### Rolling back
 
