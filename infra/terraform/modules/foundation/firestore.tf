@@ -1,9 +1,16 @@
 # Firestore (S4 1, S6 5). Native mode in var.region; the location is permanent
 # once created, so it is never changed or fallen back from.
 #
-# No backups and no point-in-time recovery: the trial runs with none, so no
-# older copy of a wrapped `data_key` survives account deletion (S6 5,
-# crypto-shredding, DEL-2; James, 4 October 2026).
+# D1 owner decision (James, 4 October 2026): immediate crypto-shredding, with no
+# point-in-time recovery and no backup schedule, so there is no recovery window
+# and no recoverable copy outlives the deletion. That is what the settings below
+# implement - but it does not make a deletion instantly irrecoverable, and this
+# comment does not claim it does. Firestore still serves reads of a document's
+# *historical* versions for about an hour even with PITR disabled, and Cloud KMS
+# keeps earlier KEK versions usable, so a wrapped-`data_key` copy read within
+# that window can still be unwrapped. The honest boundary is the KMS key version
+# plus that ~1 hour historical-read window, not the deletion of a single
+# document (S6 5, crypto-shredding, DEL-2).
 resource "google_firestore_database" "default" {
   project                           = var.project_id
   name                              = "(default)"

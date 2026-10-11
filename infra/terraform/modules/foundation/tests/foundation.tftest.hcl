@@ -259,7 +259,7 @@ run "log_bucket_90_days_locked_in_region" {
       !strcontains(google_logging_project_sink.app.filter, "cloud_scheduler_job") &&
       strcontains(google_logging_project_sink.app.filter, "NOT logName:\"run.googleapis.com%2Frequests\"")
     )
-    error_message = "the sink must route application stdout/stderr only, keep the Cloud Run request log out (request URL and client IP, S5 88-90), and leave platform Cloud Tasks/Scheduler logs out of the locked bucket (review F3, F7)"
+    error_message = "the sink must route the Cloud Run revision entries - the application's stdout/stderr and the Cloud Run platform/system entries that share that resource type, not stdout/stderr alone - keep the Cloud Run request log out (request URL and client IP, S5 88-90), and leave platform Cloud Tasks/Scheduler logs out of the locked bucket (review F3, F7)"
   }
 
   assert {
@@ -289,12 +289,19 @@ run "audit_logs_are_routed_to_the_locked_bucket" {
     error_message = "the audit sink must stay enabled and target the locked mailtinder-logs bucket exactly (V16.4.2, review D1, D2)"
   }
 
+  # EXACT filter, not a substring probe (review D2). A substring check passes
+  # while extra clauses are appended - e.g. `... AND severity=ERROR AND
+  # severity=INFO` makes the filter match no entry yet still contains both
+  # expected fragments. Pinning the whole string means any edit to the sink's
+  # filter (adding, dropping or reordering a clause) fails here. The expected
+  # string is the canonical filter; the second clause records the D2 mutation
+  # and proves this assertion rejects it.
   assert {
     condition = (
-      strcontains(google_logging_project_sink.audit.filter, "logName:\"cloudaudit.googleapis.com\"") &&
-      strcontains(google_logging_project_sink.audit.filter, "protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\"")
+      google_logging_project_sink.audit.filter == "logName:\"cloudaudit.googleapis.com\" AND (protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\")" &&
+      google_logging_project_sink.audit.filter != "logName:\"cloudaudit.googleapis.com\" AND (protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\") AND severity=ERROR AND severity=INFO"
     )
-    error_message = "the audit sink must select cloudaudit entries and OR the KMS and Secret Manager services together; dropping either service or replacing OR with AND must fail (review D2)"
+    error_message = "the audit sink filter must be exactly the canonical cloudaudit filter for KMS-or-Secret-Manager; appending extra clauses (e.g. AND severity=...) must fail (review D2)"
   }
 
   # The Data Access categories the sink can route: KMS and Secret Manager must

@@ -168,12 +168,16 @@ guard edited so it no longer rejects its fixture fails the job.
   `google_project_iam_*` resource must be one of the three project-scope roles
   this work uses (`roles/datastore.user`, `roles/aiplatform.user`,
   `roles/firebasehosting.admin`), so an otherwise-allowed role cannot be widened
-  from a resource to the whole project; and every
-  `google_cloud_run_v2_service_iam_*` binding is pinned by its **type, module
-  file, target service, role and principal** - not just its label - so a second
-  `api_public` elsewhere, a binding re-pointed at an internal service, a widened
-  role or a swapped principal all fail, and no extra invoker can reach an
-  internal service (V12.3.3, V13.2.2).
+  from a resource to the whole project; and every binding that grants
+  `roles/run.invoker` (or the deployer's `roles/run.developer`) is pinned by its
+  **type, module file, target service, role and principal** - not just its
+  label - in *any* Cloud Run IAM resource family, v1
+  (`google_cloud_run_service_iam_*`) as well as v2
+  (`google_cloud_run_v2_service_iam_*`), and `_binding`/`_policy` as well as
+  `_member`. So a second `api_public` elsewhere, a v1 binding on a v2-created
+  service, a binding re-pointed at an internal service, a widened role or a
+  swapped principal all fail, and no extra invoker can reach an internal service
+  (V12.3.3, V13.2.2).
 - two narrower checks back the allowlist up: `roles/iam.serviceAccountTokenCreator`
   is never allowed, and `roles/iam.serviceAccountUser` (`actAs`) is allowed only
   on an individual service account, never on the project. Only `api_public` may

@@ -330,56 +330,53 @@ jobs:
           fi
 
           # cloud_run_iam_guard(): roles/run.invoker is allowlisted globally, so
-          # an added service_iam_member on `unsub` or `worker` would pass both
-          # the allowlist and the allUsers guard (which watches allUsers only).
-          # Pin every Cloud Run service IAM binding by *type*, module file,
-          # target service, role and principal, so a duplicate label elsewhere
-          # (e.g. a second `api_public` in a root granting public invoker on
-          # `unsub`), a widened role, or a switched target all fail
-          # (V12.3.3, V13.2.2, F6). A function so the self-tests reuse it.
+          # an added IAM binding on `unsub` or `worker` would pass both the
+          # allowlist and the allUsers guard (which watches allUsers only). The
+          # only legitimate way to grant it is one of the four pinned bindings,
+          # so every binding that grants roles/run.invoker (or the deployer's
+          # roles/run.developer) is pinned here by *type*, module file, target
+          # service, role and principal - in ANY Cloud Run IAM resource family.
+          # A v1 `google_cloud_run_service_iam_member` (or `_binding`/`_policy`)
+          # on a v2-created service, a duplicate label elsewhere, a widened role
+          # or a switched target all fail (V12.3.3, V13.2.2, F6). A function so
+          # the self-tests reuse it.
           cloud_run_iam_guard() {
             [ "$#" -gt 0 ] || return 1
             awk '
               function reset() {
                 type = ""; label = ""; fname = ""; nameexpr = ""; roleval = ""; member = ""
+                invoker = 0; developer = 0
               }
-              function check(   ef, er, en) {
-                if (type !~ /^google_cloud_run_v2_service_iam_/) return
-                if (type != "google_cloud_run_v2_service_iam_member") {
-                  print fname ": unexpected Cloud Run IAM resource type " type
-                  bad = 1
-                  return
-                }
+              function check(   etype, ef, er, en, m_ok, m_msg) {
+                if (!invoker && !developer) return
                 if (label == "api_public") {
-                  ef = "modules/runtime/cloud_run\\.tf$"
-                  er = "roles/run.invoker"
-                  en = "google_cloud_run_v2_service.api.name"
-                  if (member !~ /"allUsers"/) { print fname " " label ": principal is not allUsers"; bad = 1 }
+                  etype = "google_cloud_run_v2_service_iam_member"
+                  ef = "modules/runtime/cloud_run\\.tf$"; er = "roles/run.invoker"; en = "google_cloud_run_v2_service.api.name"
+                  m_ok = (member ~ /"allUsers"/); m_msg = "principal is not allUsers"
                 } else if (label == "unsub_tasks_invoker") {
-                  ef = "modules/runtime/cloud_run\\.tf$"
-                  er = "roles/run.invoker"
-                  en = "google_cloud_run_v2_service.unsub.name"
-                  if (!(index(member, "tasks_invoker") && index(member, "serviceAccount:"))) { print fname " " label ": principal is not the tasks-invoker identity"; bad = 1 }
+                  etype = "google_cloud_run_v2_service_iam_member"
+                  ef = "modules/runtime/cloud_run\\.tf$"; er = "roles/run.invoker"; en = "google_cloud_run_v2_service.unsub.name"
+                  m_ok = (index(member, "tasks_invoker") && index(member, "serviceAccount:")); m_msg = "principal is not the tasks-invoker identity"
                 } else if (label == "worker_scheduler_invoker") {
-                  ef = "modules/runtime/cloud_run\\.tf$"
-                  er = "roles/run.invoker"
-                  en = "google_cloud_run_v2_service.worker.name"
-                  if (!(index(member, "scheduler_invoker") && index(member, "serviceAccount:"))) { print fname " " label ": principal is not the scheduler-invoker identity"; bad = 1 }
+                  etype = "google_cloud_run_v2_service_iam_member"
+                  ef = "modules/runtime/cloud_run\\.tf$"; er = "roles/run.invoker"; en = "google_cloud_run_v2_service.worker.name"
+                  m_ok = (index(member, "scheduler_invoker") && index(member, "serviceAccount:")); m_msg = "principal is not the scheduler-invoker identity"
                 } else if (label == "deployer_run_developer") {
-                  ef = "modules/runtime/deploy_identity\\.tf$"
-                  er = "roles/run.developer"
-                  en = "each.value"
-                  if (!(index(member, "serviceAccount:") && index(member, "deployer"))) { print fname " " label ": principal is not the deployer identity"; bad = 1 }
+                  etype = "google_cloud_run_v2_service_iam_member"
+                  ef = "modules/runtime/deploy_identity\\.tf$"; er = "roles/run.developer"; en = "each.value"
+                  m_ok = (index(member, "serviceAccount:") && index(member, "deployer")); m_msg = "principal is not the deployer identity"
                 } else {
-                  print fname ": unexpected Cloud Run IAM binding label " label
+                  print fname ": run.invoker/run.developer granted by an unpinned binding " label " (type " type ")"
                   bad = 1
                   return
                 }
+                if (type != etype) { print fname " " label ": resource type " type " is not " etype " (v1, or a _binding/_policy family, is not allowed here)"; bad = 1 }
                 if (fname !~ ef) { print fname " " label ": binding is outside its pinned module file"; bad = 1 }
                 if (roleval != er) { print fname " " label ": role " roleval " is not " er; bad = 1 }
                 if (nameexpr != en) { print fname " " label ": target " nameexpr " is not " en; bad = 1 }
+                if (!m_ok) { print fname " " label ": " m_msg; bad = 1 }
               }
-              /^[[:space:]]*resource[[:space:]]+"/ {
+              /^[[:space:]]*resource[[:space:]]+\"/ {
                 check()
                 reset()
                 split($0, parts, "\"")
@@ -390,19 +387,29 @@ jobs:
               }
               /^}/ { check(); reset(); next }
               {
-                if (type ~ /^google_cloud_run_v2_service_iam_/) {
+                if (type != "") {
                   t = $0
                   sub(/[[:space:]]*#.*/, "", t)
+                  if (t ~ /^[[:space:]]*role[[:space:]]*=/) {
+                    split(t, rp, "\"")
+                    roleval = rp[2]
+                    if (roleval == "roles/run.invoker") invoker = 1
+                    if (roleval == "roles/run.developer") developer = 1
+                  }
+                  if (t ~ /^[[:space:]]*roles[[:space:]]*=/) {
+                    n = split(t, rp, "\"")
+                    for (i = 2; i <= n; i += 2) {
+                      if (rp[i] == "roles/run.invoker") invoker = 1
+                      if (rp[i] == "roles/run.developer") developer = 1
+                    }
+                    if (roleval == "" && n >= 2) roleval = rp[2]
+                  }
                   if (t ~ /^[[:space:]]*name[[:space:]]*=/) {
                     nameexpr = t
                     sub(/^[^=]*=[[:space:]]*/, "", nameexpr)
                     sub(/[[:space:]]*,?[[:space:]]*$/, "", nameexpr)
-                  } else if (t ~ /^[[:space:]]*role[[:space:]]*=/) {
-                    split(t, roleparts, "\"")
-                    roleval = roleparts[2]
-                  } else if (t ~ /^[[:space:]]*member[[:space:]]*=/) {
-                    member = t
                   }
+                  if (t ~ /^[[:space:]]*member[[:space:]]*=/) member = t
                 }
               }
               END { check(); exit bad ? 1 : 0 }
@@ -410,9 +417,9 @@ jobs:
           }
 
           if bad=$(cloud_run_iam_guard "${tf_files[@]}"); then
-            echo "OK   every Cloud Run service IAM binding is the pinned (type, file, service, role, principal)"
+            echo "OK   every Cloud Run invoker/developer binding is the pinned (type, file, service, role, principal)"
           else
-            echo "FAIL an unexpected or mis-targeted Cloud Run service IAM binding (V12.3.3, V13.2.2, F6):"
+            echo "FAIL an unexpected or mis-targeted Cloud Run IAM binding (V12.3.3, V13.2.2, F6):"
             printf '%s\n' "$bad"
             fail=1
           fi
@@ -439,26 +446,50 @@ jobs:
           # must sit inside the service's own `ignore_changes` list: counting
           # occurrences anywhere in the file would let a stray comment (or a
           # second line) inflate the count and mask a service whose ignore list
-          # is missing. Every HCL comment form - `#`, `//`, and `/* ... */`
-          # including across lines - is stripped before the list is read, so a
-          # traversal hidden inside any of them is not counted (review F10). A
-          # function so the self-tests reuse it.
-          image_guard() { # prints "<services that ignore the image> <services>"
+          # is missing. The comment stripper is string- and heredoc-aware: `#`,
+          # `//` and `/* ... */` are only comments *outside* a quoted string or
+          # heredoc, so a `"/*"` in a string cannot open a comment that swallows
+          # a whole service (review F10). The service labels are emitted too, so
+          # the caller can pin the expected service set, not just a count.
+          image_guard() { # prints "<services that ignore the image> <services> <labels>"
             [ "$#" -gt 0 ] || return 1
             awk '
-              BEGIN { blk = 0 }
+              BEGIN { blk = 0; in_str = 0; here = "" }
               {
-                line = $0; out = ""; i = 1
-                while (i <= length(line)) {
+                # A heredoc body is string material, not code: drop it so nothing
+                # inside it is read as HCL.
+                if (here != "") {
+                  if ($0 ~ ("^[[:space:]]*" here "[[:space:]]*$")) here = ""
+                  print ""
+                  next
+                }
+                line = $0; out = ""; i = 1; n = length(line)
+                while (i <= n) {
+                  c1 = substr(line, i, 1); c2 = substr(line, i, 2)
+                  if (in_str) {
+                    if (c1 == "\\") { out = out c2; i += 2; continue }
+                    if (c1 == "\"") in_str = 0
+                    out = out c1; i++; continue
+                  }
                   if (blk) {
                     p = index(substr(line, i), "*/")
-                    if (p == 0) { i = length(line) + 1; continue }
+                    if (p == 0) { i = n + 1; continue }
                     i = i + p + 1; blk = 0; continue
                   }
-                  c2 = substr(line, i, 2); c1 = substr(line, i, 1)
                   if (c2 == "/*") { blk = 1; i += 2; continue }
                   if (c2 == "//") break
                   if (c1 == "#") break
+                  if (c1 == "\"") { in_str = 1; out = out c1; i++; continue }
+                  if (c2 == "<<") {
+                    r = substr(line, i + 2)
+                    sub(/^-/, "", r)
+                    if (match(r, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+                      here = substr(r, RSTART, RLENGTH)
+                      out = out c2 r
+                      i = n + 1
+                      continue
+                    }
+                  }
                   out = out c1; i++
                 }
                 print out
@@ -466,6 +497,8 @@ jobs:
             ' "$1" | awk '
               /^[[:space:]]*resource[[:space:]]+"google_cloud_run_v2_service"[[:space:]]+"/ {
                 if (seen) { total++; if (has) good++ }
+                split($0, rp, "\"")
+                if (rp[4] != "") labels[rp[4]] = 1
                 seen = 1; has = 0; in_ign = 0; next
               }
               /^[[:space:]]*resource[[:space:]]+"/ {
@@ -478,17 +511,25 @@ jobs:
                 if (seen && in_ign && line ~ /template\[0\]\.containers\[0\]\.image/) has = 1
                 if (seen && in_ign && line ~ /\]/) in_ign = 0
               }
-              END { if (seen) { total++; if (has) good++ } print good + 0, total + 0 }
+              END {
+                if (seen) { total++; if (has) good++ }
+                lab = ""
+                for (l in labels) lab = lab (lab == "" ? "" : ",") l
+                print good + 0, total + 0, lab
+              }
             '
           }
 
           img=$(image_guard modules/runtime/cloud_run.tf)
-          good=${img% *}
-          total=${img#* }
-          if [ "${total:-0}" -ge 1 ] && [ "${good:-0}" -eq "${total:-0}" ]; then
-            echo "OK   every Cloud Run service ignores the container image inside ignore_changes"
+          read -r good total labels <<<"$img"
+          # Verify the expected service set as well as the count: a comment that
+          # swallowed a service would drop `total`, and the label pin makes the
+          # missing service unmistakable (review F10).
+          labels_sorted=$(printf '%s\n' ${labels//,/ } | sort | paste -sd, -)
+          if [ "${total:-0}" -eq 3 ] && [ "${good:-0}" -eq "${total:-0}" ] && [ "${labels_sorted:-}" = "api,unsub,worker" ]; then
+            echo "OK   every Cloud Run service (api, unsub, worker) ignores the container image inside ignore_changes"
           else
-            echo "FAIL image ignore_changes: ${good:-0} of ${total:-0} Cloud Run services (T-1102b)"
+            echo "FAIL image ignore_changes: ${good:-0} of ${total:-0} Cloud Run services (${labels:-none}) (T-1102b)"
             fail=1
           fi
 
@@ -508,8 +549,11 @@ jobs:
             role_conditional/main.tf \
             dup_api_public_root/envs/prod/main.tf \
             dup_api_public_wrong_service/modules/runtime/cloud_run.tf \
+            run_invoker_v1_unsub/main.tf \
+            run_invoker_v1_pinned/modules/runtime/cloud_run.tf \
             image_ignore_slash_comment/main.tf \
-            image_ignore_block_comment/main.tf; do
+            image_ignore_block_comment/main.tf \
+            image_string_comment/main.tf; do
             if [ ! -f "$neg/$fixture" ]; then
               echo "FAIL guard self-test: missing negative fixture $neg/$fixture"
               fail=1
@@ -525,23 +569,33 @@ jobs:
             echo "OK   guard self-test: the scalar-role guard rejects a conditional role expression"
           fi
 
-          if out=$(cloud_run_iam_guard \
-              "$neg/dup_api_public_root/envs/prod/main.tf" \
-              "$neg/dup_api_public_wrong_service/modules/runtime/cloud_run.tf") || [ -z "$out" ]; then
-            echo "FAIL guard self-test: the Cloud Run IAM guard did not reject a duplicate public invoker on unsub"
-            fail=1
-          else
-            echo "OK   guard self-test: the Cloud Run IAM guard rejects a duplicate public invoker on unsub"
-          fi
+          # Every way to grant run.invoker that must be rejected: a duplicate
+          # public invoker in a root and in the module, a v1 resource type on a
+          # v2-created service under a fresh label, and the same v1 type with the
+          # pinned label (so the type pin alone rejects it). All four are fed
+          # (review F6).
+          for fixture in \
+            dup_api_public_root/envs/prod/main.tf \
+            dup_api_public_wrong_service/modules/runtime/cloud_run.tf \
+            run_invoker_v1_unsub/main.tf \
+            run_invoker_v1_pinned/modules/runtime/cloud_run.tf; do
+            if out=$(cloud_run_iam_guard "$neg/$fixture") || [ -z "$out" ]; then
+              echo "FAIL guard self-test: the Cloud Run IAM guard did not reject $fixture"
+              fail=1
+            else
+              echo "OK   guard self-test: the Cloud Run IAM guard rejects $fixture"
+            fi
+          done
 
-          # A read image guard reports "<ignored> <services>". A fixture with no
-          # service at all (total 0) means the fixture could not be read, which
-          # must fail too; otherwise a service that ignores the image (good ==
-          # total) is the regression we are testing for.
-          for fixture in image_ignore_slash_comment image_ignore_block_comment; do
+          # A read image guard reports "<ignored> <services> <labels>". A fixture
+          # with no service at all (total 0) means the fixture could not be read,
+          # which must fail too; otherwise a service that ignores the image
+          # (good == total) is the regression we are testing for. The
+          # string-comment fixture in particular must still count all three
+          # services (a non-string-aware stripper swallows one and passes).
+          for fixture in image_ignore_slash_comment image_ignore_block_comment image_string_comment; do
             fx=$(image_guard "$neg/$fixture/main.tf")
-            good=${fx% *}
-            total=${fx#* }
+            read -r good total labels <<<"$fx"
             if [ "${total:-0}" -eq 0 ] || [ "${good:-0}" -eq "${total:-0}" ]; then
               echo "FAIL guard self-test: the image guard did not reject $fixture (a commented traversal treated as ignored)"
               fail=1
