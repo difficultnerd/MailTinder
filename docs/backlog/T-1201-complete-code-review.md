@@ -52,6 +52,8 @@ Instead, freeze a tag at code complete, then run **one review batch per area**, 
 
 **The reviewer for each batch must be named, and must not be the author of the artefact under review.** A batch whose subject is DeepSeek-written code may be reviewed by Claude. A batch whose subject is Claude-written (the app, S11, and the standards) must be reviewed by a third model or a human.
 
+**Owner decision 2026-10-11:** the reviewer for ALL nine batches is **Gemini** (Google), paid from the credit on the billing account of the staging project. Gemini wrote none of the product code, the specs or the register, so it is independent of every author; it also costs none of the Claude weekly quota. The Reviewer column below is the original plan and applies only if Gemini is unavailable. Method additions: each batch runs two passes (find, then try to refute every High and Medium against the code), and every High that survives gets a second opinion from a different model family before a fix is written. The harness records the model id, the prompt hash and the commit for every batch (`state/gemini-review/<batch>/`), and the deduplicated register is `docs/security/review-register-T1201.md`.
+
 | Batch | Area | Spec | Reviewer |
 | --- | --- | --- | --- |
 | 1 | Domain model and invariants | S3 | Claude |
