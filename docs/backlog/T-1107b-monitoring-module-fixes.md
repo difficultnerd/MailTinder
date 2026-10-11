@@ -21,7 +21,7 @@ The monitoring module's alerts count what they claim to count and can be created
 | Action | Path | What |
 | --- | --- | --- |
 | Change | `infra/terraform/modules/monitoring/metrics.tf` | N1: name the failure outcomes explicitly (a positive list) instead of excluding two success codes |
-| Change | `infra/terraform/modules/monitoring/uptime.tf` | N2: group by `metric.label.check_id` (or drop the group-by if a single-series reduction is intended) and select only this module's checks |
+| Change | `infra/terraform/modules/monitoring/uptime.tf` | N2: group by EXACTLY `metric.label.check_id` (an empty `group_by_fields` is NOT acceptable: it would reduce both probe paths into one series and let two failures at one location trip a threshold meant per path; review finding F2 of PR #87) and select only this module's checks |
 | Change | `infra/terraform/envs/staging/main.tf`, `envs/prod/main.tf` | N3: `depends_on = [module.foundation]` on `module "monitoring"` |
 | Change | `infra/terraform/modules/monitoring/tests/monitoring.tftest.hcl` | assertions that fail when each behaviour is removed |
 
@@ -29,7 +29,7 @@ The monitoring module's alerts count what they claim to count and can be created
 
 ## Algorithm
 
-1. **N1.** Failure outcomes are the codes in `outcome.rs` that mean a refused or failed attempt: `not_invited`, `not_registered`, `invite_invalid`, `email_mismatch`, `email_unverified`, `mailbox_linked_elsewhere`, `step_up_wrong_account`, `consent_blocked`, `cancelled`, `failed`. Use a positive filter on those for `sign_in` and `step_up`, and keep `csrf_failure` and `authz_failure` as they are (every event of those actions is a failure). Do not list success codes anywhere. Keep the list in one `local` with a comment naming `outcome.rs`.
+1. **N1.** Failure outcomes are the codes in `outcome.rs` that mean a refused or failed attempt: `not_invited`, `not_registered`, `invite_invalid`, `email_mismatch`, `email_unverified`, `mailbox_linked_elsewhere`, `step_up_wrong_account`, `consent_blocked`, `cancelled`, `failed`, AND `state_invalid` (logged by `state_invalid()` at `auth/callback.rs:812-816` as `event(.., "sign_in", "state_invalid", ..)`, a failure outcome that is not an `Outcome` variant: review finding F1 of PR #87). The source of truth is every outcome string passed to `event(.., "sign_in"|"step_up", <outcome>, ..)` under `backend/crates/api/src/auth/`, not only `Outcome::code()`. Use a positive filter on those for `sign_in` and `step_up`, and keep `csrf_failure` and `authz_failure` as they are (every event of those actions is a failure). Do not list success codes anywhere. Keep the list in one `local` with a comment naming `outcome.rs`.
 2. **N2.** Replace the group-by with `metric.label.check_id` and constrain the filter to the two created checks (`metric.label.check_id = one_of(<the ids exposed by the uptime check resources>)`); if the intent is one series per probe path, group by the check id; document the choice in a comment.
 3. **N3.** Add the `depends_on` on the module call in both roots (staging and prod).
 4. Do not change thresholds, durations, notification routing or any IAM. Do not touch `ci.yml` (finding F2 of PR #82, 'run the monitoring tests in CI', needs an owner-merged `ci.yml` change and is a separate item).
@@ -45,8 +45,8 @@ The monitoring module's alerts count what they claim to count and can be created
 ## Tests that must pass
 
 - `terraform fmt -check`, `validate` and `terraform test` for `modules/monitoring` and both roots.
-- New assertions in `monitoring.tftest.hcl`: MON-1 (every failure code appears in the filter, none of `signed_in`, `stepped_up`, `joined`, `linked`, `reconnected`, `success`), MON-2 (`group_by_fields` equals `["metric.label.check_id"]` or is empty; the filter names both created checks), each written so that reverting the fix makes it fail.
-- A Rust/Python check that the failure list equals the failure variants of `Outcome` in `outcome.rs` (so adding an outcome forces a decision); or, if that is out of reach, a comment and a task note recorded in the PR description.
+- New assertions in `monitoring.tftest.hcl`: MON-1 (every failure code appears in the filter, none of `signed_in`, `stepped_up`, `joined`, `linked`, `reconnected`, `success`), MON-2 (`group_by_fields` equals exactly `["metric.label.check_id"]`; the filter names both created checks), each written so that reverting the fix makes it fail.
+- A Rust test that scans `backend/crates/api/src/auth/*.rs` for outcome strings passed to the `sign_in`/`step_up` security events and asserts each is either a success code or in the monitoring failure list (so adding an outcome forces a decision); if the module and the Rust crates cannot share the list directly, the Terraform local carries a comment naming this test.
 - All required checks green (S10 10.1); Definition of done S10 10.4.
 
 ## Edge cases and traps
@@ -56,7 +56,7 @@ The monitoring module's alerts count what they claim to count and can be created
 
 ## Out of scope
 
-- N4 (S11 alert design), running monitoring tests in CI (`ci.yml`), `firebase.json` service name (T-1104b), other Low/Info findings of PR #82.
+- N4 (S11 alert design), Sol finding R5 on PR #72 (a continuously failing sweep still emits the heartbeat; add a failure-outcome alert: a design decision), running monitoring tests in CI (`ci.yml`), `firebase.json` service name (T-1104b), other Low/Info findings of PR #82.
 
 ## Done when
 
