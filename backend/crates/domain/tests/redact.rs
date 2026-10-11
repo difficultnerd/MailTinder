@@ -45,6 +45,30 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         ("\"private name\\\" suffix\"@example.com", "[email]"),
         ("Mail \"a\\\\\"@b.test now", "Mail [email] now"),
         ("\"a\\\"b c\\\"d\"@x.example", "[email]"),
+        // A malformed/unterminated quoted local part must not leave the
+        // identifying prefix behind: the fallback pass matches from the
+        // token start to the first `@` run (T-1115d).
+        ("Mail \"private name\\\"@example.com now", "Mail [email] now"),
+        // A mid-token quote and an empty quoted tail: the fallback must
+        // start at the token, not the quote, so an identifying prefix
+        // before the quote cannot survive (T-1115d).
+        ("Mail private\"name@example.com now", "Mail [email] now"),
+        // Bare token, the reported reproduction shape (T-1115d).
+        ("private\"name@example.invalid", "[email]"),
+        ("Mail private\"@example.com now", "Mail [email] now"),
+        ("\"a\\\"b\"@x.example", "[email]"),
+        ("\"unterminated name@x.example", "[email]"),
+        ("\"\\\"@x", "[email]"),
+        // A backslash immediately before the only `@` must not hide it.
+        ("\"private name\\@example.com", "[email]"),
+        // Ordinary quoted prose with no address-style run is untouched.
+        ("He said \"hello there\" today", "He said \"hello there\" today"),
+        // Fail closed: a stray quote before an address over-redacts the prose
+        // in between, so no part of the address survives (by design).
+        (
+            "He said \"hello there and write to a@b.example today",
+            "He said [email] today",
+        ),
         // The address literal pass can leave a stray `@` at the end of a run;
         // the whole run goes, the `@` is never deleted on its own (T-1115b).
         // Both counters come from the `@`-adjacent-text property, pinned here

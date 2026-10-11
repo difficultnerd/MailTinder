@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use whatlang::Lang;
 
-pub const INPUT_VERSION: &str = "1";
+pub const INPUT_VERSION: &str = "2";
 pub const MAX_TEXT_WORDS: usize = 500;
 pub const MAX_TEXT_CHARS: usize = 3000;
 pub const MODEL_TEXT_FETCH_CHARS: usize = 4000;
@@ -34,6 +34,17 @@ struct Patterns {
     www: Regex,
     host: Regex,
     email_quoted: Regex,
+    // Fallback for a malformed/unterminated quoted local part: any leading
+    // non-whitespace of the token, then an opening quote, then a lazy run of
+    // any non-quote character or a backslash-quote pair, then the FIRST `@`
+    // and the rest of the address run. A backslash is an ordinary character
+    // here (`[^"]` takes it), so a backslash immediately before the only `@`
+    // cannot hide it, and `\"` is accepted as a pair so an escaped closing
+    // quote does not stop the run. Matching from the token start (not the
+    // opening quote) also consumes any identifying text that precedes the
+    // quote, which the later `@`-based passes cannot remove once the only `@`
+    // has been consumed.
+    email_quoted_fallback: Regex,
     email_literal: Regex,
     email_at: Regex,
     email: Regex,
@@ -59,6 +70,7 @@ impl Patterns {
             // `[^"]*` stops at the first escaped quote and only redacts the
             // suffix of the address, leaving the identifying prefix behind.
             email_quoted: Regex::new(r#""(?:[^"\\]|\\.)*"@\S+"#)?,
+            email_quoted_fallback: Regex::new(r#"\S*"(?:[^"]|\\")*?@\S+"#)?,
             email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
             email_at: Regex::new(r"\S*@\S+")?,
             email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")?,
@@ -100,6 +112,9 @@ pub fn redact(input: &str) -> String {
     let clean = patterns.www.replace_all(&clean, URL_PLACEHOLDER);
     let clean = patterns.host.replace_all(&clean, URL_PLACEHOLDER);
     let clean = patterns.email_quoted.replace_all(&clean, EMAIL_PLACEHOLDER);
+    let clean = patterns
+        .email_quoted_fallback
+        .replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns
         .email_literal
         .replace_all(&clean, EMAIL_PLACEHOLDER);
