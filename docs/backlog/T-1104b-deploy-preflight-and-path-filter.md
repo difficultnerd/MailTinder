@@ -27,8 +27,8 @@ A push to `main` runs the deploy pipeline only when deployable files changed, an
 
 ## Algorithm
 
-1. **Path filter.** Under `on.push` add `paths:` covering what can change a deployed artifact: `backend/**`, `app/**`, `firebase.json`, `.firebaserc`, `.github/workflows/deploy.yml`, `infra/terraform/modules/runtime/**` (service definitions), and leave `workflow_dispatch` unfiltered so the owner can always run it. Docs, backlog, specs, tools and Terraform for other modules do not trigger a deploy.
-2. **Preflight.** Add a job `configured` (no environment, no credentials, `permissions: contents: read`) whose single step writes `ready=true|false` to its output: true only if `vars.STAGING_PROJECT`, `vars.STAGING_WIF_PROVIDER` and `vars.STAGING_DEPLOYER` are all non-empty. When false it prints one notice line: "deploy skipped: staging variables are not set yet (see infra/terraform/README.md, Deploying)". Never echo the variable VALUES. Make `build` `needs: configured` and run only `if: needs.configured.outputs.ready == 'true'` (keep the existing repository guard). `deploy-staging` and `deploy-prod` already depend on `build`, so they are skipped too.
+1. **Path filter.** Under `on.push` add `paths:` covering what can change a deployed artifact: `backend/**`, `app/**`, `firebase.json`, `.firebaserc`, `.github/workflows/deploy.yml` (the only things that can change a built image or the hosted web app: `deploy.yml` deploys with `--image` only and never applies Terraform, so nothing under `infra/` triggers it), and leave `workflow_dispatch` unfiltered so the owner can always run it. Docs, backlog, specs, tools and Terraform for other modules do not trigger a deploy.
+2. **Preflight (fails open ONLY before the first setup; loud after it).** Add a job `configured` (no environment, no credentials, `permissions: contents: read`) with two outputs. It reads REPOSITORY variables (the README says they are repository variables; a job without an environment cannot see environment-scoped variables, so the README must say so in bold). `staging_ready` is true only if `vars.STAGING_PROJECT`, `vars.STAGING_WIF_PROVIDER` and `vars.STAGING_DEPLOYER` are all non-empty; `prod_ready` is true only if `vars.PROD_PROJECT`, `vars.PROD_WIF_PROVIDER` and `vars.PROD_DEPLOYER` are all non-empty. A third repository variable `DEPLOY_ENABLED`, set to `true` by the owner after the first successful staging deploy, turns silence into noise: when `DEPLOY_ENABLED == 'true'` and `staging_ready` is false the job FAILS (red) with a message naming which variables are empty (names only, never values); when `DEPLOY_ENABLED` is not set and `staging_ready` is false it ends GREEN-SKIPPED with a `::warning::` annotation (visible on the run page) and one summary line: "deploy skipped: staging variables are not set yet (infra/terraform/README.md, Deploying)". A manual `workflow_dispatch` with `staging_ready` false ALWAYS fails (the owner asked for a deploy). Never echo variable VALUES. Make `build` `needs: configured` and run only `if: needs.configured.outputs.staging_ready == 'true'` (keep the repository guard). `deploy-staging` depends on `build`; `deploy-prod` additionally requires `needs.configured.outputs.prod_ready == 'true'`, so no production approval is requested while production is not configured.
 3. **No new permissions, no secrets, no new triggers.** Actions stay pinned by 40-character SHA (repository rule). Do not add `pull_request` triggers.
 4. Fix the README sentence at line 237 so it describes only what exists (the production Environment reviewer is the only gate until T-1105).
 
@@ -38,18 +38,20 @@ A push to `main` runs the deploy pipeline only when deployable files changed, an
 | --- | --- |
 | DEP-1 | With the staging variables unset, a push that matches the path filter ends with the deploy run SKIPPED (not failed) and one notice line |
 | DEP-2 | A docs-only push does not start the deploy workflow at all |
-| DEP-3 | `workflow_dispatch` still runs it; with variables set, behaviour is unchanged from T-1104 |
+| DEP-3 | `workflow_dispatch` is never filtered; with all staging variables set the pipeline behaves as in T-1104; with `DEPLOY_ENABLED=true` and a staging variable missing the run FAILS loudly naming the variable |
+| DEP-4 | `deploy-prod` is skipped (no approval request) while any `PROD_*` variable is empty |
 
 ## Tests that must pass
 
-- The workflow policy test asserts: a `configured` job exists, `build` has `needs: configured` and the `ready` condition, `on.push.paths` is present and does not list `docs/**`, no `pull_request` trigger, every `uses:` is pinned to 40 hex characters.
+- **New checker `tools/check_deploy_workflow.py` with unit tests (this does not exist today: `backend/crates/api/tests/dockerfile_policy.rs` reads only `backend/Dockerfile`, and no test or CI step enforces 40-hex action pinning, so this task creates both).** It parses `deploy.yml` (PyYAML or a strict line parser) and the unit tests run it over good and BAD fixture workflows, each bad fixture removing one behaviour so the test fails when the behaviour is removed: (DEP-1) `configured` job missing; `build` without `needs: configured` or without the `staging_ready` condition; `deploy-prod` without the `prod_ready` condition; the `DEPLOY_ENABLED` failure branch missing; (DEP-2) `on.push.paths` missing or containing `docs/**` or `infra/**`; (DEP-3) `workflow_dispatch` missing or carrying a `paths` filter, and the conditions evaluating true when all variables are set (evaluate the `if:` expressions over a table of variable sets); also: any `pull_request`/`pull_request_target` trigger, any `uses:` not pinned to 40 hex characters, any `environment:` on the `configured` job. The checker is run by an existing CI step (Python test discovery under `tools/`, as the other `tools/check_*.py` checkers are); if that needs a `ci.yml` change, list it for the owner instead of making it.
 - `actionlint` clean (if available in CI); all required checks green (S10 10.1).
-- DEP-1 and DEP-2 are verified on the first pushes after merge (recorded in the PR description / checkpoint); they cannot be unit-tested offline.
+- DEP-1's runtime behaviour (grey skipped run, annotation) is additionally observed on the first push after merge (recorded in the PR description); it is not the only proof.
 
 ## Edge cases and traps
 
 - A skipped required status can read as a pass or a fail depending on branch protection: this workflow is not a required check; keep it that way.
 - Do not weaken the WIF conditions or the production reviewer gate. This task only decides WHETHER the pipeline starts.
+- Accepted, unchanged by this task (review F7): the build step's image path contains the staging project id and repository variables are not masked in public Actions logs. The id is already public in the repository's docs; nothing secret is involved.
 - Do not touch `ci.yml` or other workflows.
 
 ## Out of scope
