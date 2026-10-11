@@ -961,6 +961,66 @@ async fn api_int_2_failed_step_returns_500_and_others_run() -> TestResult {
     Ok(())
 }
 
+/// T-1107 F1: every API-INT-2 run emits exactly one content-free `sweep` metric
+/// event, whatever the outcome, so the `sweep_runs` log-based metric has a
+/// series for its "sweep stopped" absence alert to be absent from (T-1107 step
+/// 3 and edge case, S7 5.12). The closed ACTIONS registry accepts `sweep`, so
+/// the value survives the allowlist layer instead of being dropped. No user, no
+/// counts, no step names: content-free like every other metric event.
+#[tokio::test]
+async fn t1107_sweep_run_metric_emitted() -> TestResult {
+    let env = setup().await?;
+    let (capture, _guard) =
+        obs::capture("worker", obs::arc(obs::FixedClock(env.fakes.clock.now())));
+
+    // One clean run.
+    let counts = run_sweep(&worker_state(&env)).await;
+    assert!(counts.failed_steps.is_empty(), "{:?}", counts.failed_steps);
+
+    // One run with a failing step: still a heartbeat, outcome `failure`.
+    let mut ports = env.ports.clone();
+    ports.store = Arc::new(FailingSessionsStore {
+        inner: Arc::clone(&env.fakes.store),
+        sessions: FailingSessions {
+            inner: Arc::clone(&env.fakes.store),
+        },
+    }) as Arc<dyn ServerStore>;
+    let state = WorkerState {
+        ports,
+        auth: InternalAuthConfig {
+            audience: AUDIENCE.to_owned(),
+            allowed_caller_email: CALLER.to_owned(),
+        },
+    };
+    let failed = run_sweep(&state).await;
+    assert_eq!(failed.failed_steps, vec!["sessions"]);
+
+    // Parse the `metric` events, not a substring: exactly one `sweep` per run.
+    let heartbeats: Vec<serde_json::Value> = capture
+        .lines()
+        .iter()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|v: &serde_json::Value| {
+            v.get("event").and_then(|e| e.as_str()) == Some("metric")
+                && v.get("action").and_then(|a| a.as_str()) == Some("sweep")
+        })
+        .collect();
+    assert_eq!(
+        heartbeats.len(),
+        2,
+        "one sweep event per run: {}",
+        capture.text()
+    );
+    assert_eq!(heartbeats[0]["outcome"], "success");
+    assert_eq!(heartbeats[1]["outcome"], "failure");
+    assert!(
+        heartbeats.iter().all(|v| v.get("user_pseudo").is_none()),
+        "the heartbeat carries no user: {}",
+        capture.text()
+    );
+    Ok(())
+}
+
 /// OBS-EV AC3 (worker): a terminal job with no recorded outcome emits
 /// `history_missing` before the sweep deletes it (S10 8, T-1114). A terminal
 /// job that carries its outcome emits nothing.
