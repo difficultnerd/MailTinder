@@ -37,6 +37,7 @@ struct Patterns {
     email_literal: Regex,
     email_at: Regex,
     email: Regex,
+    email_fragment: Regex,
     number: Regex,
 }
 
@@ -48,13 +49,23 @@ impl Patterns {
             )?,
             www: Regex::new(r#"(?i)www\.[^\s<>"'()\[\]{}]+"#)?,
             host: Regex::new(r"(?i)\b[a-z0-9-]+(\.[a-z0-9-]+)+/\S*")?,
-            // Quoted local parts (which may contain spaces), address literals
-            // and any remaining `@` flanked by non-whitespace. The regex crate
-            // is linear-time, so no upper bound is needed.
-            email_quoted: Regex::new(r#""[^"]*"@\S+"#)?,
+            // Quoted local parts (which may contain spaces, backslashes and
+            // quoted-pairs), address literals and any remaining `@` flanked by
+            // non-whitespace. The regex crate is linear-time, so no upper bound
+            // is needed.
+            //
+            // A quoted local part is `"` then any run of ordinary characters or
+            // quoted-pairs (`\` followed by any character) then `"`: a naive
+            // `[^"]*` stops at the first escaped quote and only redacts the
+            // suffix of the address, leaving the identifying prefix behind.
+            email_quoted: Regex::new(r#""(?:[^"\\]|\\.)*"@\S+"#)?,
             email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
             email_at: Regex::new(r"\S*@\S+")?,
             email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")?,
+            // A leftover `@` at the end of a run (for example after the
+            // literal pass replaced everything before it) is an address
+            // fragment: replace the whole run, never the `@` on its own.
+            email_fragment: Regex::new(r"\S*@\S*")?,
             number: Regex::new(r"\d(?:[ \-.]?\d){5,}")?,
         })
     }
@@ -94,6 +105,9 @@ pub fn redact(input: &str) -> String {
         .replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.email_at.replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.email.replace_all(&clean, EMAIL_PLACEHOLDER);
+    let clean = patterns
+        .email_fragment
+        .replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.number.replace_all(&clean, NUMBER_PLACEHOLDER);
     clean.split_whitespace().collect::<Vec<_>>().join(" ")
 }
