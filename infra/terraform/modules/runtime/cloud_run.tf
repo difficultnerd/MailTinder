@@ -67,6 +67,14 @@ locals {
     # set the origin (T-1104c).
     APP_ORIGIN             = local.app_origin
     GOOGLE_OAUTH_CLIENT_ID = var.google_oauth_client_id
+    # `build_production_ports` (api/src/startup.rs:189-193) also requires the
+    # unsub base URL, the unsub audience and the Cloud Tasks caller. The MT_*
+    # names above are not read by the api; these are. Same values as unsub's own
+    # UNSUB_AUDIENCE / UNSUB_BASE_URL so the audience Cloud Tasks signs for
+    # cannot diverge from the one unsub checks.
+    UNSUB_BASE_URL     = local.unsub_url
+    UNSUB_AUDIENCE     = local.unsub_url
+    UNSUB_TASKS_CALLER = var.service_accounts["tasks_invoker"]
   })
 
   unsub_env = merge(local.base_env, {
