@@ -61,6 +61,12 @@ module "monitoring" {
   app_url         = "https://${module.runtime.hosting_site_id}.web.app"
 
   enable_alerts = false
+
+  # The budgets and the notification channel need the Billing and Monitoring
+  # APIs the foundation module enables, and nothing else here references
+  # foundation (T-1107b N3): without this a first apply can fail with 'API not
+  # enabled' and only a retry succeeds.
+  depends_on = [module.foundation]
 }
 
 output "monitoring_budget_ids" {

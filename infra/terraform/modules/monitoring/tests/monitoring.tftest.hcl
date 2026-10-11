@@ -19,6 +19,27 @@ override_resource {
   }
 }
 
+# The uptime check's id is computed by the API, and it is the value the
+# uptime_check/check_passed metric labels each series with (`check_id`), so the
+# plan-time suite cannot read it. Give each check a distinct fixed id during
+# plan, so the uptime alert's filter can be proved to name *this* module's two
+# checks rather than the label of some other check in the project (T-1107b B2).
+override_resource {
+  target          = google_monitoring_uptime_check_config.check["app_root"]
+  override_during = plan
+  values = {
+    uptime_check_id = "mt-uptime-app-root"
+  }
+}
+
+override_resource {
+  target          = google_monitoring_uptime_check_config.check["api_session"]
+  override_during = plan
+  values = {
+    uptime_check_id = "mt-uptime-api-session"
+  }
+}
+
 variables {
   project_id      = "mailtinder-test"
   billing_account = "000000-000000-000000"
@@ -293,3 +314,99 @@ run "uptime_checks_probe_root_and_session" {
     error_message = "the uptime alert must fire only once two regions fail (count of failing regions strictly greater than one)"
   }
 }
+
+# T-1107b B1: the auth_failures counter counts failed and refused attempts and
+# nothing else. Every outcome string a `sign_in` or `step_up` security event
+# logs on a failure must appear; every success code must be absent. Reverting
+# the fix (back to `NOT outcome="signed_in" AND NOT outcome="stepped_up"`)
+# fails both: the failure codes would not appear, and a successful join/link/
+# reconnect would still be counted.
+run "auth_failures_metric_names_every_failure_outcome_and_no_success" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for code in [
+        "not_invited",
+        "not_registered",
+        "invite_invalid",
+        "email_mismatch",
+        "email_unverified",
+        "mailbox_linked_elsewhere",
+        "step_up_wrong_account",
+        "consent_blocked",
+        "cancelled",
+        "failed",
+        "state_invalid",
+        "id_token_invalid",
+        "wrong_account",
+        "stale_auth_time",
+      ] :
+      strcontains(
+        google_logging_metric.metric["auth_failures"].filter,
+        "jsonPayload.${var.log_fields.outcome}=\"${code}\""
+      )
+    ])
+    error_message = "the auth_failures filter must name every failure outcome the sign_in and step_up security events log, including state_invalid, id_token_invalid, wrong_account and stale_auth_time (T-1107b B1, S6 7)"
+  }
+
+  assert {
+    condition = alltrue([
+      for code in ["signed_in", "stepped_up", "joined", "linked", "reconnected", "success"] :
+      !strcontains(
+        google_logging_metric.metric["auth_failures"].filter,
+        "jsonPayload.${var.log_fields.outcome}=\"${code}\""
+      )
+    ])
+    error_message = "the auth_failures filter must not contain a success outcome: every successful join, link, reconnect and step-up was being counted as an authentication failure (T-1107b B1, S6 7)"
+  }
+
+  assert {
+    condition = (
+      strcontains(google_logging_metric.metric["auth_failures"].filter, "jsonPayload.${var.log_fields.event}=\"csrf_failure\"") &&
+      strcontains(google_logging_metric.metric["auth_failures"].filter, "jsonPayload.${var.log_fields.event}=\"authz_failure\"")
+    )
+    error_message = "csrf_failure and authz_failure are failures on every event and must stay in the auth_failures filter unconditionally (T-1107b B1, S6 7)"
+  }
+}
+
+# T-1107b B2: the uptime alert aggregates on a label the metric actually has
+# and covers only this module's checks. The uptime_url resource carries
+# project_id and host, not check_id - check_id is a METRIC label - so the old
+# `resource.label.check_id` most likely fails API validation at apply, and its
+# filter selected every URL check in the project. Reverting either the
+# group-by or the one_of constraint fails these assertions.
+run "uptime_alert_groups_by_metric_check_id_over_this_modules_checks" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(google_monitoring_alert_policy.uptime[0].conditions[0].condition_threshold[0].aggregations[0].group_by_fields) ==
+      toset(["metric.label.check_id"])
+    )
+    error_message = "the uptime alert must group by exactly metric.label.check_id (a METRIC label on uptime_check/check_passed), not resource.label.check_id, which the uptime_url resource does not have (T-1107b B2, S4 4)"
+  }
+
+  assert {
+    condition = (
+      strcontains(
+        google_monitoring_alert_policy.uptime[0].conditions[0].condition_threshold[0].filter,
+        google_monitoring_uptime_check_config.check["app_root"].uptime_check_id
+      ) &&
+      strcontains(
+        google_monitoring_alert_policy.uptime[0].conditions[0].condition_threshold[0].filter,
+        google_monitoring_uptime_check_config.check["api_session"].uptime_check_id
+      )
+    )
+    error_message = "the uptime alert filter must name both checks this module creates, so a check elsewhere in the project cannot trip it (T-1107b B2, S4 4)"
+  }
+
+  assert {
+    condition = !strcontains(
+      google_monitoring_alert_policy.uptime[0].conditions[0].condition_threshold[0].filter,
+      "resource.label.check_id"
+    )
+    error_message = "the uptime alert must not reference resource.label.check_id: the uptime_url resource has no such label and the API rejects the policy (T-1107b B2, S4 4)"
+  }
+}
+
