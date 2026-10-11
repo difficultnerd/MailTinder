@@ -119,6 +119,13 @@ jobs:
         run: |
           terraform init -backend=false -input=false
           terraform validate
+      - name: Validate the staging root
+        working-directory: infra/terraform/envs/staging
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Staging and production use the same modules
+        run: ../../scripts/tf_env_parity.sh
       - name: Absence checks
         run: |
           fail=0

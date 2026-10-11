@@ -6,8 +6,14 @@ Two things live here:
   per service, the KMS keys, Firestore with its TTL policies, Secret Manager
   containers with their accessors, the locked 90-day log bucket, data access
   audit logs and the Artifact Registry repository (T-1102a).
-- `envs/prod` - the production root that calls the module. `envs/staging` is
-  T-1103.
+- `envs/prod` - the production root that calls the module.
+- `envs/staging` - the staging root (T-1103): **the same two modules and the
+  same module sources**, in its own project with its own state, so deploys, the
+  smoke tests (T-1105) and the ZAP baseline run somewhere that is not
+  production (decision T5). The roots may differ only in the values they pass
+  (`env`, `project_id`, `lock_log_bucket`, `max_instances`,
+  `deploy_environment`); `scripts/tf_env_parity.sh` fails the `terraform` CI
+  job if they ever call a different module.
 
 Nothing here holds a secret value. Agents write the Terraform; **James reviews
 the plan and runs `apply`**, from his own machine, one project at a time
@@ -52,6 +58,41 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
    The OAuth client secret comes from the Google Cloud console, the Jev API
    key from TypeSafe.
+
+### Staging (T-1103)
+
+Staging is a **second project** (`<name>-staging`, chosen by James) with its own
+billing link and **its own state bucket**. It runs the same two modules from
+this repository as production; only the variables differ. Bootstrap it by
+repeating steps 1-4 above with the staging names:
+
+1. Create the staging project and link billing to it.
+2. Create `gs://<staging-project>-tfstate` (the same command, the staging name).
+   Never reuse the production bucket (S4 1: separate state), so a staging
+   destroy can never reach production state.
+3. From `envs/staging`:
+
+   ```
+   terraform init -backend-config="bucket=<staging-project>-tfstate"
+   terraform plan
+   terraform apply
+   ```
+
+4. Add the staging secret values (step 5 above, with staging's own values:
+   fresh `openssl rand -base64 32` HMAC keys). Never copy a production secret
+   value into staging - that would put a production credential in the project
+   with the weaker controls.
+
+Staging's OAuth client is its own, created **in the staging project** in Testing
+mode, and its secret goes into the staging `google-oauth-client-secret`. The
+staging OAuth consent screen stays in Testing mode with James's test users only,
+and staging holds synthetic data only: no real person's mailbox is linked there.
+
+The 90-day log bucket is deliberately unlocked in staging
+(`lock_log_bucket = false`) so the project can be torn down; production keeps the
+locked default. Once staging is applied, record its Hosting URL
+(`https://<hosting_site_id>.web.app`, the root's `hosting_site_id` output) as the
+`STAGING_URL` repository variable for T-1104 and T-1105.
 
 ## Cautions
 
@@ -131,7 +172,10 @@ What it holds, directly and transitively:
 
 CI runs the `terraform` job: `terraform fmt -check -recursive`, then inside
 `modules/foundation` and `modules/runtime` `init -backend=false`, `validate` and
-`test`, and the same `init`/`validate` for `envs/prod`. Both modules'
+`test`, and the same `init`/`validate` for `envs/prod` and `envs/staging`. It
+then runs `scripts/tf_env_parity.sh`, which fails unless both roots have the
+same sorted `source = "..."` lines - so a staging-only fork of a module, or a
+root that stopped calling one, fails the job. Both modules'
 `tests/*.tftest.hcl` use `mock_provider`, so they need no credentials and no
 network.
 
@@ -207,11 +251,12 @@ To run the same checks locally:
 ```
 cd infra/terraform
 terraform fmt -check -recursive
-for d in modules/foundation modules/runtime envs/prod; do
+for d in modules/foundation modules/runtime envs/prod envs/staging; do
   (cd "$d" && terraform init -backend=false -input=false && terraform validate)
 done
 (cd modules/foundation && terraform test)
 (cd modules/runtime && terraform test)
+cd .. && ./scripts/tf_env_parity.sh
 ```
 
 The job's guard step (the role allowlist, the tuple pins and the fixtures
