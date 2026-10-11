@@ -37,6 +37,7 @@ module "runtime" {
   kms_key_id       = module.foundation.kms_key_id
   secret_ids       = module.foundation.secret_ids
   max_instances    = 1           # [DEFAULT] staging traffic is tiny
+  deploy_environment = "staging" # NOT the prod default: the WIF condition pins the staging GitHub environment (T-1104)
 }
 # backend.tf
 terraform { backend "gcs" { prefix = "staging" } }   # bucket passed with -backend-config, never committed
@@ -49,9 +50,9 @@ terraform { backend "gcs" { prefix = "staging" } }   # bucket passed with -backe
 ## Algorithm
 
 1. Staging is a separate project (`<name>-staging`, chosen by James) with its own billing link and its own state bucket `gs://<staging-project>-tfstate` (S4 Environments: separate state).
-2. Use exactly the same modules; staging may differ only in variables: `env`, `project_id`, `lock_log_bucket = false`, `max_instances = 1`. Any other difference needs a comment with its reason.
+2. Use exactly the same modules; staging may differ only in variables: `env`, `project_id`, `lock_log_bucket = false`, `max_instances = 1`, `deploy_environment = "staging"`. Any other difference needs a comment with its reason.
 3. `tf_env_parity.sh`: `grep -h 'source *=' envs/prod/*.tf | sort` versus the same for staging; `diff` them; exit non-zero on difference.
-4. README steps for James: create the staging project, link billing, create the state bucket (same command as production with the staging name), `terraform init -backend-config="bucket=<staging-project>-tfstate"`, plan, apply, then add the staging secret values (separate values from production; never copy production secrets). Create a staging OAuth client (Testing mode) in this project; its secret goes into the staging `oauth-client-secret`.
+4. README steps for James: create the staging project, link billing, create the state bucket (same command as production with the staging name), `terraform init -backend-config="bucket=<staging-project>-tfstate"`, plan, apply, then add the staging secret values (separate values from production; never copy production secrets). Create a staging OAuth client (Testing mode) in this project; its secret goes into the staging `google-oauth-client-secret`.
 5. Staging OAuth consent screen stays in Testing mode with James's test users only.
 
 **Waits on S11** (defaults used): staging teardown and cost policy; whether staging data is ever reset (`[DEFAULT]` no scheduled reset; synthetic data only); naming of the two projects.
@@ -72,6 +73,7 @@ None enforced by `ac-coverage` (Terraform). Decision T5 (staging project) is met
 - Do not fork the modules for staging; pass variables instead (parity script fails otherwise).
 - Staging holds synthetic data only; no real person's mailbox is linked there.
 - Unlocked log bucket is a staging-only setting; the production root must keep the module default (`true`).
+- Set `deploy_environment = "staging"` on the staging `runtime` module (the production root keeps the `"production"` default). The WIF provider condition requires an OIDC token whose GitHub environment matches, so the staging deploy job must also name `environment: staging` (T-1104); otherwise every staging deploy token is rejected. The module test `staging_environment_is_its_own_pin` covers this.
 
 ## Out of scope
 

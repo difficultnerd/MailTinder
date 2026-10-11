@@ -59,11 +59,17 @@ override_resource {
   }
 }
 
+# Both sinks route to a log bucket in this same project, so the API returns no
+# writer identity for them: the real value is the empty string. The override
+# models that faithfully rather than inventing a plausible writer. If the module
+# ever binds a sink's (empty) writer identity to a google_project_iam_member,
+# the provider rejects the empty member and this suite fails at plan time - the
+# counterexample the previous round missed (review D1).
 override_resource {
   target          = google_logging_project_sink.app
   override_during = plan
   values = {
-    writer_identity = "serviceAccount:mock-logging-writer@example.com"
+    writer_identity = ""
   }
 }
 
@@ -71,7 +77,7 @@ override_resource {
   target          = google_logging_project_sink.audit
   override_during = plan
   values = {
-    writer_identity = "serviceAccount:mock-audit-writer@example.com"
+    writer_identity = ""
   }
 }
 
@@ -178,6 +184,16 @@ run "ttl_on_every_ttl_collection" {
     condition     = alltrue([for f in values(google_firestore_field.ttl) : f.field == "expires_at" && f.database == google_firestore_database.default.name])
     error_message = "every TTL field must be `expires_at` on the (default) database"
   }
+
+  assert {
+    condition     = alltrue([for f in values(google_firestore_field.ttl) : length(f.ttl_config) == 1])
+    error_message = "every TTL field must have ttl_config enabled, or the retention backstop is not configured (S5 Retention, review F9)"
+  }
+
+  assert {
+    condition     = alltrue([for f in values(google_firestore_field.ttl) : length(f.index_config) == 1 && length(f.index_config[0].indexes) > 0])
+    error_message = "every TTL field must keep a declared single-field index; an empty index_config disables all indexing on the field (review F2)"
+  }
 }
 
 run "jev_and_email_lookup_secrets_have_api_only" {
@@ -195,7 +211,7 @@ run "jev_and_email_lookup_secrets_have_api_only" {
 
   assert {
     condition = (
-      toset(google_secret_manager_secret_iam_binding.accessor["oauth-client-secret"].members) == toset([
+      toset(google_secret_manager_secret_iam_binding.accessor["google-oauth-client-secret"].members) == toset([
         "serviceAccount:${google_service_account.service["api"].email}",
         "serviceAccount:${google_service_account.service["unsub"].email}",
         "serviceAccount:${google_service_account.service["worker"].email}",
@@ -219,7 +235,7 @@ run "no_secret_versions_in_state" {
   }
 
   assert {
-    condition     = toset([for s in values(google_secret_manager_secret.secret) : s.secret_id]) == toset(["oauth-client-secret", "jev-api-key", "email-lookup-hmac-key", "log-pseudonym-hmac-key"])
+    condition     = toset([for s in values(google_secret_manager_secret.secret) : s.secret_id]) == toset(["google-oauth-client-secret", "jev-api-key", "email-lookup-hmac-key", "log-pseudonym-hmac-key"])
     error_message = "exactly the four S4 2 secret containers"
   }
 }
@@ -239,9 +255,11 @@ run "log_bucket_90_days_locked_in_region" {
   assert {
     condition = (
       strcontains(google_logging_project_sink.app.filter, "resource.type=\"cloud_run_revision\"") &&
+      !strcontains(google_logging_project_sink.app.filter, "cloud_tasks_queue") &&
+      !strcontains(google_logging_project_sink.app.filter, "cloud_scheduler_job") &&
       strcontains(google_logging_project_sink.app.filter, "NOT logName:\"run.googleapis.com%2Frequests\"")
     )
-    error_message = "the sink routes app logs but must keep the Cloud Run request log (request URL and client IP, S5 88-90) out of the locked bucket (review F3)"
+    error_message = "the sink must route the Cloud Run revision entries - the application's stdout/stderr and the Cloud Run platform/system entries that share that resource type, not stdout/stderr alone - keep the Cloud Run request log out (request URL and client IP, S5 88-90), and leave platform Cloud Tasks/Scheduler logs out of the locked bucket (review F3, F7)"
   }
 
   assert {
@@ -255,25 +273,58 @@ run "log_bucket_90_days_locked_in_region" {
 
 # The audit evidence S11 reads (elevation review, alert A7, leak investigation)
 # must land in the locked 90-day bucket, not only in _Default (V16.4.2,
-# V16.4.3). The sinks are declared resources, so this is checkable at plan time.
+# V16.4.3). The sinks are declared resources, so this is checkable at plan time,
+# and every assertion here is removal-sensitive (review D2): disabling the sink,
+# re-pointing it away from the locked bucket, dropping the cloudaudit selector,
+# dropping either service, turning the service OR into an AND, or dropping a
+# Data Access category each makes the suite fail.
 run "audit_logs_are_routed_to_the_locked_bucket" {
   command = plan
 
   assert {
     condition = (
-      strcontains(google_logging_project_sink.audit.destination, "/buckets/mailtinder-logs") &&
-      strcontains(google_logging_project_sink.audit.filter, "cloudaudit.googleapis.com") &&
-      strcontains(google_logging_project_sink.audit.filter, "cloudkms.googleapis.com") &&
-      strcontains(google_logging_project_sink.audit.filter, "secretmanager.googleapis.com")
+      google_logging_project_sink.audit.disabled != true &&
+      google_logging_project_sink.audit.destination == "logging.googleapis.com/projects/${var.project_id}/locations/${var.region}/buckets/${google_logging_project_bucket_config.app.bucket_id}"
     )
-    error_message = "KMS and Secret Manager Data Access audit logs must reach the locked 90-day bucket (V16.4.2, V16.4.3, review F1)"
+    error_message = "the audit sink must stay enabled and target the locked mailtinder-logs bucket exactly (V16.4.2, review D1, D2)"
+  }
+
+  # EXACT filter, not a substring probe (review D2). A substring check passes
+  # while extra clauses are appended - e.g. `... AND severity=ERROR AND
+  # severity=INFO` makes the filter match no entry yet still contains both
+  # expected fragments. Pinning the whole string means any edit to the sink's
+  # filter (adding, dropping or reordering a clause) fails here. The expected
+  # string is the canonical filter; the second clause records the D2 mutation
+  # and proves this assertion rejects it.
+  assert {
+    condition = (
+      google_logging_project_sink.audit.filter == "logName:\"cloudaudit.googleapis.com\" AND (protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\")" &&
+      google_logging_project_sink.audit.filter != "logName:\"cloudaudit.googleapis.com\" AND (protoPayload.serviceName=\"cloudkms.googleapis.com\" OR protoPayload.serviceName=\"secretmanager.googleapis.com\") AND severity=ERROR AND severity=INFO"
+    )
+    error_message = "the audit sink filter must be exactly the canonical cloudaudit filter for KMS-or-Secret-Manager; appending extra clauses (e.g. AND severity=...) must fail (review D2)"
+  }
+
+  # The Data Access categories the sink can route: KMS and Secret Manager must
+  # each collect DATA_READ and DATA_WRITE, or the routing above has nothing to
+  # send (V16.4.2, review D2).
+  assert {
+    condition = alltrue([
+      for svc in [google_project_iam_audit_config.cloudkms, google_project_iam_audit_config.secretmanager] : alltrue([
+        for log_type in ["DATA_READ", "DATA_WRITE"] : anytrue([
+          for c in svc.audit_log_config : c.log_type == log_type
+        ])
+      ])
+    ])
+    error_message = "KMS and Secret Manager must each collect DATA_READ and DATA_WRITE audit logs, or the audit sink routes no evidence (V16.4.2, review D2)"
   }
 }
 
 # Checks the module's declared bindings only (see the file header): it proves
 # that none of the project-level grants the module makes gives an app identity a
-# roles/logging.* role. Absence of a logging grant added elsewhere is enforced
-# by the CI role allowlist.
+# roles/logging.* role. The sinks' writer identities are empty (same-project log
+# buckets) and are bound to no IAM member, so there is no logging grant from a
+# sink identity either (review D1). Absence of a logging grant added elsewhere is
+# enforced by the CI role allowlist.
 run "declared_bindings_give_app_identities_no_logging_role" {
   command = plan
 
@@ -281,8 +332,6 @@ run "declared_bindings_give_app_identities_no_logging_role" {
     condition = alltrue([
       for m in concat(
         [google_project_iam_member.aiplatform_user],
-        [google_project_iam_member.log_sink_writer],
-        [google_project_iam_member.audit_sink_writer],
         values(google_project_iam_member.datastore_user),
         ) : !(startswith(m.role, "roles/logging.") && contains([
           "serviceAccount:${google_service_account.service["api"].email}",
@@ -293,6 +342,17 @@ run "declared_bindings_give_app_identities_no_logging_role" {
       ], m.member))
     ])
     error_message = "no application identity may hold a roles/logging.* role (ASVS V16.4.2)"
+  }
+
+  # Same-project bucket sinks return an empty writer identity and need no IAM
+  # member at all. Pinning it here means a re-added writer grant cannot hide
+  # behind a plausible mock value (review D1).
+  assert {
+    condition = (
+      google_logging_project_sink.app.writer_identity == "" &&
+      google_logging_project_sink.audit.writer_identity == ""
+    )
+    error_message = "a same-project log bucket sink must have no writer identity (and so no bucketWriter grant; review D1)"
   }
 }
 
@@ -323,7 +383,6 @@ run "declared_bindings_grant_no_primitive_role" {
           google_kms_crypto_key_iam_binding.data_key_kek.role,
           google_kms_crypto_key_iam_binding.system_fields.role,
           google_project_iam_member.aiplatform_user.role,
-          google_project_iam_member.log_sink_writer.role,
         ],
         [for m in values(google_project_iam_member.datastore_user) : m.role],
         [for m in values(google_secret_manager_secret_iam_binding.accessor) : m.role],

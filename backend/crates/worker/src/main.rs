@@ -34,8 +34,9 @@ use worker::{router, ROUTE_TEMPLATES};
 const LOCATION: &str = "us-central1";
 /// The fixed KMS key ring (T-1102a Terraform).
 const KEY_RING: &str = "mailtinder";
-/// The KMS key that wraps a user's `data_key` (T-302).
-const USER_KEY_NAME: &str = "user-data";
+/// The KMS key that wraps a user's `data_key` (T-302). It is named
+/// `data-key-kek` in Terraform (`modules/foundation/kms.tf`).
+const USER_KEY_NAME: &str = "data-key-kek";
 /// The KMS key that seals pre-user data (S6 5).
 const SYSTEM_KEY_NAME: &str = "system-fields";
 /// The default listen port when `PORT` is unset (Cloud Run sets it).
@@ -120,7 +121,7 @@ async fn run() -> Result<(), SetupError> {
     let keys: Arc<dyn ports::KeyService> = Arc::new(EnvelopeKeyService::new(
         Arc::new(CloudKms::new(
             Arc::clone(&http),
-            kms_key(&project, USER_KEY_NAME),
+            user_key_resource(&project, std::env::var("MT_KMS_KEY").ok()),
         )),
         Arc::clone(&rng),
         Arc::clone(&clock),
@@ -190,6 +191,46 @@ fn non_empty(value: Option<String>) -> Option<String> {
 /// The full KMS key resource name for `key` in the project.
 fn kms_key(project: &str, key: &str) -> String {
     format!("projects/{project}/locations/{LOCATION}/keyRings/{KEY_RING}/cryptoKeys/{key}")
+}
+
+/// The user-data KMS key resource name. Cloud Run injects the deployed key's
+/// full resource name as `MT_KMS_KEY` (T-1102b Terraform); it wins when set so
+/// a rename or a region change cannot leave the service unwrapping against a
+/// stale, hard-coded path. Without it the path is rebuilt from the constants,
+/// so a local run still gets one (review F4).
+fn user_key_resource(project: &str, injected: Option<String>) -> String {
+    injected
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| kms_key(project, USER_KEY_NAME))
+}
+
+#[cfg(test)]
+mod tests {
+    //! The key-name wiring the production start-up depends on (review F4).
+    #![allow(clippy::pedantic)]
+
+    use super::*;
+
+    #[test]
+    fn user_key_resource_prefers_the_injected_key() {
+        let injected = "projects/mailtinder/locations/europe-west1/keyRings/renamed/cryptoKeys/kek";
+        assert_eq!(
+            user_key_resource("mailtinder", Some(injected.to_owned())),
+            injected
+        );
+    }
+
+    #[test]
+    fn user_key_resource_falls_back_to_the_constants() {
+        assert_eq!(
+            user_key_resource("mailtinder", None),
+            kms_key("mailtinder", USER_KEY_NAME)
+        );
+        assert_eq!(
+            user_key_resource("mailtinder", Some("   ".to_owned())),
+            kms_key("mailtinder", USER_KEY_NAME)
+        );
+    }
 }
 
 /// Refusing stubs for the `Ports` the worker must not use. A call is a bug.

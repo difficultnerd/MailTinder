@@ -93,6 +93,16 @@ Everything else is banned from logs, including tokens, cookies, message IDs, add
 
 A line carries the request ID and at least one pseudonymous user ID. A single-principal line carries one; a two-principal action carries the actor's and the target's pseudonymous IDs on the same line. An admin ending another user's session is therefore one `session_ended_by_admin` security event naming both principals (S6 section 7, S2 AU-07 AC6), not two correlated lines.
 
+## Cloud audit logs
+
+Separate from the application log stream above, Cloud Audit Logs are enabled in `modules/foundation/logging.tf` (`google_project_iam_audit_config`). They are platform records, not application output, so they are not routed to the locked application bucket; they stay in the project's default log store (review F8).
+
+| Audit log | Where it goes | Retention |
+| --- | --- | --- |
+| Admin activity project-wide (`allServices`, `ADMIN_READ`) and data access on Cloud KMS and Secret Manager (`DATA_READ` and `DATA_WRITE`) | The project's `_Default` log bucket, not the locked `mailtinder-logs` application bucket | 30 days (Google Cloud default for `_Default`) |
+
+The KMS and Secret Manager data-access entries name the resource and the calling identity (which principal used or changed key or secret material); they never contain key material or a secret value.
+
 ## Third parties that receive data
 
 | Party | What | Why |

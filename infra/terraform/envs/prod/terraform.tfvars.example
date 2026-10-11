@@ -16,3 +16,8 @@ region = "us-central1"
 
 # Locking the log bucket cannot be undone. Staging passes false (T-1103).
 lock_log_bucket = true
+
+# Production Google OAuth client id (unsub reads it as GOOGLE_OAUTH_CLIENT_ID).
+# No default on purpose: a blank value fails the plan rather than deploying an
+# unsub service that cannot start. Fill in the production value here.
+google_oauth_client_id = "REPLACE_WITH_PROD_OAUTH_CLIENT_ID.apps.googleusercontent.com"
