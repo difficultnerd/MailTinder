@@ -313,7 +313,7 @@ Mail content is not stored (S4, S6), which bounds what a server breach can expos
 - James may read production Firestore only through temporary elevation (3.4), for one of: a support request from the user concerned, a security investigation, or a recovery. Each access has an `Access elevation` issue naming the purpose in words, with no user identifier or content.
 - Data Access audit logs record reads. Alert A7 covers KMS and Secret Manager reads outside the runtime accounts.
 - **Never copy production data out of the project**: no exports, no scheduled exports, no download to a laptop, and no use of production data in tests or fixtures (CLAUDE.md "no real data in fixtures").
-- **Deletion:** account deletion destroys the wrapped `data_key` (crypto-shredding, DEL-2, S6 5). Because there are no backups, no older copy of the wrapped key survives. This is the reason backups stay off: enabling Firestore backups or point-in-time recovery requires a new decision by James and a change to S6 5.
+- **Deletion:** account deletion destroys the wrapped `data_key` (crypto-shredding, DEL-2, S6 5). Because there are no backups, no backup copy of the wrapped key exists; historical reads inside about one hour remain possible (ADR 0004). This is the reason backups stay off: enabling Firestore backups or point-in-time recovery requires a new decision by James and a change to S6 5.
 - **Retention:** per the S5 TTL collections and the 90-day log retention (S6 9).
 
 ## 10. Requirements map

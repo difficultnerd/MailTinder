@@ -106,7 +106,7 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 ## Out of scope
 
 - Admin deletion of another user: not in v1.
-- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. The trial keeps no backups (James, 4 October 2026); this task proves DEL-2 against the live store.
+- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. The trial keeps no backups (James, 4 October 2026); this task proves DEL-2 against the live store: assert the wrapped key is gone from the live document and that decrypting a copy captured before deletion fails once the roughly one-hour historical-read window (ADR 0004) has passed; a test that cannot wait runs against the emulator and says so.
 
 ## Security review checklist
 

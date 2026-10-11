@@ -140,7 +140,7 @@ All in `adapters-gcp/tests/crypto_envelope.rs` unless noted, using an `InMemoryK
 - KMS JSON uses standard base64 with padding; our stored formats use raw bytes (the store encodes them, T-201b). Do not mix them up.
 - Do not call KMS `:decrypt` with a key version name; use the crypto key name so rotation works.
 - `aad.user` must equal the `user` argument; a mismatch is a programming error that must fail closed, not be ignored.
-- Firestore backups: crypto-shredding is only complete because no backup holds the deleted `users` document with its wrapped key (the KEK is shared). The trial keeps no backups, point-in-time recovery or exports (James, 4 October 2026). Add a `// SHRED:` comment at `evict` saying that enabling any of them breaks DEL-2.
+- Firestore backups: crypto-shredding leaves no backup copy only because no backup holds the deleted `users` document with its wrapped key (the KEK is shared). The trial keeps no backups, point-in-time recovery or exports (James, 4 October 2026). Add a `// SHRED:` comment at `evict` saying that enabling any of them breaks DEL-2.
 - Keep `cargo deny` green: no `aws-lc-sys`, no `openssl`, no `rsa`.
 
 ## Out of scope
