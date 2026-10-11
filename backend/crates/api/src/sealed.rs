@@ -153,8 +153,9 @@ impl SealedTokens {
     /// # Errors
     ///
     /// `Malformed` for a token that is oversized, non-ASCII, wrongly shaped,
-    /// has an unknown prefix or type, a bad expiry, or an undecodable body;
-    /// `WrongType` when the clear type is a different known type;
+    /// has an unknown prefix, a bad expiry, or an undecodable body;
+    /// `WrongType` when the clear type is not the expected one (an unknown
+    /// wire name or a different known type);
     /// `Expired` when `now >= exp`; `Unavailable` when the key service is
     /// down; `Invalid` when the AEAD open or payload deserialisation fails.
     pub async fn open<T: DeserializeOwned>(
@@ -172,10 +173,10 @@ impl SealedTokens {
         if parts.len() != 4 || parts[0] != TOKEN_PREFIX {
             return Err(TokenError::Malformed);
         }
-        // Part 1: the clear type. If it is not a known wire name it is
-        // malformed; if it is a different known type, give the clearer error.
-        let claimed = wire_to_type(parts[1]).ok_or(TokenError::Malformed)?;
-        if claimed != expected {
+        // Part 1: the clear type. It must be a known wire name equal to the
+        // type the route expects. An unknown name and a different known name
+        // are both `WrongType` (S7 5.5: a client error, not `Malformed`).
+        if wire_to_type(parts[1]) != Some(expected) {
             return Err(TokenError::WrongType);
         }
         // Part 2: the clear expiry, digits only, 1 to 12 chars.

@@ -40,6 +40,17 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         ("\"@x", "[email]"),
         ("a@<b>", "[email]"),
         ("a@@b", "[email]"),
+        // A quoted local part may contain quoted-pairs (`\"`, `\\`); the whole
+        // address, not just the part after the first escaped quote, is replaced.
+        ("\"private name\\\" suffix\"@example.com", "[email]"),
+        ("Mail \"a\\\\\"@b.test now", "Mail [email] now"),
+        ("\"a\\\"b c\\\"d\"@x.example", "[email]"),
+        // The address literal pass can leave a stray `@` at the end of a run;
+        // the whole run goes, the `@` is never deleted on its own (T-1115b).
+        // Both counters come from the `@`-adjacent-text property, pinned here
+        // and in redact.proptest-regressions.
+        ("word \u{ae}@[\u{10780}]@ word", "word [email] word"),
+        ("word a@[!]@ word", "word [email] word"),
     ] {
         assert_eq!(redact(input), expected);
     }

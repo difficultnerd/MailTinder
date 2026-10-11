@@ -1,0 +1,30 @@
+# Build context for backend/Dockerfile (T-1104).
+#
+# The image is built from the workspace that ships with the commit, but only
+# the crates, Cargo.lock and the runtime configuration take part in a release
+# build. Everything else stays out: a smaller context, and no test corpus,
+# fixture or test-only key in the image's history (ASVS V13.4.1, V13.4.2).
+
+# Build output and local caches.
+target/
+**/target/
+
+# Bench sources and fixture data: never compiled into a release binary (a crate
+# that needs a fixture depends on it as a dev-dependency only), and no manifest
+# names one, so excluding them cannot break manifest loading.
+crates/*/benches/
+**/fixtures/
+
+# `crates/*/tests/` is deliberately NOT excluded. `crates/adapters-models/
+# Cargo.toml` declares `[[test]] name = "jev"` with no `path`, so cargo resolves
+# the file to `tests/jev.rs` while it loads the workspace; an ignored `tests/`
+# directory makes every `cargo build -p <svc>` fail on manifest loading before
+# it compiles anything. Test sources still never reach the image - the runtime
+# stage copies only the release binary (ASVS V13.4.1) - and the policy test
+# `crates/api/tests/dockerfile_policy.rs` fails if a manifest-named target is
+# added back to this list.
+
+# Coverage and profiler artefacts.
+**/*.profraw
+coverage/
+lcov.info

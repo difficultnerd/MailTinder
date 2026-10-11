@@ -95,6 +95,22 @@ pub async fn run_sweep(state: &WorkerState) -> SweepCounts {
         log_step_failure("rate_limits", &e);
     }
 
+    // The run's own heartbeat (T-1107, S7 5.12): one content-free `sweep`
+    // metric event per run, whatever the outcome, so the `sweep_runs`
+    // log-based metric has a series and its absence alert can fire when the
+    // schedule or this service dies. Just that a run happened: no user, no
+    // counts, no step names (S5 logs, S7 5.12 "counts only").
+    metric_event(&obs::MetricEvent {
+        event_type: "sweep",
+        outcome: if counts.failed_steps.is_empty() {
+            "success"
+        } else {
+            "failure"
+        },
+        user: None,
+        provider: None,
+    });
+
     counts
 }
 

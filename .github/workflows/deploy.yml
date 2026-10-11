@@ -1,0 +1,272 @@
+name: deploy
+
+# T-1104. Every commit on `main` is built once, deployed to staging and then
+# promoted to production, where the `production` environment's required reviewer
+# (James) has to approve it.
+#
+# T-1105 owns the staging smoke tests and adds its reusable workflow to the job
+# slot marked below; it depends on this task, so it is not wired up yet. Until
+# it lands, the required reviewer is the only gate between a staging deploy and
+# production (infra/terraform/README.md, "Deploying and rolling back").
+#
+# Build once, promote by digest: production runs the exact bytes staging
+# tested, and no job rebuilds an image for production (S4 1).
+#
+# Rollback is the previous revision, not a new image:
+#   gcloud run services update-traffic <svc> --to-revisions=<previous>=100
+# (infra/terraform/README.md, "Deploying and rolling back").
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deployment at a time, and a running one is never cancelled: images are
+# pushed in `build`, so a cancelled run could leave staging (or production)
+# pointing at a digest a later job never saw.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+# No job runs on a pull request: the triggers above do not include
+# `pull_request`, which keeps forks away from the WIF tokens entirely.
+# `contents: read` is all the checkout needs; `id-token: write` is what the auth
+# step exchanges for a short-lived Google token. There is no JSON key anywhere.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: us-central1
+  AR_REPOSITORY: mailtinder
+  # Pinned tooling: see the crane install step for the tarball's checksum.
+  CRANE_VERSION: v0.22.1
+  CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
+
+jobs:
+  # Build the three service images from the commit, push them to the staging
+  # Artifact Registry and carry the digests forward. `SERVICE` is the only
+  # difference between the three builds (backend/Dockerfile).
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    # Belt and braces with the triggers: a run from anywhere else stops here,
+    # before it could present a token the WIF condition would reject anyway.
+    if: github.repository == 'difficultnerd/MailTinder'
+    # The staging WIF provider pins `assertion.environment == 'staging'`
+    # (T-1103), so a job that names no environment has no token (T-1102b).
+    # This environment needs no reviewer.
+    environment: staging
+    strategy:
+      matrix:
+        service: [api, unsub, worker]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.STAGING_WIF_PROVIDER }}
+          service_account: ${{ vars.STAGING_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Point docker at Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and push ${{ matrix.service }}
+        # The build context is `backend/`, so the image comes from the commit's
+        # workspace; `backend/.dockerignore` keeps `target/`, the tests and the
+        # fixtures out of it. The tag is the commit sha.
+        env:
+          STAGING_PROJECT: ${{ vars.STAGING_PROJECT }}
+        run: |
+          set -euo pipefail
+          image="us-central1-docker.pkg.dev/${STAGING_PROJECT}/${AR_REPOSITORY}/${{ matrix.service }}:${GITHUB_SHA}"
+          docker build --build-arg SERVICE=${{ matrix.service }} -f backend/Dockerfile -t "${image}" backend
+          docker push "${image}"
+          digest="$(gcloud artifacts docker images describe "${image}" --format='get(image_summary.digest)')"
+          case "${digest}" in
+            sha256:*) ;;
+            *) echo "::error::no image digest for ${{ matrix.service }}"; exit 1 ;;
+          esac
+          printf '%s %s\n' "${{ matrix.service }}" "${digest}" > "digest-${{ matrix.service }}.txt"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: digest-${{ matrix.service }}.txt
+          if-no-files-found: error
+
+  # Deploy the digests built above to staging: Cloud Run first, then the web
+  # app, both from the same commit.
+  deploy-staging:
+    name: deploy-staging
+    runs-on: ubuntu-latest
+    needs: build
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.STAGING_WIF_PROVIDER }}
+          service_account: ${{ vars.STAGING_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Deploy the built digests to Cloud Run
+        # `--image` only. Terraform owns the environment variables, the service
+        # accounts, the scaling and the IAM bindings (T-1102a, T-1102b); passing
+        # any of those here would fight it on the next `apply`.
+        env:
+          STAGING_PROJECT: ${{ vars.STAGING_PROJECT }}
+        run: |
+          set -euo pipefail
+          for svc in api unsub worker; do
+            file="digests/digest-${svc}.txt"
+            test -f "${file}" || { echo "::error::no digest artifact for ${svc}"; exit 1; }
+            digest="$(cut -d' ' -f2 < "${file}")"
+            gcloud run deploy "${svc}" \
+              --image "us-central1-docker.pkg.dev/${STAGING_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}" \
+              --region "${REGION}" --quiet
+          done
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+
+      - name: Build the web app
+        # No `MT_E2E` define: staging is a real deployment, not a test session.
+        working-directory: app
+        run: flutter build web --release
+
+      - name: Point the staging alias at the staging project
+        env:
+          STAGING_PROJECT: ${{ vars.STAGING_PROJECT }}
+        run: |
+          set -euo pipefail
+          jq --arg project "${STAGING_PROJECT}" '.projects.staging = $project' .firebaserc > .firebaserc.new
+          mv .firebaserc.new .firebaserc
+
+      - name: Deploy Hosting to staging
+        # `firebase.json` owns the headers and the rewrites (T-006). The CLI
+        # reads the Google credential the auth step placed on the runner; no
+        # token is ever printed.
+        run: npx --yes firebase-tools@15.33.0 deploy --only hosting --project staging
+
+  # T-1105 adds the smoke job here: a reusable workflow that runs the smoke
+  # binary as `mt-smoke` against this staging deployment. `deploy-prod` then
+  # `needs:` it. Until it exists `deploy-prod` depends on `deploy-staging` alone
+  # and the production environment's required reviewer is the only gate before
+  # production (infra/terraform/README.md).
+  #
+  # smoke:
+  #   name: smoke
+  #   needs: deploy-staging
+  #   uses: ./.github/workflows/smoke.yml
+
+  # Promote the digests deployed to staging to production, after the
+  # `production` environment's reviewer approves the run. Nothing is rebuilt
+  # here; when T-1105 lands this job also `needs:` the smoke job above.
+  deploy-prod:
+    name: deploy-prod
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    # The production WIF provider pins `assertion.environment == 'production'`,
+    # and GitHub withholds that claim until the required reviewer (James)
+    # approves. Approving is a decision to run these exact images as the
+    # production runtime identities (T-1102b).
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.PROD_WIF_PROVIDER }}
+          service_account: ${{ vars.PROD_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Point docker at Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Install crane v${{ env.CRANE_VERSION }} (checksum verified)
+        # Pinned to an exact release, and the tarball's sha256 is checked before
+        # anything is extracted: crane moves the digests, so it is deployment
+        # tooling (the archive also holds gcrane and krane; only crane is used).
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/go-containerregistry.tgz \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  /tmp/go-containerregistry.tgz" | sha256sum -c -
+          mkdir -p "${HOME}/bin"
+          tar -xzf /tmp/go-containerregistry.tgz -C "${HOME}/bin" crane
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Copy the digests staging ran into the production repository
+        # A copy, not a build: the production repository receives the same
+        # manifest digest staging ran, so what was tested is what ships.
+        # `mt-deployer@<prod>` reads the staging repository (T-1103).
+        env:
+          STAGING_PROJECT: ${{ vars.STAGING_PROJECT }}
+          PROD_PROJECT: ${{ vars.PROD_PROJECT }}
+        run: |
+          set -euo pipefail
+          for svc in api unsub worker; do
+            file="digests/digest-${svc}.txt"
+            test -f "${file}" || { echo "::error::no digest artifact for ${svc}"; exit 1; }
+            digest="$(cut -d' ' -f2 < "${file}")"
+            crane copy \
+              "us-central1-docker.pkg.dev/${STAGING_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}" \
+              "us-central1-docker.pkg.dev/${PROD_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}"
+          done
+
+      - name: Deploy the promoted digests to Cloud Run
+        # `--image` only, exactly as in staging: Terraform keeps owning
+        # everything else about the service.
+        env:
+          PROD_PROJECT: ${{ vars.PROD_PROJECT }}
+        run: |
+          set -euo pipefail
+          for svc in api unsub worker; do
+            digest="$(cut -d' ' -f2 < "digests/digest-${svc}.txt")"
+            gcloud run deploy "${svc}" \
+              --image "us-central1-docker.pkg.dev/${PROD_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}" \
+              --region "${REGION}" --quiet
+          done
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: 3.47.6
+          channel: stable
+          cache: true
+
+      - name: Build the web app
+        working-directory: app
+        run: flutter build web --release
+
+      - name: Point the prod alias at the production project
+        env:
+          PROD_PROJECT: ${{ vars.PROD_PROJECT }}
+        run: |
+          set -euo pipefail
+          jq --arg project "${PROD_PROJECT}" '.projects.prod = $project' .firebaserc > .firebaserc.new
+          mv .firebaserc.new .firebaserc
+
+      - name: Deploy Hosting to production
+        # The same commit, deployed from the same job that promoted the images.
+        run: npx --yes firebase-tools@15.33.0 deploy --only hosting --project prod

@@ -40,7 +40,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
    (or edit the placeholder in `backend.tf`; the bucket name is never committed)
 
-4. `terraform plan`. Read it. Then `terraform apply`.
+4. Write `terraform.tfvars` (never committed) with `google_oauth_client_id`,
+   `billing_account` and `alert_email`. The monitoring module (T-1107) needs the
+   billing account for its two budgets and James's address for the one email
+   notification channel that every budget and alert policy notifies; the email
+   is personal data, so it lives only in `terraform.tfvars`. Then `terraform
+   plan`. Read it. Then `terraform apply`, and confirm the test notification
+   arrives from the channel.
 5. Add the secret values. Terraform creates the four containers and stops
    there, so no value ever enters state:
 
@@ -62,9 +68,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 ### Staging (T-1103)
 
 Staging is a **second project** (`<name>-staging`, chosen by James) with its own
-billing link and **its own state bucket**. It runs the same two modules from
-this repository as production; only the variables differ. Bootstrap it by
-repeating steps 1-4 above with the staging names:
+billing link and **its own state bucket**. It runs the same three modules from
+this repository as production; only the variables differ. Staging passes
+`enable_alerts = false` to the monitoring module, so it gets the budgets and the
+email channel but no alert policy, no log-based metric and no uptime check
+(T-1107). Bootstrap it by repeating steps 1-4 above with the staging names,
+including staging's own `billing_account` and `alert_email` in
+`terraform.tfvars`:
 
 1. Create the staging project and link billing to it.
 2. Create `gs://<staging-project>-tfstate` (the same command, the staging name).
@@ -110,6 +120,35 @@ locked default. Once staging is applied, record its Hosting URL
   Google identity and short-lived OIDC tokens.
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
+
+## Monitoring: the Vertex AI budget filter, and follow-ups (T-1107)
+
+- The Vertex AI budget filters on the **Cloud Billing catalogue service id, not
+  the API hostname**: `var.vertex_billing_service` defaults to
+  `services/C7E2-9256-1C43` (Vertex AI, now billed as Gemini Enterprise Agent
+  Platform), taken from Google's "Services that are eligible for spend cap
+  budgets" table
+  (<https://cloud.google.com/billing/docs/how-to/budgets-spend-caps>). A filter
+  of `services/aiplatform.googleapis.com` is not a catalogue entry and would
+  match no cost. **Verify on first apply** (review F4): this is the one value
+  here that cannot be checked offline - the budget API rejects an unknown
+  service id and the Cloud Billing Catalog API
+  (`GET https://cloudbilling.googleapis.com/v1/services`) lists the current ids
+  with their display names. Override `vertex_billing_service` in
+  `terraform.tfvars` if the catalogue has moved; the module rejects an API
+  hostname in that variable.
+- `firebase.json` names the Hosting `/api/**` rewrite target `serviceId: "api"`,
+  but the runtime module creates the Cloud Run service as `mt-api`. Known
+  follow-up (review F5): T-1107's file list does not include `firebase.json`, so
+  it was left as it is and needs an owner decision (fix the rewrite, or align
+  the service name).
+- The `terraform` CI job runs `init`/`validate`/`test` for `modules/foundation`
+  and `modules/runtime`, and `init`/`validate` for both roots, but **not**
+  `modules/monitoring`. Its `tests/monitoring.tftest.hcl` suite therefore does
+  not run in CI yet (review F2 - `.github/workflows/ci.yml` is owner-only).
+  Run it locally as in Checks above:
+  `(cd modules/monitoring && terraform init -backend=false && terraform test)`.
+- Deferred, not fixed by this task (Low/Info): review findings F6-F10.
 
 ## Decision (owner, 10 Oct): deletion semantics
 
@@ -167,6 +206,90 @@ What it holds, directly and transitively:
   without the approval gate. Branch protection on `main` is the second layer
   (S11 3, T-1104). Approving a production deploy is a decision to run a
   specific image as those identities - treat it as one.
+
+## Deploying and rolling back (T-1104)
+
+`.github/workflows/deploy.yml` builds the three service images once for every
+commit on `main`, deploys them and the web app to staging, and then promotes the
+same image digests to production after the `production` environment's reviewer
+approves. Nothing is rebuilt for production: the promote job copies the manifest
+digests staging ran into the production repository (`crane`, pinned to one
+release and checksum checked), so the bytes staging ran are the bytes that ship.
+
+T-1105 owns the staging smoke tests and adds its reusable workflow to the job
+slot in `deploy.yml` marked `# T-1105 adds the smoke job here`; it depends on
+this task, so it is not wired up yet. **Until T-1105 lands that smoke job,
+`deploy-prod` depends on `deploy-staging` alone and the `production`
+environment's required reviewer (James) is the only gate between a staging
+deploy and production** - nothing automatically checks the staging deployment
+before the promotion is approved.
+
+Images are tagged with the commit sha and pushed to
+`us-central1-docker.pkg.dev/<project>/mailtinder/<service>` (T-1102a). Keeping
+every image is the default while S11 is open: nothing prunes Artifact Registry.
+Cloud Run is deployed with `--image` only, so Terraform keeps owning the
+environment variables, the service accounts and the scaling.
+
+GitHub repository variables the workflow reads, all set by James:
+
+| Variable | What it is |
+| --- | --- |
+| `STAGING_PROJECT` | the staging project id (T-1103) |
+| `STAGING_WIF_PROVIDER` | the staging Workload Identity provider resource name |
+| `STAGING_DEPLOYER` | the staging `mt-deployer` service account email |
+| `PROD_PROJECT` | the production project id (T-1102b) |
+| `PROD_WIF_PROVIDER` | the production Workload Identity provider resource name |
+| `PROD_DEPLOYER` | the production `mt-deployer` service account email |
+| `STAGING_URL` | the staging Hosting URL (T-1105 reads it) |
+
+GitHub environments, and why each deploy job must name one:
+
+- `staging` - no required reviewer. Its WIF provider pins
+  `assertion.environment == 'staging'`.
+- `production` - James as required reviewer. Its WIF provider pins
+  `assertion.environment == 'production'`, so GitHub withholds that claim, and
+  therefore the token, until he approves.
+
+One binding the promote job needs is not in Terraform yet: the production
+`mt-deployer` has to read the staging `mailtinder` repository, because the
+digest copy crosses projects. Add it to the staging root (T-1103):
+
+```
+gcloud artifacts repositories add-iam-policy-binding mailtinder \
+  --location=us-central1 --project=<staging-project> \
+  --member=serviceAccount:mt-deployer@<prod-project>.iam.gserviceaccount.com \
+  --role=roles/artifactregistry.reader
+```
+
+**needs owner (ci.yml).** The grant belongs in the staging root as Terraform
+(`google_artifact_registry_repository_iam_member`, `role =
+"roles/artifactregistry.reader"`, member the production deployer passed in as a
+variable - no project id committed). It is not there yet because the role
+allowlist in `.github/workflows/ci.yml` does not list
+`roles/artifactregistry.reader`, and that workflow is owner-only: the new role
+has to be allowlisted there first, or the `ci-integrity` job fails and the pull
+request cannot merge. The manual command above stays the interim step until the
+owner makes the Terraform and allowlist change together.
+
+Container scanning stays off in CI (CLAUDE.md); if Artifact Registry scanning
+is ever enabled it runs in Google Cloud, and nothing in this pipeline reads its
+findings. Smoke failures stop the deploy and GitHub notifies the committer
+(S11 default).
+
+### Rolling back
+
+There is no rollback automation, by design: the previous revision is already
+there, so a rollback is a traffic move rather than a redeploy.
+
+```
+gcloud run services update-traffic <svc> --to-revisions=<previous>=100 --region=us-central1
+firebase hosting:rollback --project <prod-project>
+```
+
+Cloud Run keeps the earlier revisions, and Hosting keeps the earlier release,
+so both are minutes. The image for a known-good revision stays in Artifact
+Registry under its commit sha, so `gcloud run deploy --image ...@<digest>` can
+also put a specific digest back.
 
 ## Checks
 
