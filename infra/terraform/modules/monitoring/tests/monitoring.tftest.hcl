@@ -62,9 +62,17 @@ run "vertex_budget_filtered_to_vertex_ai" {
   assert {
     condition = (
       length(google_billing_budget.vertex.budget_filter[0].services) == 1 &&
-      contains(tolist(google_billing_budget.vertex.budget_filter[0].services), "services/aiplatform.googleapis.com")
+      contains(tolist(google_billing_budget.vertex.budget_filter[0].services), var.vertex_billing_service)
     )
     error_message = "the second budget must be filtered to the Vertex AI service alone, so model spend is watched on its own line (S4 5.7)"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in google_billing_budget.vertex.budget_filter[0].services :
+      startswith(s, "services/") && !endswith(s, ".googleapis.com")
+    ])
+    error_message = "the Vertex AI budget must filter on the Cloud Billing catalogue service id (services/{service_id}), not the API hostname aiplatform.googleapis.com, which filters nothing (T-1107 review F4)"
   }
 
   assert {
@@ -180,6 +188,31 @@ run "metrics_extract_no_labels_but_outcome" {
       strcontains(metric.filter, "jsonPayload.${var.log_fields.event}")
     ])
     error_message = "every counter must be scoped to the Cloud Run revision entries and key off T-307's real event field, or its alert can never fire (T-1107 edge case)"
+  }
+
+  # F1: the sweep_runs counter keys off the `sweep` event the worker emits once
+  # per run (worker/src/sweep.rs run_sweep), so the absence alert has a series.
+  assert {
+    condition = strcontains(
+      google_logging_metric.metric["sweep_runs"].filter,
+      "jsonPayload.${var.log_fields.event}=\"sweep\""
+    )
+    error_message = "the sweep_runs counter must key off the emitted `sweep` event type, or the 'sweep stopped' absence alert never has a series (T-1107 review F1)"
+  }
+
+  # F3: a label extractor without a matching metric_descriptor label makes the
+  # Logging API reject the metric, so each counter declares exactly the one
+  # outcome label it extracts.
+  assert {
+    condition = alltrue([
+      for metric in values(google_logging_metric.metric) :
+      length(metric.metric_descriptor) == 1 &&
+      length(metric.metric_descriptor[0].labels) == 1 &&
+      toset([for l in metric.metric_descriptor[0].labels : l.key]) == toset(keys(metric.label_extractors)) &&
+      metric.metric_descriptor[0].metric_kind == "DELTA" &&
+      metric.metric_descriptor[0].value_type == "INT64"
+    ])
+    error_message = "every log-based metric needs one metric_descriptor label per label_extractors key (here just the outcome code), or the API rejects it (T-1107 review F3)"
   }
 
   assert {

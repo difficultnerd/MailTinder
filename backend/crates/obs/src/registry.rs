@@ -50,6 +50,10 @@ pub const ACTIONS: &[&str] = &[
     "undo_failed",
     "unsub_after_undo",
     "history_missing",
+    // The sweep's own heartbeat (T-1107, S7 5.12): one `sweep` metric event per
+    // API-INT-2 run, whatever the outcome, so the `sweep_runs` log-based metric
+    // has a series and its absence alert has something to be absent from.
+    "sweep",
 ];
 
 pub const OUTCOMES: &[&str] = &[

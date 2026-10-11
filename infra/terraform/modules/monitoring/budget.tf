@@ -48,17 +48,18 @@ resource "google_billing_budget" "project" {
   }
 }
 
-# The Vertex AI budget (S4 5.7). `services` filters the budget to one service:
-# `services/aiplatform.googleapis.com` is Vertex AI, which the `api` service
-# calls with its own identity (S4 5.7). Everything else about it matches the
-# project budget.
+# The Vertex AI budget (S4 5.7). `services` filters the budget to one service,
+# and a budget service filter takes the Cloud Billing catalogue service id
+# (`services/{service_id}`), not the API hostname the `api` service calls - see
+# var.vertex_billing_service for the id and how to verify it (T-1107 review F4).
+# Everything else about it matches the project budget.
 resource "google_billing_budget" "vertex" {
   billing_account = var.billing_account
   display_name    = "MailTinder Vertex AI monthly budget"
 
   budget_filter {
     projects = ["projects/${var.project_id}"]
-    services = ["services/aiplatform.googleapis.com"]
+    services = [var.vertex_billing_service]
   }
 
   amount {

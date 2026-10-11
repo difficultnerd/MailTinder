@@ -44,6 +44,33 @@ variable "vertex_budget_usd" {
   description = "Vertex AI budget in US dollars per month, a second budget filtered to the Vertex AI service. [DEFAULT] 5: S4 5.7 wants a separate billing alert on Vertex AI usage."
 }
 
+variable "vertex_billing_service" {
+  type        = string
+  default     = "services/C7E2-9256-1C43"
+  description = <<-EOT
+    The service filter for the Vertex AI budget, in the Cloud Billing
+    catalogue's own form `services/{service_id}`. [DEFAULT] Vertex AI (now
+    billed as Gemini Enterprise Agent Platform) is service id C7E2-9256-1C43 in
+    the Google Cloud "Services that are eligible for spend cap budgets" table
+    (https://cloud.google.com/billing/docs/how-to/budgets-spend-caps, checked
+    2026-10-11). A budget filter takes the Cloud Billing service id, NOT the API
+    hostname: `services/aiplatform.googleapis.com` is not a catalogue entry and
+    the budget would filter nothing (T-1107 review F4). Verify the id on the
+    first apply - `gcloud billing budgets create --filter-services=...` rejects
+    an unknown id, and the Cloud Billing Catalog API (`GET
+    https://cloudbilling.googleapis.com/v1/services`) lists the current ids with
+    their display names.
+  EOT
+
+  validation {
+    condition = (
+      startswith(var.vertex_billing_service, "services/") &&
+      !endswith(var.vertex_billing_service, ".googleapis.com")
+    )
+    error_message = "vertex_billing_service must be a Cloud Billing catalogue service id of the form services/{service_id}, not an API hostname such as aiplatform.googleapis.com (T-1107 review F4)."
+  }
+}
+
 variable "enable_alerts" {
   type        = bool
   default     = true

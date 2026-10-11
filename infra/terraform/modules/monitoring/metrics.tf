@@ -30,9 +30,12 @@ locals {
     # (worker/src/sweep.rs log_expired_outcome).
     jobs_expired = "jsonPayload.${local.event_field}=\"unsub_outcome\" AND jsonPayload.${local.outcome_field}=\"expired\""
 
-    # The sweep runs every 15 minutes (S7 5.12). This counter must exist for the
-    # "sweep stopped" absence alert to have a metric to be absent from, whether
-    # or not the run itself has an outcome (T-1107 edge case).
+    # The sweep runs every 15 minutes (S7 5.12). The worker emits exactly one
+    # `sweep` metric event per run, whatever the outcome
+    # (backend/crates/worker/src/sweep.rs run_sweep; the value is registered in
+    # backend/crates/obs/src/registry.rs ACTIONS). So this counter has a series
+    # for the "sweep stopped" absence alert to be absent from (T-1107 edge
+    # case, F1).
     sweep_runs = "jsonPayload.${local.event_field}=\"sweep\""
 
     # S6 7: security events for the four authentication and authorisation
@@ -57,6 +60,21 @@ resource "google_logging_metric" "metric" {
   project = var.project_id
   name    = each.key
   filter  = "${local.app_log_resource} AND ${each.value}"
+
+  # The metric descriptor must declare one label per `label_extractors` key or
+  # the Logging API rejects the metric ("the metric descriptor has no label with
+  # this key"). The label is the outcome code and nothing else (T-1107 step 3,
+  # F3). A log-based counter is a DELTA INT64.
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+
+    labels {
+      key         = local.outcome_field
+      value_type  = "STRING"
+      description = "The S10 8 outcome code of the counted entry; never a user ID, an address or a route parameter."
+    }
+  }
 
   # The only label is the outcome code: it lets one counter be split by result
   # without ever extracting a user ID, an address or a route parameter (T-1107

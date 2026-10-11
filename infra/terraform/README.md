@@ -121,6 +121,35 @@ locked default. Once staging is applied, record its Hosting URL
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
 
+## Monitoring: the Vertex AI budget filter, and follow-ups (T-1107)
+
+- The Vertex AI budget filters on the **Cloud Billing catalogue service id, not
+  the API hostname**: `var.vertex_billing_service` defaults to
+  `services/C7E2-9256-1C43` (Vertex AI, now billed as Gemini Enterprise Agent
+  Platform), taken from Google's "Services that are eligible for spend cap
+  budgets" table
+  (<https://cloud.google.com/billing/docs/how-to/budgets-spend-caps>). A filter
+  of `services/aiplatform.googleapis.com` is not a catalogue entry and would
+  match no cost. **Verify on first apply** (review F4): this is the one value
+  here that cannot be checked offline - the budget API rejects an unknown
+  service id and the Cloud Billing Catalog API
+  (`GET https://cloudbilling.googleapis.com/v1/services`) lists the current ids
+  with their display names. Override `vertex_billing_service` in
+  `terraform.tfvars` if the catalogue has moved; the module rejects an API
+  hostname in that variable.
+- `firebase.json` names the Hosting `/api/**` rewrite target `serviceId: "api"`,
+  but the runtime module creates the Cloud Run service as `mt-api`. Known
+  follow-up (review F5): T-1107's file list does not include `firebase.json`, so
+  it was left as it is and needs an owner decision (fix the rewrite, or align
+  the service name).
+- The `terraform` CI job runs `init`/`validate`/`test` for `modules/foundation`
+  and `modules/runtime`, and `init`/`validate` for both roots, but **not**
+  `modules/monitoring`. Its `tests/monitoring.tftest.hcl` suite therefore does
+  not run in CI yet (review F2 - `.github/workflows/ci.yml` is owner-only).
+  Run it locally as in Checks above:
+  `(cd modules/monitoring && terraform init -backend=false && terraform test)`.
+- Deferred, not fixed by this task (Low/Info): review findings F6-F10.
+
 ## Decision (owner, 10 Oct): deletion semantics
 
 The owner's decision is **immediate crypto-shredding: no point-in-time recovery
