@@ -1,0 +1,22 @@
+# Build context for backend/Dockerfile (T-1104).
+#
+# The image is built from the workspace that ships with the commit, but only
+# the crates, Cargo.lock and the runtime configuration take part in a release
+# build. Everything else stays out: a smaller context, and no test corpus,
+# fixture or test-only key in the image's history (ASVS V13.4.1, V13.4.2).
+
+# Build output and local caches.
+target/
+**/target/
+
+# Test sources, benches and fixture data. They are never compiled into a
+# release binary (every crate that needs them depends on them behind a feature
+# or as a dev-dependency only).
+crates/*/tests/
+crates/*/benches/
+**/fixtures/
+
+# Coverage and profiler artefacts.
+**/*.profraw
+coverage/
+lcov.info
