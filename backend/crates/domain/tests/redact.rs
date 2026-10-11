@@ -47,8 +47,15 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         ("\"a\\\"b c\\\"d\"@x.example", "[email]"),
         // A malformed/unterminated quoted local part must not leave the
         // identifying prefix behind: the fallback pass matches from the
-        // opening quote to the first `@` run (T-1115d).
+        // token start to the first `@` run (T-1115d).
         ("Mail \"private name\\\"@example.com now", "Mail [email] now"),
+        // A mid-token quote and an empty quoted tail: the fallback must
+        // start at the token, not the quote, so an identifying prefix
+        // before the quote cannot survive (T-1115d).
+        ("Mail private\"name@example.com now", "Mail [email] now"),
+        // Bare token, the reported reproduction shape (T-1115d).
+        ("private\"name@example.invalid", "[email]"),
+        ("Mail private\"@example.com now", "Mail [email] now"),
         ("\"a\\\"b\"@x.example", "[email]"),
         ("\"unterminated name@x.example", "[email]"),
         ("\"\\\"@x", "[email]"),

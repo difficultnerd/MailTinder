@@ -34,13 +34,16 @@ struct Patterns {
     www: Regex,
     host: Regex,
     email_quoted: Regex,
-    // Fallback for a malformed/unterminated quoted local part: an opening
-    // quote, then a lazy run of any non-quote character or a backslash-quote
-    // pair, then the FIRST `@` and the rest of the address run. A backslash
-    // is an ordinary character here (`[^"]` takes it), so a backslash
-    // immediately before the only `@` cannot hide it, and `\"` is accepted as
-    // a pair so an escaped closing quote does not stop the run. Nothing can
-    // consume the `@`, so the identifying prefix can never survive.
+    // Fallback for a malformed/unterminated quoted local part: any leading
+    // non-whitespace of the token, then an opening quote, then a lazy run of
+    // any non-quote character or a backslash-quote pair, then the FIRST `@`
+    // and the rest of the address run. A backslash is an ordinary character
+    // here (`[^"]` takes it), so a backslash immediately before the only `@`
+    // cannot hide it, and `\"` is accepted as a pair so an escaped closing
+    // quote does not stop the run. Matching from the token start (not the
+    // opening quote) also consumes any identifying text that precedes the
+    // quote, which the later `@`-based passes cannot remove once the only `@`
+    // has been consumed.
     email_quoted_fallback: Regex,
     email_literal: Regex,
     email_at: Regex,
@@ -67,7 +70,7 @@ impl Patterns {
             // `[^"]*` stops at the first escaped quote and only redacts the
             // suffix of the address, leaving the identifying prefix behind.
             email_quoted: Regex::new(r#""(?:[^"\\]|\\.)*"@\S+"#)?,
-            email_quoted_fallback: Regex::new(r#""(?:[^"]|\\")*?@\S+"#)?,
+            email_quoted_fallback: Regex::new(r#"\S*"(?:[^"]|\\")*?@\S+"#)?,
             email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
             email_at: Regex::new(r"\S*@\S+")?,
             email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")?,
