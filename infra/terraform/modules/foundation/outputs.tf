@@ -22,7 +22,7 @@ output "kms_system_key_id" {
 output "secret_ids" {
   description = "Secret Manager container ids (containers only; values are added by James)."
   value = {
-    oauth_client_secret = google_secret_manager_secret.secret["oauth-client-secret"].secret_id
+    oauth_client_secret = google_secret_manager_secret.secret["google-oauth-client-secret"].secret_id
     jev_api_key         = google_secret_manager_secret.secret["jev-api-key"].secret_id
     email_lookup_hmac   = google_secret_manager_secret.secret["email-lookup-hmac-key"].secret_id
     log_pseudonym_hmac  = google_secret_manager_secret.secret["log-pseudonym-hmac-key"].secret_id
