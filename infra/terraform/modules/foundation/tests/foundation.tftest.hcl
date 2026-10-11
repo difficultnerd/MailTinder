@@ -411,3 +411,27 @@ run "every_regional_resource_uses_var_region" {
     error_message = "every regional resource must take its location from var.region (S4 1)"
   }
 }
+
+# Staging is a separate project built from this same module (T-1103). It differs
+# in one variable: the 90-day log bucket is left unlocked so the staging project
+# can be torn down (locking cannot be undone). Retention and location do not
+# change, and the production run above keeps the locked default, so a change
+# that started honouring `lock_log_bucket = false` in production - or one that
+# stopped honouring it in staging - fails one of the two runs.
+run "staging_log_bucket_is_unlocked" {
+  command = plan
+
+  variables {
+    env             = "staging"
+    lock_log_bucket = false
+  }
+
+  assert {
+    condition = (
+      google_logging_project_bucket_config.app.locked == false &&
+      google_logging_project_bucket_config.app.retention_days == 90 &&
+      google_logging_project_bucket_config.app.location == var.region
+    )
+    error_message = "staging passes lock_log_bucket = false: the bucket stays 90 days in var.region but unlocked, so the staging project can be torn down (T-1103)"
+  }
+}
