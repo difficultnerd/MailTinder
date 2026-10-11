@@ -35,6 +35,7 @@ variable "kms_key_id"         { type = string }
 variable "secret_ids"         { type = map(string) }
 variable "github_repository"  { type = string default = "difficultnerd/MailTinder" }
 variable "deploy_ref"         { type = string default = "refs/heads/main" }
+variable "deploy_environment" { type = string default = "production" }  # GitHub environment the OIDC token must name (T-1103 sets "staging")
 variable "max_instances"      { type = number default = 3 }   # S7 6 [ASSUMES] 3
 variable "placeholder_image"  { type = string default = "us-docker.pkg.dev/cloudrun/container/hello" }
 
@@ -63,7 +64,7 @@ output "deployer_email"       { value = google_service_account.deployer.email }
    - `roles/iam.serviceAccountUser` on the three runtime accounts only.
    - `roles/artifactregistry.writer` on the `mailtinder` repository only.
    - `roles/firebasehosting.admin` on the project (no narrower role exists).
-   Nothing else: no KMS, Secret Manager, Firestore, IAM admin or primitive role.
+   Nothing else *directly*: no KMS, Secret Manager, Firestore, IAM admin or primitive role. (`run.developer` plus `actAs` still lets the deployer run an arbitrary image as a runtime account and so reach their KMS and secret access transitively - see the checklist.)
 6. **Prod root:** `module "runtime"` with `env = "prod"`; production deploys need a GitHub environment approval (T-1104), so set `deploy_ref = "refs/heads/main"` and leave approval to GitHub.
 7. **Tests** (`mock_provider`, `command = plan`): checks below.
 
@@ -103,8 +104,9 @@ None enforced by `ac-coverage` (Terraform). This task provides `review` evidence
 
 - Only `api` has `allUsers` invoker; `unsub` and `worker` have internal ingress and one invoker each (V12.3.3, V13.2.1).
 - `api` has `actAs` on `tasks-invoker` only; Cloud Tasks and Scheduler calls carry OIDC tokens with the service URL as audience.
-- The deployer can deploy images and Hosting only: no KMS, Secret Manager, Firestore, IAM admin or primitive role (V13.2.2).
+- The deployer holds no KMS, Secret Manager, Firestore, IAM-admin or primitive role **directly** (V13.2.2): its roles are `run.developer` (per service), `iam.serviceAccountUser`/`actAs` (per runtime account), `artifactregistry.writer` (one repository) and `firebasehosting.admin`. This is *not* the whole blast radius and must not be read as one: `run.developer` plus `actAs` lets it deploy an arbitrary image that runs as `mt-api`/`mt-unsub`/`mt-worker`, and those identities hold KMS and Secret Manager access (S4 2), so the deployer reaches KMS and secrets **transitively** through the image it deploys. The compensating control is the GitHub `production` environment's required reviewer, pinned as the WIF `assertion.environment` claim (T-1104), on top of branch protection on `main`; approving a production deploy is a decision to run a specific image as those identities.
 - The workload identity condition pins the repository and branch; no service account keys exist.
+- The workload identity condition also pins the GitHub environment (`production` by default), so each deploy job must name its environment. Staging reuses this module (T-1103) and sets `deploy_environment = "staging"`; its deploy job names `environment: staging` (T-1104). The production pin is not weakened.
 - Every resource is in `us-central1`.
 
 ## Done when

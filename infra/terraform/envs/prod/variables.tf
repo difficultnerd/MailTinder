@@ -14,3 +14,18 @@ variable "lock_log_bucket" {
   default     = true
   description = "Lock the 90-day log bucket. Locking cannot be undone; production keeps it true."
 }
+
+variable "google_oauth_client_id" {
+  type        = string
+  description = <<-EOT
+    Production Google OAuth client id, passed to the unsub service as
+    GOOGLE_OAUTH_CLIENT_ID. No default: the unsub service refuses to start
+    without it, so a missing or blank value must fail the plan rather than
+    deploy a broken service. Supply it in terraform.tfvars (never committed).
+  EOT
+
+  validation {
+    condition     = length(trimspace(var.google_oauth_client_id)) > 0
+    error_message = "google_oauth_client_id must be a non-empty Google OAuth client id (unsub refuses to start without it)."
+  }
+}

@@ -5,10 +5,13 @@
 # after `apply` (see ../../README.md).
 locals {
   secrets = {
-    oauth-client-secret    = ["api", "unsub", "worker"]
-    jev-api-key            = ["api"]
-    email-lookup-hmac-key  = ["api"]
-    log-pseudonym-hmac-key = ["api", "unsub", "worker"]
+    # The container id is what the services look up at start-up
+    # (`SecretName::secret_id()`, `ports/src/secrets.rs`), so it must match
+    # the code exactly (review F3).
+    google-oauth-client-secret = ["api", "unsub", "worker"]
+    jev-api-key                = ["api"]
+    email-lookup-hmac-key      = ["api"]
+    log-pseudonym-hmac-key     = ["api", "unsub", "worker"]
   }
 }
 
