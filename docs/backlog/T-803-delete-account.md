@@ -77,7 +77,7 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 | AU-06 AC2 | Labels already applied stay on the user's messages |
 | AU-06 AC3 | Without a fresh step-up nothing is deleted |
 | DEL-1 | After deletion no document references the user ID |
-| DEL-2 | A copy of an encrypted field taken before deletion cannot be decrypted after it |
+| DEL-2 | A copy of an encrypted field (ciphertext without the wrapped key) taken before deletion cannot be decrypted after it; a captured wrapped key plus KEK access inside the roughly one-hour window is the accepted residual (ADR 0004) |
 | V7.4.2 | Deleting the account ends the user's session |
 
 ## Tests that must pass
@@ -106,7 +106,7 @@ Never touched: labels and categories already applied in the mailbox (AU-06 AC2),
 ## Out of scope
 
 - Admin deletion of another user: not in v1.
-- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. The trial keeps no backups (James, 4 October 2026); this task proves DEL-2 against the live store.
+- Firestore backups: a backup taken before deletion still holds `wrapped_data_key`, which the shared KMS key can unwrap. The trial keeps no backups (James, 4 October 2026); this task proves DEL-2 against the live store: assert the wrapped key is gone from the live document and that decrypting a copy captured before deletion fails once the roughly one-hour historical-read window (ADR 0004) has passed; a test that cannot wait runs against the emulator and says so.
 
 ## Security review checklist
 
