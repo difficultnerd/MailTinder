@@ -35,8 +35,8 @@ struct Patterns {
     host: Regex,
     email_quoted: Regex,
     email_literal: Regex,
-    email_at: Regex,
     email: Regex,
+    email_catch_all: Regex,
     number: Regex,
 }
 
@@ -48,13 +48,17 @@ impl Patterns {
             )?,
             www: Regex::new(r#"(?i)www\.[^\s<>"'()\[\]{}]+"#)?,
             host: Regex::new(r"(?i)\b[a-z0-9-]+(\.[a-z0-9-]+)+/\S*")?,
-            // Quoted local parts (which may contain spaces), address literals
-            // and any remaining `@` flanked by non-whitespace. The regex crate
-            // is linear-time, so no upper bound is needed.
+            // Quoted local part (any length; the regex crate is linear time).
             email_quoted: Regex::new(r#""[^"]*"@\S+"#)?,
+            // Address literal, e.g. `a@[192.0.2.1]`.
             email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
-            email_at: Regex::new(r"\S*@\S+")?,
+            // The original ordinary-address pattern.
             email: Regex::new(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+")?,
+            // Catch-all: any `@` with non-whitespace on both sides, whatever
+            // delimits it, so `a@"b`, `"@x`, `a@<b>`, `a@@b` and dotless
+            // domains (`a@localhost`) are redacted too. No `@` in the
+            // placeholder, so `redact` stays idempotent.
+            email_catch_all: Regex::new(r"\S*@\S+")?,
             number: Regex::new(r"\d(?:[ \-.]?\d){5,}")?,
         })
     }
@@ -92,8 +96,10 @@ pub fn redact(input: &str) -> String {
     let clean = patterns
         .email_literal
         .replace_all(&clean, EMAIL_PLACEHOLDER);
-    let clean = patterns.email_at.replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.email.replace_all(&clean, EMAIL_PLACEHOLDER);
+    let clean = patterns
+        .email_catch_all
+        .replace_all(&clean, EMAIL_PLACEHOLDER);
     let clean = patterns.number.replace_all(&clean, NUMBER_PLACEHOLDER);
     clean.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -133,9 +139,11 @@ pub fn is_english(input: &str) -> bool {
 
 /// Only the domain is allowed; never return a sender's local part.
 ///
-/// Fail closed: the whole input must be whitespace- and control-free and the
-/// part after the last `@` must be a syntactically valid hostname, otherwise
-/// the empty string is returned (no address or domain is logged).
+/// Fails closed: the empty string unless the whole input has no whitespace or
+/// control character and the part after the last `@` is a valid hostname. This
+/// keeps `local@EXAMPLE.COM` giving `example.com` while `a@evil.example.com
+/// @other.com`, bracketed literals and whitespace-laden inputs give the empty
+/// string. Nothing is logged on rejection.
 pub fn from_domain(address: &str) -> String {
     if address.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return String::new();
@@ -143,16 +151,17 @@ pub fn from_domain(address: &str) -> String {
     let Some((_, domain)) = address.rsplit_once('@') else {
         return String::new();
     };
-    let domain = domain.to_lowercase();
-    if is_valid_hostname(&domain) {
-        domain
+    if is_valid_hostname(domain) {
+        domain.to_ascii_lowercase()
     } else {
         String::new()
     }
 }
 
-/// 1 to 253 characters, dot-separated labels of 1 to 63 ASCII letters, digits
-/// or hyphens, none starting or ending with a hyphen, at least one dot.
+/// A hostname: 1 to 253 characters, dot-separated labels of 1 to 63 ASCII
+/// letters, digits or hyphens, none starting or ending with a hyphen, and at
+/// least one dot (punycode `xn--` labels are letters, digits and hyphens and
+/// pass). Non-ASCII (un-punycoded IDN) domains fail closed.
 fn is_valid_hostname(domain: &str) -> bool {
     if domain.is_empty() || domain.len() > 253 || !domain.contains('.') {
         return false;

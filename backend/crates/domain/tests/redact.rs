@@ -32,12 +32,12 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         ("2026-10-03 123.456", "[number]"),
         ("1  2\t3\n4\u{a0}5 6", "[number]"),
         ("https://example.com/x user@example.com 123456 [url] [email] [number]", "[url] [email] [number] [url] [email] [number]"),
-        ("\"a b\"@x.example", "[email]"),
+        (r#""a b"@x.example"#, "[email]"),
         ("a@[192.0.2.1]", "[email]"),
         ("a@localhost", "[email]"),
-        ("Mail \"x y\"@z.test now", "Mail [email] now"),
-        ("a@\"b", "[email]"),
-        ("\"@x", "[email]"),
+        (r#"Mail "x y"@z.test now"#, "Mail [email] now"),
+        (r#"a@"b"#, "[email]"),
+        (r#""@x"#, "[email]"),
         ("a@<b>", "[email]"),
         ("a@@b", "[email]"),
     ] {
@@ -77,14 +77,22 @@ proptest! {
     }
 
     #[test]
-    fn exp_2_redact_no_at_sign_left_in_adjacent_text(
-        left in "[^\\s\\p{C}]{1,40}", right in "[^\\s\\p{C}]{1,40}"
-    ) {
-        // A whitespace-free run with `@` flanked by non-whitespace on both
-        // sides: the whole run must be redacted, leaving no `@` behind.
-        let input = format!("word {left}@{right} word");
-        let output = redact(&input);
-        prop_assert!(!output.contains('@'));
+    fn exp_2_redact_no_at_sign_left_in_adjacent_text(s in any::<String>()) {
+        // The generator is unconstrained; the invariant is on the output: no
+        // `@` survives flanked by non-whitespace characters, whatever delimits
+        // the address (`a@"b`, `"@x`, `a@<b>`, `a@@b`, `a@localhost`).
+        let out = redact(&s);
+        let chars: Vec<char> = out.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c != '@' {
+                continue;
+            }
+            let left = i.checked_sub(1).map(|j| chars[j]);
+            let right = chars.get(i + 1).copied();
+            let flanked = left.is_some_and(|c| !c.is_whitespace())
+                && right.is_some_and(|c| !c.is_whitespace());
+            prop_assert!(!flanked, "at-sign survived redaction flanked by text: {:?}", out);
+        }
     }
 }
 
@@ -145,21 +153,18 @@ fn is_english_cases() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn exp_2_from_domain_only() -> Result<(), Box<dyn std::error::Error>> {
     redaction_available()?;
-    assert_eq!(from_domain("local@EXAMPLE.COM"), "example.com");
-    assert_eq!(from_domain("no-address"), "");
-    for address in [
-        "a@evil.example.com @other.com",
-        "x@[1.2.3.4]",
-        "a@-bad.example",
-        "a@bad..example",
-        "a@nodot",
-        "\"\"@x.example y",
+    for (address, domain) in [
+        ("local@EXAMPLE.COM", "example.com"),
+        ("no-address", ""),
+        ("a@evil.example.com @other.com", ""),
+        ("x@[1.2.3.4]", ""),
+        ("a@-bad.example", ""),
+        ("a@bad..example", ""),
+        ("a@nodot", ""),
+        ("\"\"@x.example y", ""),
+        ("local@news.example.co.uk", "news.example.co.uk"),
     ] {
-        assert_eq!(
-            from_domain(address),
-            "",
-            "expected empty domain for {address}"
-        );
+        assert_eq!(from_domain(address), domain, "from_domain({address:?})");
     }
     Ok(())
 }
