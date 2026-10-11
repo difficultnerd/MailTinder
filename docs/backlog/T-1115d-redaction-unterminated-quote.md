@@ -28,10 +28,10 @@ No part of a quoted local part survives redaction, whether the quoted string is 
 
 ## Acceptance criteria
 
-| # | Behaviour |
+| ID | Behaviour |
 | --- | --- |
-| B1 | `Mail "private name\"@example.com now` gives `Mail [email] now` |
-| B2 | Well-formed quoted addresses, escaped-quote addresses and address literals still give `[email]` as before |
+| EXP-2 | `Mail "private name\"@example.com now` gives `Mail [email] now` |
+| EXP-2 | Well-formed quoted addresses, escaped-quote addresses and address literals still give `[email]` as before |
 
 ## Tests that must pass
 
