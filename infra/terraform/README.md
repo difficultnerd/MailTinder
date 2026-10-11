@@ -40,7 +40,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
    (or edit the placeholder in `backend.tf`; the bucket name is never committed)
 
-4. `terraform plan`. Read it. Then `terraform apply`.
+4. Write `terraform.tfvars` (never committed) with `google_oauth_client_id`,
+   `billing_account` and `alert_email`. The monitoring module (T-1107) needs the
+   billing account for its two budgets and James's address for the one email
+   notification channel that every budget and alert policy notifies; the email
+   is personal data, so it lives only in `terraform.tfvars`. Then `terraform
+   plan`. Read it. Then `terraform apply`, and confirm the test notification
+   arrives from the channel.
 5. Add the secret values. Terraform creates the four containers and stops
    there, so no value ever enters state:
 
@@ -62,9 +68,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 ### Staging (T-1103)
 
 Staging is a **second project** (`<name>-staging`, chosen by James) with its own
-billing link and **its own state bucket**. It runs the same two modules from
-this repository as production; only the variables differ. Bootstrap it by
-repeating steps 1-4 above with the staging names:
+billing link and **its own state bucket**. It runs the same three modules from
+this repository as production; only the variables differ. Staging passes
+`enable_alerts = false` to the monitoring module, so it gets the budgets and the
+email channel but no alert policy, no log-based metric and no uptime check
+(T-1107). Bootstrap it by repeating steps 1-4 above with the staging names,
+including staging's own `billing_account` and `alert_email` in
+`terraform.tfvars`:
 
 1. Create the staging project and link billing to it.
 2. Create `gs://<staging-project>-tfstate` (the same command, the staging name).
@@ -110,6 +120,35 @@ locked default. Once staging is applied, record its Hosting URL
   Google identity and short-lived OIDC tokens.
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
+
+## Monitoring: the Vertex AI budget filter, and follow-ups (T-1107)
+
+- The Vertex AI budget filters on the **Cloud Billing catalogue service id, not
+  the API hostname**: `var.vertex_billing_service` defaults to
+  `services/C7E2-9256-1C43` (Vertex AI, now billed as Gemini Enterprise Agent
+  Platform), taken from Google's "Services that are eligible for spend cap
+  budgets" table
+  (<https://cloud.google.com/billing/docs/how-to/budgets-spend-caps>). A filter
+  of `services/aiplatform.googleapis.com` is not a catalogue entry and would
+  match no cost. **Verify on first apply** (review F4): this is the one value
+  here that cannot be checked offline - the budget API rejects an unknown
+  service id and the Cloud Billing Catalog API
+  (`GET https://cloudbilling.googleapis.com/v1/services`) lists the current ids
+  with their display names. Override `vertex_billing_service` in
+  `terraform.tfvars` if the catalogue has moved; the module rejects an API
+  hostname in that variable.
+- `firebase.json` names the Hosting `/api/**` rewrite target `serviceId: "api"`,
+  but the runtime module creates the Cloud Run service as `mt-api`. Known
+  follow-up (review F5): T-1107's file list does not include `firebase.json`, so
+  it was left as it is and needs an owner decision (fix the rewrite, or align
+  the service name).
+- The `terraform` CI job runs `init`/`validate`/`test` for `modules/foundation`
+  and `modules/runtime`, and `init`/`validate` for both roots, but **not**
+  `modules/monitoring`. Its `tests/monitoring.tftest.hcl` suite therefore does
+  not run in CI yet (review F2 - `.github/workflows/ci.yml` is owner-only).
+  Run it locally as in Checks above:
+  `(cd modules/monitoring && terraform init -backend=false && terraform test)`.
+- Deferred, not fixed by this task (Low/Info): review findings F6-F10.
 
 ## Decision (owner, 10 Oct): deletion semantics
 

@@ -47,6 +47,27 @@ module "runtime" {
   max_instances = 1
 }
 
+# Budgets, metrics, alerts and uptime checks (T-1107). Staging keeps the two
+# budgets and the email channel - so spend is watched and the module's budget
+# path is exercised - but no alert policy, no log-based metric and no uptime
+# check: `enable_alerts = false` means a staging deploy cannot email James
+# (T-1107 Files: "staging: budget only").
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  project_id      = var.project_id
+  billing_account = var.billing_account
+  alert_email     = var.alert_email
+  app_url         = "https://${module.runtime.hosting_site_id}.web.app"
+
+  enable_alerts = false
+}
+
+output "monitoring_budget_ids" {
+  description = "Monthly billing budgets (project and Vertex AI, T-1107)."
+  value       = module.monitoring.budget_ids
+}
+
 output "service_accounts" {
   description = "Service account emails by short name (used by T-1102b)."
   value       = module.foundation.service_accounts
