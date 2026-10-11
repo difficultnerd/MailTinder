@@ -40,7 +40,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
    (or edit the placeholder in `backend.tf`; the bucket name is never committed)
 
-4. `terraform plan`. Read it. Then `terraform apply`.
+4. Write `terraform.tfvars` (never committed) with `google_oauth_client_id`,
+   `billing_account` and `alert_email`. The monitoring module (T-1107) needs the
+   billing account for its two budgets and James's address for the one email
+   notification channel that every budget and alert policy notifies; the email
+   is personal data, so it lives only in `terraform.tfvars`. Then `terraform
+   plan`. Read it. Then `terraform apply`, and confirm the test notification
+   arrives from the channel.
 5. Add the secret values. Terraform creates the four containers and stops
    there, so no value ever enters state:
 
@@ -62,9 +68,13 @@ the plan and runs `apply`**, from his own machine, one project at a time
 ### Staging (T-1103)
 
 Staging is a **second project** (`<name>-staging`, chosen by James) with its own
-billing link and **its own state bucket**. It runs the same two modules from
-this repository as production; only the variables differ. Bootstrap it by
-repeating steps 1-4 above with the staging names:
+billing link and **its own state bucket**. It runs the same three modules from
+this repository as production; only the variables differ. Staging passes
+`enable_alerts = false` to the monitoring module, so it gets the budgets and the
+email channel but no alert policy, no log-based metric and no uptime check
+(T-1107). Bootstrap it by repeating steps 1-4 above with the staging names,
+including staging's own `billing_account` and `alert_email` in
+`terraform.tfvars`:
 
 1. Create the staging project and link billing to it.
 2. Create `gs://<staging-project>-tfstate` (the same command, the staging name).

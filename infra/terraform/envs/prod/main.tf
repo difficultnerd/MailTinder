@@ -81,3 +81,27 @@ output "deployer_email" {
   description = "Deploy service account the pipeline impersonates."
   value       = module.runtime.deployer_email
 }
+
+# Budgets, log-based metrics, alert policies and uptime checks (T-1107). The
+# public origin is the Firebase Hosting site; Hosting rewrites `/api/**` to the
+# API, so the uptime checks cover the app and the API behind one URL. Both
+# budgets and the email channel are created here because production watches
+# spend; every alert policy pages James.
+module "monitoring" {
+  source = "../../modules/monitoring"
+
+  project_id      = var.project_id
+  billing_account = var.billing_account
+  alert_email     = var.alert_email
+  app_url         = "https://${module.runtime.hosting_site_id}.web.app"
+}
+
+output "monitoring_alert_policy_ids" {
+  description = "Alert policies that email James (T-1107)."
+  value       = module.monitoring.alert_policy_ids
+}
+
+output "monitoring_budget_ids" {
+  description = "Monthly billing budgets (project and Vertex AI, T-1107)."
+  value       = module.monitoring.budget_ids
+}
