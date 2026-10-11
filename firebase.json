@@ -4,7 +4,7 @@
     "ignore": ["firebase.json", "**/.*"],
     "cleanUrls": false,
     "rewrites": [
-      { "source": "/api/**", "run": { "serviceId": "api", "region": "us-central1" } },
+      { "source": "/api/**", "run": { "serviceId": "mt-api", "region": "us-central1" } },
       { "source": "**", "destination": "/index.html" }
     ],
     "headers": [

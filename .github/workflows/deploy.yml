@@ -4,6 +4,11 @@ name: deploy
 # promoted to production, where the `production` environment's required reviewer
 # (James) has to approve it.
 #
+# T-1104b adds two things: the `on.push.paths` filter below (only a push that
+# can change a deployed artifact starts a run at all) and the `configured`
+# preflight job, which ends the run green-skipped with a single warning until
+# the repository variables in infra/terraform/README.md are set.
+#
 # T-1105 owns the staging smoke tests and adds its reusable workflow to the job
 # slot marked below; it depends on this task, so it is not wired up yet. Until
 # it lands, the required reviewer is the only gate between a staging deploy and
@@ -19,6 +24,17 @@ name: deploy
 on:
   push:
     branches: [main]
+    # T-1104b: only a push that can change a deployed artifact starts a deploy.
+    # This workflow deploys with `--image` only and never applies Terraform, so
+    # nothing under `infra/` is deployable here; docs, backlog, specs and tools
+    # are not either. A docs-only merge therefore produces no run at all.
+    paths:
+      - backend/**
+      - app/**
+      - firebase.json
+      - .firebaserc
+      - .github/workflows/deploy.yml
+  # Deliberately unfiltered: a manual run is the owner asking for a deploy.
   workflow_dispatch:
 
 # One deployment at a time, and a running one is never cancelled: images are
@@ -44,15 +60,80 @@ env:
   CRANE_SHA256: 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
 
 jobs:
+  # T-1104b: decide WHETHER the pipeline can run. This job names no
+  # environment, so it holds no WIF token and reads no environment-scoped
+  # variable (infra/terraform/README.md, "Deploying and rolling back"). It
+  # reports what is missing by NAME, never by value. Before the owner has set
+  # the staging variables it ends the run green-skipped with one warning -
+  # a red run on every push would drown out the real failures; after he sets
+  # `DEPLOY_ENABLED=true` a missing variable is a loud failure instead, and a
+  # manual run always fails, because then he asked for a deploy by hand.
+  configured:
+    name: configured
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      staging_ready: ${{ steps.check.outputs.staging_ready }}
+      prod_ready: ${{ steps.check.outputs.prod_ready }}
+    steps:
+      - name: Check the deploy repository variables
+        id: check
+        env:
+          STAGING_PROJECT: ${{ vars.STAGING_PROJECT }}
+          STAGING_WIF_PROVIDER: ${{ vars.STAGING_WIF_PROVIDER }}
+          STAGING_DEPLOYER: ${{ vars.STAGING_DEPLOYER }}
+          PROD_PROJECT: ${{ vars.PROD_PROJECT }}
+          PROD_WIF_PROVIDER: ${{ vars.PROD_WIF_PROVIDER }}
+          PROD_DEPLOYER: ${{ vars.PROD_DEPLOYER }}
+          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+          staging_ready=true
+          staging_missing=""
+          for name in STAGING_PROJECT STAGING_WIF_PROVIDER STAGING_DEPLOYER; do
+            if [ -z "${!name:-}" ]; then
+              staging_ready=false
+              staging_missing="${staging_missing} ${name}"
+            fi
+          done
+          prod_ready=true
+          prod_missing=""
+          for name in PROD_PROJECT PROD_WIF_PROVIDER PROD_DEPLOYER; do
+            if [ -z "${!name:-}" ]; then
+              prod_ready=false
+              prod_missing="${prod_missing} ${name}"
+            fi
+          done
+          printf 'staging_ready=%s\n' "${staging_ready}" >> "${GITHUB_OUTPUT}"
+          printf 'prod_ready=%s\n' "${prod_ready}" >> "${GITHUB_OUTPUT}"
+          if [ "${staging_ready}" = "true" ]; then
+            exit 0
+          fi
+          if [ "${DEPLOY_ENABLED:-}" = "true" ]; then
+            echo "::error::deploy is enabled but staging is not configured: set these repository variables:${staging_missing}"
+            exit 1
+          fi
+          if [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            echo "::error::manual deploy requested but staging is not configured: set these repository variables:${staging_missing}"
+            exit 1
+          fi
+          notice="deploy skipped: staging variables are not set yet (infra/terraform/README.md, Deploying)"
+          echo "::warning::${notice}"
+          echo "${notice}" >> "${GITHUB_STEP_SUMMARY}"
+
   # Build the three service images from the commit, push them to the staging
   # Artifact Registry and carry the digests forward. `SERVICE` is the only
   # difference between the three builds (backend/Dockerfile).
   build:
     name: build
     runs-on: ubuntu-latest
+    # T-1104b: nothing is built, pushed or deployed until `configured` says the
+    # deploy variables are there.
+    needs: configured
     # Belt and braces with the triggers: a run from anywhere else stops here,
     # before it could present a token the WIF condition would reject anyway.
-    if: github.repository == 'difficultnerd/MailTinder'
+    if: needs.configured.outputs.staging_ready == 'true' && github.repository == 'difficultnerd/MailTinder'
     # The staging WIF provider pins `assertion.environment == 'staging'`
     # (T-1103), so a job that names no environment has no token (T-1102b).
     # This environment needs no reviewer.
@@ -132,7 +213,10 @@ jobs:
             file="digests/digest-${svc}.txt"
             test -f "${file}" || { echo "::error::no digest artifact for ${svc}"; exit 1; }
             digest="$(cut -d' ' -f2 < "${file}")"
-            gcloud run deploy "${svc}" \
+            # T-1104b: `mt-${svc}` is the service Terraform creates
+            # (infra/terraform/modules/runtime/cloud_run.tf); the image path
+            # keeps the plain `${svc}` name.
+            gcloud run deploy "mt-${svc}" \
               --image "us-central1-docker.pkg.dev/${STAGING_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}" \
               --region "${REGION}" --quiet
           done
@@ -179,7 +263,11 @@ jobs:
   deploy-prod:
     name: deploy-prod
     runs-on: ubuntu-latest
-    needs: deploy-staging
+    # T-1104b: a DIRECT dependency on `configured` so this job can read its
+    # `prod_ready`; while any production variable is unset the job is skipped
+    # and no production approval is requested.
+    needs: [deploy-staging, configured]
+    if: needs.configured.outputs.prod_ready == 'true'
     # The production WIF provider pins `assertion.environment == 'production'`,
     # and GitHub withholds that claim until the required reviewer (James)
     # approves. Approving is a decision to run these exact images as the
@@ -244,7 +332,8 @@ jobs:
           set -euo pipefail
           for svc in api unsub worker; do
             digest="$(cut -d' ' -f2 < "digests/digest-${svc}.txt")"
-            gcloud run deploy "${svc}" \
+            # T-1104b: the Terraform service name, as in staging.
+            gcloud run deploy "mt-${svc}" \
               --image "us-central1-docker.pkg.dev/${PROD_PROJECT}/${AR_REPOSITORY}/${svc}@${digest}" \
               --region "${REGION}" --quiet
           done
