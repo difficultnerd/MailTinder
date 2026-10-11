@@ -176,6 +176,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1118](T-1118-owner-input-helpers-and-console-checklist.md) | Owner-input helpers and console checklist | M11 | sonnet | T-1102a |
 | [T-1115b](T-1115b-redaction-escaped-quote-and-flaky-property.md) | Redaction: escaped quotes in quoted local parts; deterministic `@` property | M9 | sonnet | T-1115 |
 | [T-1115c](T-1115c-swipe-token-clear-type-400.md) | Swipe: unrecognised clear token type is a 400 | M9 | sonnet | T-1114 |
+| [T-1115d](T-1115d-redaction-unterminated-quote.md) | Redaction: unterminated quote with an escaped quote leaves the name prefix | M9 | sonnet | T-1115b |
 | [T-1201](T-1201-complete-code-review.md) | Complete independent code review (cross-model, whole codebase) | M12 | strong | None (owner-initiated) |
 
 Task files live beside this index as `T-xxx-short-name.md`.
