@@ -103,7 +103,7 @@ Formats (all versioned for crypto agility, ASVS V11.2.2):
 
 | ID | Behaviour (one line) |
 | --- | --- |
-| DEL-2 | After the wrapped `data_key` is deleted, a copy of an encrypted field taken earlier cannot be decrypted |
+| DEL-2 | After the wrapped `data_key` is deleted, a copy of an encrypted field taken earlier (ciphertext only, without the wrapped key) cannot be decrypted; a captured wrapped key plus KEK access inside the roughly one-hour historical-read window is the accepted residual (ADR 0004) |
 | V11.3.3 | Ciphertexts are AEAD with associated data binding user, scope and field; moving or altering one fails |
 | V11.2.2 | Every ciphertext and wrapped key carries a scheme version byte; unknown versions are refused |
 

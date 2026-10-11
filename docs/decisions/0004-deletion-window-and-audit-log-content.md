@@ -1,6 +1,6 @@
 # ADR 0004: Account deletion is immediate crypto-shredding with a known one-hour read window; audit logs may hold operator identities
 
-Status: accepted (owner decisions, 10 October 2026, recorded in the factory's decision memos; source: the owner's replies "D1 immediate" and "D2 accept" to the Terraform decision memo, in this repository's PR #20 review discussion)
+Status: accepted (owner decisions, 10 October 2026, recorded in the factory's decision memos; source: the owner's replies "D1 immediate", "D2 accept" and "D3 leave it" to a decision memo the on-call engineer (Claude Code) put to him in an interactive terminal session on 10 October 2026; they were relayed there, not posted as a pull-request comment, and are recorded in the factory's private checkpoint; the owner should confirm this record when he reads it)
 Date: 10 October 2026
 
 ## Context
@@ -9,7 +9,7 @@ The Terraform foundation (T-1102a, T-1102b) configures Firestore without point-i
 
 ## Decision
 
-1. **Deletion.** Account deletion destroys the user's wrapped `data_key` at once (crypto-shredding). The trial keeps no backups, no point-in-time recovery and no scheduled exports, and there is no recovery window. Residual window: for about one hour after a change, historical versions of the document can be read by an identity that has Firestore read access; using such a copy also needs KMS decrypt on the shared key encryption key, which only the `api`, `unsub` and `worker` service accounts hold (and which would let them read the live key anyway). The window is accepted. Revisit before general release (backups or recovery would be a new decision).
+1. **Deletion.** Account deletion destroys the user's wrapped `data_key` at once (crypto-shredding). The trial keeps no backups, no point-in-time recovery and no scheduled exports, and there is no recovery window. Residual window: for about one hour after a change, historical versions of the document can be read by an identity that has Firestore read access; using such a copy also needs KMS decrypt on the shared key encryption key, which Terraform grants only to the `api`, `unsub` and `worker` service accounts (project owners and any project-level role that includes decrypt can also use the key; use is visible in the KMS data-access audit log, not prevented); those three can already read the live key anyway. The window is accepted. Revisit before general release (backups or recovery would be a new decision).
 2. **Audit logs.** Operator identities (email) and caller IP in the KMS and Secret Manager audit copy in the locked 90-day bucket are accepted. This covers operators (the owner and service accounts), never end users. The sink copies all `cloudaudit` entries of those two services (admin activity, data read, data write), not only decrypts and secret reads.
 
 ## Consequences
