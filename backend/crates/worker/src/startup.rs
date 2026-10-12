@@ -31,6 +31,12 @@ pub struct ProductionEnv {
     pub port: u16,
     /// `GOOGLE_CLOUD_PROJECT`.
     pub project: String,
+    /// `MT_KMS_KEY`: the full resource name of the KMS key that wraps every
+    /// user's `data_key`. Terraform sets it in `base_env` and the KMS client is
+    /// built from it, so it is required here: without it the service would
+    /// silently unwrap against a hard-coded path a rename or a region change
+    /// leaves stale (T-1119 review F1).
+    pub kms_key: String,
 }
 
 impl ProductionEnv {
@@ -62,11 +68,13 @@ impl ProductionEnv {
                 .map_err(|_| ProductionEnvError::Invalid("PORT"))?,
         };
         let project = required(&lookup, "GOOGLE_CLOUD_PROJECT")?;
+        let kms_key = required(&lookup, "MT_KMS_KEY")?;
         Ok(Self {
             audience,
             scheduler_caller,
             port,
             project,
+            kms_key,
         })
     }
 }

@@ -382,7 +382,8 @@ fn parse(text: &str) -> Result<TerraformEnv, String> {
 /// validate matters: `*_URL` / `*_AUDIENCE` an https URL, `*_CALLER` / `*_SA` an
 /// e-mail-shaped service account, a project name a valid project id,
 /// `APP_ORIGIN` an https origin with no trailing slash and no path, the OAuth
-/// client id a client-id-shaped string.
+/// client id a client-id-shaped string, the user-data KMS key the full resource
+/// name Cloud Run injects.
 ///
 /// A name with no rule is NOT provided, so a new required variable fails loudly
 /// here instead of being satisfied by a wrong-shaped guess.
@@ -390,6 +391,9 @@ fn placeholder(name: &str) -> Option<String> {
     let value = match name {
         "APP_ORIGIN" => "https://mailtinder-prod.web.app",
         "GOOGLE_OAUTH_CLIENT_ID" => "bootcheck.apps.googleusercontent.com",
+        _ if name.contains("KMS_KEY") => {
+            "projects/mailtinder-prod/locations/europe-west1/keyRings/mt-prod/cryptoKeys/data-key-kek"
+        }
         _ if name.ends_with("_URL") || name.ends_with("_AUDIENCE") => {
             "https://mt-bootcheck.a.run.app"
         }
@@ -782,6 +786,39 @@ fn b7_a_rebound_for_each_or_a_blank_required_value_is_rejected(
     mutation(&["unsub requires UNSUB_TASKS_CALLER"], |text| {
         set_entry(text, "unsub_env", "UNSUB_TASKS_CALLER", "\"\"")
     })
+}
+
+/// B9 (T-1119 review F1): the KMS key name is part of the contract too. Every
+/// service's start-up path builds its KMS client from `MT_KMS_KEY`, which
+/// Terraform sets once in `base_env`; deleting it there must fail naming the
+/// variable, so a service cannot silently fall back to the hard-coded key path.
+///
+/// The check reports the first service it reaches, so the per-service half is
+/// asserted against each service's own loader below.
+#[test]
+fn b9_mt_kms_key_is_required_by_every_service_that_reads_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    mutation(&["api requires MT_KMS_KEY", "api_env"], |text| {
+        drop_entry(text, "base_env", "MT_KMS_KEY")
+    })?;
+
+    let without = drop_entry(&cloud_run_tf()?, "base_env", "MT_KMS_KEY")?;
+    let env = parse(&without)?;
+    assert!(
+        matches!(
+            UnsubEnv::from_lookup(lookup(&env.merged("unsub"))),
+            Err(UnsubError::Missing("MT_KMS_KEY"))
+        ),
+        "unsub must refuse an environment without MT_KMS_KEY"
+    );
+    assert!(
+        matches!(
+            WorkerEnv::from_lookup(lookup(&env.merged("worker"))),
+            Err(WorkerError::Missing("MT_KMS_KEY"))
+        ),
+        "worker must refuse an environment without MT_KMS_KEY"
+    );
+    Ok(())
 }
 
 /// B8: swapping `value = env.value` for `value = env.key` - or `name = env.key`

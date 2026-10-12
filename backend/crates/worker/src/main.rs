@@ -70,6 +70,7 @@ async fn run() -> Result<(), SetupError> {
         scheduler_caller,
         port,
         project,
+        kms_key: injected_kms_key,
     } = ProductionEnv::from_env().map_err(SetupError::Config)?;
     let clock = production_clock();
     let rng = production_rng();
@@ -95,7 +96,7 @@ async fn run() -> Result<(), SetupError> {
     let keys: Arc<dyn ports::KeyService> = Arc::new(EnvelopeKeyService::new(
         Arc::new(CloudKms::new(
             Arc::clone(&http),
-            user_key_resource(&project, std::env::var("MT_KMS_KEY").ok()),
+            user_key_resource(&project, Some(injected_kms_key)),
         )),
         Arc::clone(&rng),
         Arc::clone(&clock),
@@ -160,8 +161,9 @@ fn kms_key(project: &str, key: &str) -> String {
 /// The user-data KMS key resource name. Cloud Run injects the deployed key's
 /// full resource name as `MT_KMS_KEY` (T-1102b Terraform); it wins when set so
 /// a rename or a region change cannot leave the service unwrapping against a
-/// stale, hard-coded path. Without it the path is rebuilt from the constants,
-/// so a local run still gets one (review F4).
+/// stale, hard-coded path. The production loader requires it (T-1119 review
+/// F1); the rebuilt path stays for callers that hold no injected value
+/// (review F4).
 fn user_key_resource(project: &str, injected: Option<String>) -> String {
     injected
         .filter(|v| !v.trim().is_empty())

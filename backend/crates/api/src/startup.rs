@@ -208,6 +208,12 @@ pub struct ProductionEnv {
     pub unsub_audience: String,
     /// `UNSUB_TASKS_CALLER`: the only service account allowed to invoke unsub.
     pub tasks_caller: String,
+    /// `MT_KMS_KEY`: the full resource name of the KMS key that wraps every
+    /// user's `data_key`. Terraform sets it in `base_env` and the KMS client is
+    /// built from it, so it is required here: without it the service would
+    /// silently unwrap against a hard-coded path a rename or a region change
+    /// leaves stale (T-1119 review F1).
+    pub kms_key: String,
 }
 
 impl ProductionEnv {
@@ -229,12 +235,14 @@ impl ProductionEnv {
             .map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
         let unsub_audience = required(&lookup, "UNSUB_AUDIENCE")?;
         let tasks_caller = required(&lookup, "UNSUB_TASKS_CALLER")?;
+        let kms_key = required(&lookup, "MT_KMS_KEY")?;
         Ok(Self {
             config,
             project,
             unsub_base,
             unsub_audience,
             tasks_caller,
+            kms_key,
         })
     }
 
@@ -262,6 +270,7 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
         unsub_base,
         unsub_audience: audience,
         tasks_caller,
+        kms_key: injected_kms_key,
     } = ProductionEnv::from_env(Mode::Production)?;
 
     let clock = production_clock();
@@ -280,7 +289,7 @@ pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> 
     let keys: Arc<dyn KeyService> = Arc::new(EnvelopeKeyService::new(
         Arc::new(CloudKms::new(
             Arc::clone(&http),
-            user_key_resource(&project, std::env::var("MT_KMS_KEY").ok()),
+            user_key_resource(&project, Some(injected_kms_key)),
         )),
         Arc::clone(&rng),
         Arc::clone(&clock),
@@ -503,8 +512,9 @@ fn kms_key(project: &str, key: &str) -> String {
 /// The user-data KMS key resource name. Cloud Run injects the deployed key's
 /// full resource name as `MT_KMS_KEY` (T-1102b Terraform); it wins when set so
 /// a rename or a region change cannot leave the service unwrapping against a
-/// stale, hard-coded path. Without it the path is rebuilt from the constants,
-/// so a local run still gets one (review F4).
+/// stale, hard-coded path. The production loader requires it (T-1119 review
+/// F1); the rebuilt path stays for callers that hold no injected value
+/// (review F4).
 fn user_key_resource(project: &str, injected: Option<String>) -> String {
     injected
         .filter(|v| !v.trim().is_empty())

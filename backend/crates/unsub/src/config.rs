@@ -91,6 +91,12 @@ pub struct ProductionEnv {
     pub unsub_base: Url,
     /// `GOOGLE_OAUTH_CLIENT_ID`: the Gmail identity flow's client id.
     pub client_id: String,
+    /// `MT_KMS_KEY`: the full resource name of the KMS key that wraps every
+    /// user's `data_key`. Terraform sets it in `base_env` and the KMS client is
+    /// built from it, so it is required here: without it the service would
+    /// silently unwrap against a hard-coded path a rename or a region change
+    /// leaves stale (T-1119 review F1).
+    pub kms_key: String,
 }
 
 impl ProductionEnv {
@@ -121,11 +127,13 @@ impl ProductionEnv {
         let unsub_base = Url::parse(&required(&lookup, "UNSUB_BASE_URL")?)
             .map_err(|_| ProductionEnvError::Invalid("UNSUB_BASE_URL"))?;
         let client_id = required(&lookup, "GOOGLE_OAUTH_CLIENT_ID")?;
+        let kms_key = required(&lookup, "MT_KMS_KEY")?;
         Ok(Self {
             config,
             project,
             unsub_base,
             client_id,
+            kms_key,
         })
     }
 }
