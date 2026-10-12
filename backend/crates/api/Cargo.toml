@@ -57,6 +57,9 @@ async-trait.workspace = true
 # and the `unsub-testbed`, in process, on free loopback ports.
 unsub = { workspace = true, features = ["testkit"] }
 unsub-testbed.workspace = true
+# T-1119: the service boot check drives the worker's real production-env loader
+# (`worker::startup::ProductionEnv`) over the environment Terraform gives it.
+worker.workspace = true
 
 [lints]
 workspace = true

@@ -14,6 +14,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod startup;
 pub mod sweep;
 pub mod sweeps;
 
