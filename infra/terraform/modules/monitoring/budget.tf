@@ -20,7 +20,7 @@ resource "google_billing_budget" "project" {
 
   amount {
     specified_amount {
-      currency_code = "USD"
+      currency_code = var.budget_currency_code
       units         = tostring(var.monthly_budget_usd)
     }
   }
@@ -64,7 +64,7 @@ resource "google_billing_budget" "vertex" {
 
   amount {
     specified_amount {
-      currency_code = "USD"
+      currency_code = var.budget_currency_code
       units         = tostring(var.vertex_budget_usd)
     }
   }
