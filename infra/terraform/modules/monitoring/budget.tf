@@ -15,7 +15,7 @@ resource "google_billing_budget" "project" {
   display_name    = "MailTinder project monthly budget"
 
   budget_filter {
-    projects = ["projects/${var.project_id}"]
+    projects = ["projects/${data.google_project.watched.number}"]
   }
 
   amount {
@@ -58,7 +58,7 @@ resource "google_billing_budget" "vertex" {
   display_name    = "MailTinder Vertex AI monthly budget"
 
   budget_filter {
-    projects = ["projects/${var.project_id}"]
+    projects = ["projects/${data.google_project.watched.number}"]
     services = [var.vertex_billing_service]
   }
 
@@ -89,4 +89,11 @@ resource "google_billing_budget" "vertex" {
   all_updates_rule {
     monitoring_notification_channels = [google_monitoring_notification_channel.email.id]
   }
+}
+
+# The Budgets API takes a project NUMBER in budget_filter.projects
+# ("projects/{project_number}"), not the project id; the id gives
+# "Error 400: Request contains an invalid argument" (found 12 Oct, AAR 3.134).
+data "google_project" "watched" {
+  project_id = var.project_id
 }
