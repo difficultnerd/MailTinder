@@ -28,7 +28,7 @@ The only mail data today is the 24 hand-written cases of T-204: right for correc
 
 1. **Deterministic:** an in-tree SplitMix64 generator (about 15 lines); NO new dependency, no `HashMap` iteration order, no wall clock, no `rand`. Same seed and arguments give identical bytes.
 2. **Reserved domains only (v1 has no exception):** every address and every URL host, in headers AND in text and HTML bodies, uses `example.com/net/org`, `*.test` or `*.invalid`. There is NO `--domain` option in v1; a real-domain tier is a separate owner-approved task with its own parsing, allow-list and egress rules. `Corpus::all_addresses` / `all_urls` are collectors, not validators (`backend/crates/testkit/tests/corpus.rs:55-94` holds the actual check): write a validator in the synth tests that extracts every email address and every `http(s)` URL from every emitted `.eml` (headers, text part, HTML part, including `href` and `src`) and asserts the host is reserved. No real brand names, logos or real people.
-3. **Provenance marker:** every `.eml` carries the header `X-MT-Synthetic-Corpus: <corpus-hash>` (the hash of `SHA256SUMS` at generation) and a `Message-ID` of the form `<synth-<id>@<reserved-host>>`; the seed tool (T-1120b) relies on both. The manifest's first line is a header object `{corpus_hash, persona, seed, slice, generator_version}`.
+3. **Provenance marker:** every `.eml` carries the header `X-MT-Synthetic-Corpus: <corpus-hash>`. `corpus_hash` is defined WITHOUT self-reference: generate every `.eml` WITHOUT that header, compute `sha256` of each, then `corpus_hash = sha256` of the lines `<relative path> <sha256>` sorted by path and joined with `\n`; only then insert the header line into every `.eml` and write the manifest. `SHA256SUMS` lists the FINAL files and is not an input to `corpus_hash`. Anyone can recompute `corpus_hash` by stripping the `X-MT-Synthetic-Corpus:` header line from each file first and a `Message-ID` of the form `<synth-<id>@<reserved-host>>`; the seed tool (T-1120b) relies on both. The manifest's first line is a header object `{corpus_hash, persona, seed, slice, generator_version}`.
 4. **Ground truth on every message:** `expected.class` (one of the S3 names `list, bulk_no_header, notice, personal, suspect`), `bulk_score_min/max`, `method` (as `ExpectedMethod`), `reason`, `labels`, `internal_date`, a unique `canary`, and `hostile: bool`.
 5. **Hostile content is flagged:** phishing-style, header-injection, huge-body and odd-encoding cases carry `hostile: true`; `--no-hostile` omits them (the loader for a real account always sets it).
 6. **No send, no network.**
@@ -52,7 +52,7 @@ The only mail data today is the 24 hand-written cases of T-204: right for correc
 | B4 | Every canary is unique and absent from `Corpus::all_canaries()` (no collision with the T-204 corpus) |
 | B5 | Threads are consistent: every `In-Reply-To` and `References` id exists earlier in the same mailbox |
 | B6 | The demo slice has exactly 500 messages and the same class proportions within 3 points |
-| B8 | Every `.eml` has the `X-MT-Synthetic-Corpus` header equal to the manifest header's `corpus_hash` and a unique `synth-` Message-ID |
+| B8 | Every `.eml` has the `X-MT-Synthetic-Corpus` header equal to the manifest header's `corpus_hash` and a unique `synth-` Message-ID, and recomputing `corpus_hash` (strip the header line from every file, hash, sort, hash) reproduces it exactly |
 | B7 | Loading the manifest into `fake-google` with `FakeGoogleSeeder::seed` reproduces the message count and labels |
 
 ## Tests that must pass
