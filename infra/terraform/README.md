@@ -21,16 +21,23 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
 ## Bootstrap (one time, per environment, order matters)
 
-1. Create the Google Cloud project and link billing to it. Neither is scripted:
-   linking billing needs a billing admin, so the bootstrap script stops and
-   prints the console link when a project has no billing account.
+1. Create the Google Cloud project and link billing to it, and create one
+   **identity project** for that environment too, with its billing link. Neither
+   project is scripted: linking billing needs a billing admin, so the bootstrap
+   script stops and prints the console link when a project has no billing
+   account. The identity project holds the Workload Identity pools, their
+   providers and the two service accounts; the applier has no role in it (see
+   step 2), which is what makes the bootstrap identities unreachable from an
+   apply job.
 
 2. Run the one-command bootstrap (T-1116), as **your own user account** - it
-   refuses to run as a service account, refuses a project without billing, and
-   refuses production without `--i-know-the-log-bucket-lock-is-permanent`:
+   refuses to run as a service account, refuses a project without billing,
+   refuses one project for both roles, and refuses production without
+   `--i-know-the-log-bucket-lock-is-permanent`:
 
    ```
-   scripts/infra/bootstrap-project.sh --project <project> --env staging \
+   scripts/infra/bootstrap-project.sh --project <project> \
+     --identity-project <identity-project> --env staging \
      --repo <owner/name>
    ```
 
@@ -38,27 +45,44 @@ the plan and runs `apply`**, from his own machine, one project at a time
    `--dry-run` prints the plan and stops, changing nothing), and then creates
    what Terraform cannot create for itself:
 
-   - the six APIs Terraform needs to start (`serviceusage`,
-     `cloudresourcemanager`, `iam`, `iamcredentials`, `sts`, `storage`). The
-     rest are enabled by `modules/foundation/apis.tf`.
-   - the state bucket `gs://<project>-tfstate`: `us-central1`, uniform
-     bucket-level access, public access prevention, versioning on.
-   - two Workload Identity pools, `github-plan` and `github-apply`, one provider
-     each (a principalSet is scoped to a pool, so one pool with two providers
-     could not keep the planner away from the applier), and the `mt-planner` and
-     `mt-applier` service accounts with their bindings. `mt-planner` is bound to
-     the plan pool's `attribute.repository` and gets narrow per-service viewers
-     plus `objectViewer` on the state bucket (it plans with `-lock=false`);
-     `mt-applier` is bound to the apply pool's `attribute.environment` only and
-     gets the roles the two modules need, `objectAdmin` on the state bucket, and
-     **no rights at all** on the identity pools, the providers or the two service
-     accounts, so it cannot widen its own access. Its
-     `roles/resourcemanager.projectIamAdmin` grant carries an IAM Condition that
-     limits the roles it may grant to exactly the roles `modules/foundation` and
-     `modules/runtime` bind (ADR 0003 item 4, V13.2.2). The applier's role table,
-     mapped to the resource that needs each role, is in the script header.
+   - in the workload project, the six APIs Terraform needs to start
+     (`serviceusage`, `cloudresourcemanager`, `iam`, `iamcredentials`, `sts`,
+     `storage`; `modules/foundation/apis.tf` enables the rest) and the state
+     bucket `gs://<project>-tfstate`: `us-central1`, uniform bucket-level
+     access, public access prevention, versioning on.
+   - in the identity project, the five APIs the identities need, two Workload
+     Identity pools, `github-plan` and `github-apply`, one provider each (a
+     principalSet is scoped to a pool, so one pool with two providers could not
+     keep the planner away from the applier), and the `mt-planner` and
+     `mt-applier` service accounts with their impersonation bindings.
+     `mt-planner` is bound to the plan pool's `attribute.repository` and gets
+     narrow per-service viewers plus `objectViewer` on the state bucket (it
+     plans with `-lock=false`); `mt-applier` is bound to the apply pool's
+     `attribute.environment` only and gets the roles the two modules need,
+     `objectAdmin` on the state bucket, and **no role of any kind in the
+     identity project** - so it cannot rewrite the impersonation policy that
+     admits it, cannot disable or delete either identity, and cannot edit an
+     admission rule. Its `roles/resourcemanager.projectIamAdmin` grant carries
+     an IAM Condition that limits the roles it may grant to the modules'
+     project-scope roles, with `roles/iam.workloadIdentityUser` and
+     `roles/iam.serviceAccountUser` deliberately excluded (they are bound only
+     on the service accounts that need them) and the two conditions written
+     with `--condition-from-file`. Its other grants are custom roles with an
+     explicit permission list, in the script header, mapped to the resource
+     that needs each one.
+   - nothing before the grants are verified: each pool must hold exactly its one
+     provider with the intended issuer, mapping and `attribute_condition`, each
+     bootstrap identity must carry nothing but its own impersonation binding,
+     each custom role must hold exactly the permissions the script intends, and
+     the state bucket must have uniform access, public access prevention and
+     versioning on. A mismatch stops the run and grants nothing.
    - no service account key, no secret value, no Terraform state: the script
-     never touches any of the three.
+     never touches any of the three. The applier's secret role has no
+     `secretmanager.versions.*` permission at all, so it cannot read a value
+     directly; because it does hold the accessor-binding permission on the
+     containers the module manages, it can reach a value transitively - the
+     control there is the environment approval, and the script says so rather
+     than claiming otherwise.
    - a second run creates nothing (every creating call sits behind a `describe`
      probe and says so), and a run after a partial failure resumes where it
      stopped.
@@ -114,12 +138,15 @@ email channel but no alert policy, no log-based metric and no uptime check
 the same one command, with staging's own project id, `--env staging` and
 staging's own `billing_account` and `alert_email` in `terraform.tfvars`:
 
-1. Create the staging project and link billing to it.
-2. `scripts/infra/bootstrap-project.sh --project <staging-project> --env staging
+1. Create the staging project and its staging identity project, and link billing
+   to both.
+2. `scripts/infra/bootstrap-project.sh --project <staging-project>
+   --identity-project <staging-identity-project> --env staging
    --repo <owner/name>`. It creates `gs://<staging-project>-tfstate`, staging's
-   own identity pools and its own `mt-planner`/`mt-applier`. Never reuse the
-   production bucket (S4 1: separate state), so a staging destroy can never reach
-   production state.
+   own identity pools in the staging identity project, and its own
+   `mt-planner`/`mt-applier`. Never reuse the production bucket or the
+   production identity project (S4 1: separate state, separate identities), so a
+   staging destroy can never reach production state or production credentials.
 3. From `envs/staging`:
 
    ```

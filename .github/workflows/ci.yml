@@ -83,6 +83,24 @@ jobs:
       - run: python3 -m unittest discover -s tools -p 'test_*.py'
       - run: python3 tools/check_ac_coverage.py
 
+  # The bootstrap script and its stub-based suite (T-1116). This job is what
+  # makes BOOT AC1-AC6 a checked control rather than a test nobody runs: the
+  # suite only ever proves anything if CI executes it (SEC-09 of the T-1116
+  # security review). setup-gcloud installs the SDK with no credential, which is
+  # what lets the suite put the generated IAM conditions through the real
+  # `--condition-from-file` parser, the regression SEC-05 asked for.
+  infra-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/infra/bootstrap-project.sh scripts/infra/tests/bootstrap_test.sh
+      - run: scripts/infra/tests/bootstrap_test.sh
+
   # Terraform (T-1102a). `fmt`, `validate` and the module's plan-time tests.
   # The tests use mock_provider, so they need no credentials and no network.
   # The final step is the set of absence checks Terraform cannot express over a
