@@ -7,7 +7,7 @@
 //! hand-writing MIME.
 
 use domain::{HeaderFacts, MailtoTarget, MessageClass, UnsubscribeOptions};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc2822, OffsetDateTime};
 use url::Url;
 
@@ -47,7 +47,7 @@ pub enum DkimScenario {
 }
 
 /// Expected unsubscribe method for a corpus case.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpectedMethod {
     OneClick,
