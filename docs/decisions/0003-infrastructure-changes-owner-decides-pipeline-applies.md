@@ -1,6 +1,6 @@
 # ADR 0003: infrastructure changes: the owner decides, a pipeline applies
 
-Status: proposed (2026-10-10, written at the owner's request: "a deployment method where I'm a decider, not a meat proxy"; needs the owner to accept)
+Status: accepted (12 October 2026, by the owner: "adr3 ok"). Proposed 2026-10-10, written at the owner's request: "a deployment method where I'm a decider, not a meat proxy"
 Date: 10 October 2026
 
 ## Context
