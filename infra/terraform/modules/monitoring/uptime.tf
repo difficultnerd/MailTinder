@@ -57,7 +57,17 @@ resource "google_monitoring_alert_policy" "uptime" {
     display_name = "uptime check failed in 2 regions"
 
     condition_threshold {
-      filter          = "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\""
+      # `metric.label.check_id` is a METRIC label on
+      # `monitoring.googleapis.com/uptime_check/check_passed`; the `uptime_url`
+      # resource carries only `project_id` and `host`, so the old
+      # `resource.label.check_id` grouped on a label that does not exist and
+      # the API rejects the policy at first apply (T-1107b N2). `one_of`
+      # narrows the condition to the two checks THIS module creates - the ids
+      # are each google_monitoring_uptime_check_config's `uptime_check_id`,
+      # which is the value the check_passed metric labels each series with -
+      # so an unrelated URL uptime check in the same project cannot trip this
+      # alert.
+      filter          = "resource.type=\"uptime_url\" AND metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=one_of(\"${google_monitoring_uptime_check_config.check["app_root"].uptime_check_id}\",\"${google_monitoring_uptime_check_config.check["api_session"].uptime_check_id}\")"
       comparison      = "COMPARISON_GT"
       threshold_value = 1
       duration        = "0s"
@@ -66,7 +76,13 @@ resource "google_monitoring_alert_policy" "uptime" {
         alignment_period     = "600s"
         per_series_aligner   = "ALIGN_NEXT_OLDER"
         cross_series_reducer = "REDUCE_COUNT_FALSE"
-        group_by_fields      = ["resource.label.check_id"]
+        # One series per probe path: grouping by the check id keeps the
+        # app-root and the API-session probes apart, so two failing regions at
+        # one path trip the policy without the other path's passes masking it.
+        # An empty group_by_fields would collapse both paths into one series
+        # and let two failures at a single location trip a threshold meant per
+        # path (review F2 of PR #87).
+        group_by_fields = ["metric.label.check_id"]
       }
 
       trigger {

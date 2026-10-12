@@ -53,6 +53,19 @@ fn exp_2_redact_table() -> Result<(), Box<dyn std::error::Error>> {
         // start at the token, not the quote, so an identifying prefix
         // before the quote cannot survive (T-1115d).
         ("Mail private\"name@example.com now", "Mail [email] now"),
+        // A well-formed quoted suffix behind an identifying prefix in the same
+        // token: the quoted pass consumes the whole run, so no part of the
+        // prefix survives, spaced or not (T-1115d review F7). The fallback
+        // cannot cover these - the first pass has already taken the `@`.
+        (
+            "Mail private\" name\"@example.invalid now",
+            "Mail [email] now",
+        ),
+        (
+            "Mail private\"name\"@example.invalid now",
+            "Mail [email] now",
+        ),
+        ("private\"name\"@example.invalid", "[email]"),
         // Bare token, the reported reproduction shape (T-1115d).
         ("private\"name@example.invalid", "[email]"),
         ("Mail private\"@example.com now", "Mail [email] now"),

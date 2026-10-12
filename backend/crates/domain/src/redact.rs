@@ -69,7 +69,16 @@ impl Patterns {
             // quoted-pairs (`\` followed by any character) then `"`: a naive
             // `[^"]*` stops at the first escaped quote and only redacts the
             // suffix of the address, leaving the identifying prefix behind.
-            email_quoted: Regex::new(r#""(?:[^"\\]|\\.)*"@\S+"#)?,
+            //
+            // The leading `\S*` makes the pass start at the token, not at the
+            // opening quote, so an identifying prefix in the same token before a
+            // well-formed quoted suffix (`private" name"@example.invalid`) is
+            // consumed with the address. Without it this pass replaces only
+            // `" name"@example.invalid` and leaves `private`; the `@` is gone by
+            // then, so the `email_quoted_fallback` below - which needs the
+            // quote and the `@` - can no longer reach the prefix (T-1115d
+            // review F7).
+            email_quoted: Regex::new(r#"\S*"(?:[^"\\]|\\.)*"@\S+"#)?,
             email_quoted_fallback: Regex::new(r#"\S*"(?:[^"]|\\")*?@\S+"#)?,
             email_literal: Regex::new(r"\S*@\[[^\]]+\]")?,
             email_at: Regex::new(r"\S*@\S+")?,
