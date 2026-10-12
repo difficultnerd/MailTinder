@@ -1,0 +1,90 @@
+name: smoke
+
+# T-1105: the staging smoke tests (S10 3.1 "Staging smoke", S10 6.2, S11 7.1).
+#
+# Reusable, so `deploy.yml` runs it after every staging deploy and the owner can
+# also run it by hand against the same deployment (`workflow_dispatch`). It is
+# never triggered by a pull request: there are no cloud credentials there, and
+# smoke needs a real deployed platform (S10 "Smoke runs only after deploy").
+#
+# It authenticates with Workload Identity Federation as `mt-smoke`
+# (`infra/terraform/envs/staging/smoke.tf`): no key exists, and the identity
+# exists only in the staging root, so smoke can never reach production.
+#
+# The internal service URLs are inputs rather than repository variables:
+# `mt-smoke` deliberately holds no Cloud Run role, so it cannot read them
+# itself. `deploy.yml`'s `deploy-staging` job (which does hold `run.developer`)
+# reads them and passes them in; a manual run takes them as inputs.
+on:
+  workflow_call:
+    inputs:
+      unsub_url:
+        type: string
+        required: true
+        description: Deployed Cloud Run URL of the internal `unsub` service.
+      worker_url:
+        type: string
+        required: true
+        description: Deployed Cloud Run URL of the internal `worker` service.
+  workflow_dispatch:
+    inputs:
+      unsub_url:
+        type: string
+        required: true
+        description: Deployed Cloud Run URL of the internal `unsub` service (mt-unsub).
+      worker_url:
+        type: string
+        required: true
+        description: Deployed Cloud Run URL of the internal `worker` service (mt-worker).
+
+# `contents: read` is all the checkout needs; `id-token: write` is what the auth
+# step exchanges for a short-lived Google token. There is no JSON key anywhere.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # The single region every regional service is in (the runtime module's
+  # `region` default, S4 1).
+  REGION: us-central1
+
+jobs:
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    # The staging WIF provider pins `assertion.environment == 'staging'`
+    # (T-1103), so this job must name the environment or the token is rejected.
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.STAGING_WIF_PROVIDER }}
+          service_account: mt-smoke@${{ vars.STAGING_PROJECT }}.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Run the smoke checks against staging
+        # The binary prints one line per check (its name and pass or fail) and
+        # exits non-zero on any failure; it never prints a document, a token or
+        # a URL. `--locked` builds the commit's own lockfile.
+        working-directory: backend
+        env:
+          MT_SMOKE_PROJECT: ${{ vars.STAGING_PROJECT }}
+          MT_SMOKE_REGION: ${{ env.REGION }}
+          MT_SMOKE_KMS_KEY: projects/${{ vars.STAGING_PROJECT }}/locations/${{ env.REGION }}/keyRings/mailtinder/cryptoKeys/data-key-kek
+          MT_SMOKE_QUEUE: projects/${{ vars.STAGING_PROJECT }}/locations/${{ env.REGION }}/queues/unsubscribe
+          MT_SMOKE_UNSUB_URL: ${{ inputs.unsub_url }}
+          MT_SMOKE_WORKER_URL: ${{ inputs.worker_url }}
+          MT_SMOKE_APP_URL: ${{ vars.STAGING_URL }}
+          MT_SMOKE_TASKS_INVOKER: mt-tasks-invoker@${{ vars.STAGING_PROJECT }}.iam.gserviceaccount.com
+        run: |
+          set -euo pipefail
+          # One short-lived token, from the WIF identity above, for the platform
+          # APIs the binary calls. Masked, never printed, and it expires long
+          # before the runner is torn down.
+          token="$(gcloud auth print-access-token)"
+          echo "::add-mask::${token}"
+          export MT_SMOKE_ACCESS_TOKEN="${token}"
+          cargo run --release --locked -p smoke

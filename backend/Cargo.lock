@@ -2532,6 +2532,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
+name = "smoke"
+version = "0.1.0"
+dependencies = [
+ "adapters-gcp",
+ "async-trait",
+ "domain",
+ "obs",
+ "ports",
+ "reqwest",
+ "svc-common",
+ "testkit",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

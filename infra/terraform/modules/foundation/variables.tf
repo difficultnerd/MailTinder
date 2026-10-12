@@ -30,3 +30,17 @@ variable "kms_rotation_days" {
   default     = 365
   description = "KMS key rotation period in days (S6 5: yearly, automatic)."
 }
+
+variable "additional_data_key_holders" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Extra members to add to the `data-key-kek` binding, as full IAM members
+    (`serviceAccount:...`). Empty everywhere but staging: production keeps
+    exactly api, unsub and worker (S4 2, S6 5). The staging root passes its
+    smoke identity (T-1105), so staging has four holders of a key that protects
+    synthetic data only. The binding stays authoritative - this list is what
+    lets the extra holder be granted *in band*, instead of a second
+    `google_kms_crypto_key_iam_member` fighting the binding on every apply.
+  EOT
+}
