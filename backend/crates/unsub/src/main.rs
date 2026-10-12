@@ -32,7 +32,7 @@ use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{HttpEgress, InviteMailer, MailProvider, Ports, SecretName, Secrets};
 use svc_common::internal_auth::InternalAuthConfig;
-use unsub::config::UnsubConfig;
+use unsub::config::ProductionEnv;
 use unsub::mailto::MailtoSender;
 use unsub::runner::UnsubState;
 use unsub::sender::UnsubSender;
@@ -60,9 +60,7 @@ const QUEUE_ID: &str = "unsubscribe";
 #[derive(Debug, thiserror::Error)]
 enum SetupError {
     #[error("config")]
-    Config(unsub::config::ConfigError),
-    #[error("missing environment variable {0}")]
-    Missing(&'static str),
+    Config(unsub::config::ProductionEnvError),
     #[error("invalid value for {0}")]
     Invalid(&'static str),
     #[error("e2e mode requires a testkit build")]
@@ -133,14 +131,15 @@ async fn e2e_startup() -> Result<(), SetupError> {
 
 #[allow(clippy::too_many_lines)]
 async fn production_run() -> Result<(), SetupError> {
-    let config = UnsubConfig::from_env().map_err(SetupError::Config)?;
+    let ProductionEnv {
+        config,
+        project,
+        unsub_base,
+        client_id,
+        kms_key: injected_kms_key,
+    } = ProductionEnv::from_env().map_err(SetupError::Config)?;
     let clock = production_clock();
     let rng = production_rng();
-
-    let project = env("GOOGLE_CLOUD_PROJECT")?;
-    let unsub_base =
-        Url::parse(&env("UNSUB_BASE_URL")?).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
-    let client_id = env("GOOGLE_OAUTH_CLIENT_ID")?;
 
     let tokens: Arc<dyn TokenSource> = Arc::new(MetadataTokenSource::new(Arc::clone(&clock)));
     let http = Arc::new(GcpHttp::new(tokens).map_err(|_| SetupError::Adapter)?);
@@ -156,7 +155,7 @@ async fn production_run() -> Result<(), SetupError> {
     let keys: Arc<dyn ports::KeyService> = Arc::new(EnvelopeKeyService::new(
         Arc::new(CloudKms::new(
             Arc::clone(&http),
-            user_key_resource(&project, std::env::var("MT_KMS_KEY").ok()),
+            user_key_resource(&project, Some(injected_kms_key)),
         )),
         Arc::clone(&rng),
         Arc::clone(&clock),
@@ -262,14 +261,6 @@ async fn production_run() -> Result<(), SetupError> {
     Ok(())
 }
 
-/// A required environment variable.
-fn env(name: &'static str) -> Result<String, SetupError> {
-    std::env::var(name)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or(SetupError::Missing(name))
-}
-
 /// A pinned endpoint URL.
 fn endpoint(raw: &str) -> Result<Url, SetupError> {
     Url::parse(raw).map_err(|_| SetupError::Invalid("endpoint"))
@@ -283,8 +274,9 @@ fn kms_key(project: &str, key: &str) -> String {
 /// The user-data KMS key resource name. Cloud Run injects the deployed key's
 /// full resource name as `MT_KMS_KEY` (T-1102b Terraform); it wins when set so
 /// a rename or a region change cannot leave the service unwrapping against a
-/// stale, hard-coded path. Without it the path is rebuilt from the constants,
-/// so a local run still gets one (review F4).
+/// stale, hard-coded path. The production loader requires it (T-1119 review
+/// F1); the rebuilt path stays for callers that hold no injected value
+/// (review F4).
 fn user_key_resource(project: &str, injected: Option<String>) -> String {
     injected
         .filter(|v| !v.trim().is_empty())
