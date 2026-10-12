@@ -425,7 +425,8 @@ fn stat_5_suppress_known_cases() -> TestResult {
 /// shown cell and every group total: what a reader holding the report can
 /// reconstruct. An empty vector means no group holds the cell, so nothing
 /// constrains it; `None` means the enumeration hit its node budget and proved
-/// nothing either way.
+/// nothing either way. At most two values are collected, which is all it takes
+/// to show that a cell is not recovered.
 fn reconstructed_values(
     cells: &[u64],
     groups: &[Vec<usize>],
@@ -474,101 +475,152 @@ fn reconstructed_values(
         upper,
         target: target_position,
         values: Vec::new(),
-        assigned: vec![0; hidden.len()],
+        assigned: vec![false; hidden.len()],
+        assignment: vec![0; hidden.len()],
         sums: vec![0; equations.len()],
         nodes: 0,
-        budget: 2_000_000,
+        budget: 5_000_000,
     };
-    walker.walk(0);
+    walker.walk();
     if walker.nodes > walker.budget {
         return None;
     }
     Some(walker.values)
 }
 
-/// Backtracking over the assignments a reader could reconstruct, with every
-/// equation's partial sum pruned as it goes.
+/// Backtracking over the assignments a reader could reconstruct. The count with
+/// the fewest values left is assigned first, every equation's partial sum is
+/// kept inside its residual, and the walk stops once two values of the target
+/// are known or when the node budget is spent.
 struct Reconstruction<'a> {
     equations: &'a [(Vec<usize>, u64)],
     upper: Vec<u64>,
     target: usize,
     values: Vec<u64>,
-    assigned: Vec<u64>,
+    assigned: Vec<bool>,
+    assignment: Vec<u64>,
     sums: Vec<u64>,
     nodes: u64,
     budget: u64,
 }
 
 impl Reconstruction<'_> {
-    fn walk(&mut self, position: usize) {
-        if self.values.len() >= 2 || self.nodes > self.budget {
+    fn walk(&mut self) {
+        if self.stopped() {
             return;
         }
-        if position == self.upper.len() {
-            let complete = self
-                .equations
-                .iter()
-                .enumerate()
-                .all(|(index, (_, residual))| self.sums.get(index) == Some(residual));
-            if complete {
-                let value = self.assigned.get(self.target).copied().unwrap_or(0);
+        let mut choice: Option<(u64, usize, u64, u64)> = None;
+        for position in 0..self.assigned.len() {
+            if self.assigned.get(position).copied().unwrap_or(true) {
+                continue;
+            }
+            let Some((low, high)) = self.domain(position) else {
+                return;
+            };
+            let width = high - low;
+            let better = match choice {
+                None => true,
+                Some((width_best, position_best, _, _)) => {
+                    width < width_best || (width == width_best && position < position_best)
+                }
+            };
+            if better {
+                choice = Some((width, position, low, high));
+            }
+        }
+        let Some((_, position, low, high)) = choice else {
+            if self.complete() {
+                let value = self.assignment.get(self.target).copied().unwrap_or(0);
                 if !self.values.contains(&value) {
                     self.values.push(value);
                 }
             }
             return;
-        }
-        let reachable = self.upper.get(position).copied().unwrap_or(0);
-        for value in 0..=reachable {
+        };
+        for value in low..=high {
             self.nodes += 1;
-            if self.nodes > self.budget || self.values.len() >= 2 {
+            if self.stopped() {
                 return;
             }
-            if !self.fits(position, value) {
+            self.place(position, value);
+            self.walk();
+            self.unplace(position, value);
+            if self.stopped() {
+                return;
+            }
+        }
+    }
+
+    /// True once two values of the target are known, which already shows the
+    /// count is not recovered, or once the node budget is spent.
+    fn stopped(&self) -> bool {
+        self.values.len() >= 2 || self.nodes > self.budget
+    }
+
+    /// True when every equation is met exactly by the assignment so far.
+    fn complete(&self) -> bool {
+        self.equations
+            .iter()
+            .enumerate()
+            .all(|(index, (_, residual))| self.sums.get(index) == Some(residual))
+    }
+
+    /// The values the position can still take without leaving an equation
+    /// short, or `None` when the equations leave it none.
+    fn domain(&self, position: usize) -> Option<(u64, u64)> {
+        let mut low = 0_u64;
+        let mut high = self.upper.get(position).copied()?;
+        for (index, (positions, residual)) in self.equations.iter().enumerate() {
+            if !positions.contains(&position) {
                 continue;
             }
-            if let Some(slot) = self.assigned.get_mut(position) {
-                *slot = value;
-            }
-            for (index, (positions, _)) in self.equations.iter().enumerate() {
-                if positions.contains(&position) {
-                    if let Some(sum) = self.sums.get_mut(index) {
-                        *sum += value;
-                    }
-                }
-            }
-            self.walk(position + 1);
-            for (index, (positions, _)) in self.equations.iter().enumerate() {
-                if positions.contains(&position) {
-                    if let Some(sum) = self.sums.get_mut(index) {
-                        *sum -= value;
-                    }
+            let sum = self.sums.get(index).copied().unwrap_or(0);
+            let reachable: u64 = positions
+                .iter()
+                .filter(|&&member| member != position)
+                .filter(|&&member| !self.assigned.get(member).copied().unwrap_or(true))
+                .filter_map(|&member| self.upper.get(member).copied())
+                .sum();
+            let ceiling = residual.checked_sub(sum)?;
+            high = high.min(ceiling);
+            low = low.max(ceiling.saturating_sub(reachable));
+        }
+        if low > high {
+            None
+        } else {
+            Some((low, high))
+        }
+    }
+
+    /// Assigns `position` and adds it to every equation holding it.
+    fn place(&mut self, position: usize, value: u64) {
+        if let Some(flag) = self.assigned.get_mut(position) {
+            *flag = true;
+        }
+        if let Some(slot) = self.assignment.get_mut(position) {
+            *slot = value;
+        }
+        for (index, (positions, _)) in self.equations.iter().enumerate() {
+            if positions.contains(&position) {
+                if let Some(sum) = self.sums.get_mut(index) {
+                    *sum += value;
                 }
             }
         }
     }
 
-    /// True when the value keeps every equation at or below its residual and
-    /// leaves the cells not assigned yet able to reach it.
-    fn fits(&self, position: usize, value: u64) -> bool {
-        self.equations
-            .iter()
-            .enumerate()
-            .all(|(index, (positions, residual))| {
-                if !positions.contains(&position) {
-                    return true;
+    /// Undoes one `place`.
+    fn unplace(&mut self, position: usize, value: u64) {
+        if let Some(flag) = self.assigned.get_mut(position) {
+            *flag = false;
+        }
+        for (index, (positions, _)) in self.equations.iter().enumerate() {
+            if positions.contains(&position) {
+                if let Some(sum) = self.sums.get_mut(index) {
+                    *sum -= value;
                 }
-                let partial = self.sums.get(index).copied().unwrap_or(0) + value;
-                if partial > *residual {
-                    return false;
-                }
-                let remaining: u64 = positions
-                    .iter()
-                    .filter(|&&member| member > position)
-                    .filter_map(|&member| self.upper.get(member).copied())
-                    .sum();
-                partial + remaining >= *residual
-            })
+            }
+        }
     }
 }
 
@@ -599,12 +651,24 @@ fn assert_nothing_recovered(
     Ok(())
 }
 
-/// Two partitions of the indices, like a table's rows and its columns.
+/// Group structures like a report's: one contiguous partition, one parity
+/// partition, and where the length allows it the rows and the columns of a
+/// table, so the oracle sees the intersecting shapes a report publishes.
 fn random_groups(rng: &mut SplitMix64, len: usize) -> Vec<Vec<usize>> {
     let cut = 1 + rng.below((len - 1) as u64) as usize;
     let mut groups: Vec<Vec<usize>> = vec![(0..cut).collect(), (cut..len).collect()];
     groups.push((0..len).step_by(2).collect());
     groups.push((1..len).step_by(2).collect());
+    if len >= 4 {
+        let width = 2 + rng.below((len - 2) as u64) as usize;
+        groups.extend(
+            (0..len)
+                .collect::<Vec<usize>>()
+                .chunks(width)
+                .map(<[usize]>::to_vec),
+        );
+        groups.extend((0..width).map(|column| (column..len).step_by(width).collect()));
+    }
     groups.retain(|group| group.len() >= 2);
     groups
 }
@@ -674,6 +738,63 @@ fn stat_5_zero_residual_is_not_recoverable() -> TestResult {
     let groups = vec![vec![0, 1, 2]];
     let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
     assert_eq!(out, vec![None, None, None, Some(60)]);
+    assert_nothing_recovered(&cells, &groups, &out)
+}
+
+#[test]
+fn stat_5_joint_nonnegative_totals_are_not_recoverable() -> TestResult {
+    // Five group totals over six suppressed counts. Three of the groups hide two
+    // counts each, so the one-group rule hides nothing further, yet the totals
+    // together with the non-negativity of counts pin all six: a + b = 2,
+    // a + c = 2, b + c + d = 2, b + e = 2 and a + e + f = 2 hold only for
+    // 1, 1, 1, 0, 1, 0. The shown 50 is therefore the leak and goes with them.
+    let cells = vec![1, 1, 1, 0, 1, 0, 50];
+    let groups = vec![
+        vec![0, 1, 6],
+        vec![0, 2, 6],
+        vec![1, 2, 3, 6],
+        vec![1, 4, 6],
+        vec![0, 4, 5, 6],
+    ];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None; 7]);
+    // The 50 is gone, and with it the unique solution it created: the count it
+    // held is no longer fixed by the totals.
+    for index in [0, 1, 2, 4, 6] {
+        let values = reconstructed_values(&cells, &groups, &out, index)
+            .ok_or_else(|| format!("the reconstruction of cell {index} hit the node budget"))?;
+        assert!(
+            values.len() != 1,
+            "cells {cells:?} out {out:?}: cell {index} is reconstructed as {values:?}"
+        );
+    }
+    // Every count of the five groups is suppressed now, so their totals are the
+    // system a reader solves and the caller must not publish them. The two
+    // counts that structure pins to zero are what remains if they are published
+    // anyway: that is the fail-closed contract, not a suppression the cells
+    // alone can provide.
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 3),
+        Some(vec![0])
+    );
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 5),
+        Some(vec![0])
+    );
+    Ok(())
+}
+
+#[test]
+fn stat_5_integer_totals_are_not_recoverable() -> TestResult {
+    // Three group totals over four suppressed counts that no single group
+    // settles: x0 + x3 = 1, x1 + x3 = 2 and x0 + x1 + x2 = 2 admit only the
+    // non-negative integer solution 0, 1, 1, 1, although the real interval for
+    // x3 is [1/2, 1]. The shown 50 goes with them, and once all five counts are
+    // suppressed the published totals leave every one of them alternatives.
+    let cells = vec![0, 1, 1, 1, 50];
+    let groups = vec![vec![0, 3, 4], vec![1, 3, 4], vec![0, 1, 2, 4]];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None; 5]);
     assert_nothing_recovered(&cells, &groups, &out)
 }
 
