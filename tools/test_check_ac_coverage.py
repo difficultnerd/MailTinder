@@ -8,6 +8,7 @@ import unittest
 
 from tools.check_ac_coverage import (
     KnownId,
+    bash_test_names,
     dart_test_keys,
     has_test,
     is_task_local_story_ac,
@@ -138,11 +139,40 @@ The tests are JEV-1, BAKE-2, EXP-1, GUARD-1, and STAT-1.
     def test_task_local_story_ac_shape(self):
         self.assertTrue(is_task_local_story_ac("E2E-INFRA AC1"))
         self.assertTrue(is_task_local_story_ac("E2E-INFRA AC12b"))
+        # A task-local story whose name is one word (T-1116's `BOOT AC1`) keys
+        # off the whole row id too.
+        self.assertTrue(is_task_local_story_ac("BOOT AC1"))
+        self.assertTrue(is_task_local_story_ac("BOOT AC6a"))
         # A plain unknown ID, a known-story row and a state test name keep the
         # existing handling.
         self.assertFalse(is_task_local_story_ac("UNKNOWN-99"))
         self.assertFalse(is_task_local_story_ac("SW-03 AC2"))
         self.assertFalse(is_task_local_story_ac("s9_feed_empty"))
+        self.assertFalse(is_task_local_story_ac("BOOT-4"))
+
+    def test_bash_names_only_from_test_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tests_dir = tmp_root / "scripts/infra/tests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "bootstrap_test.sh").write_text(
+                """#!/usr/bin/env bash
+greet() { printf 'hi\\n'; }
+boot_ac1_dry_run_creates_nothing() { :; }
+boot_ac5_planner_cannot_reach_applier() { :; }
+"""
+            )
+            # A helper script that is not a test file: its functions are not
+            # test names, however they are called.
+            (tmp_root / "scripts").mkdir(exist_ok=True)
+            (tmp_root / "scripts/infra/bootstrap-project.sh").write_text(
+                "usage() { :; }\nboot_ac1_not_a_test() { :; }\n"
+            )
+            names = bash_test_names(tmp_root)
+            self.assertIn("boot_ac1_dry_run_creates_nothing", names)
+            self.assertIn("boot_ac5_planner_cannot_reach_applier", names)
+            self.assertNotIn("usage", names)
+            self.assertNotIn("boot_ac1_not_a_test", names)
 
     def test_rust_names_found_in_proptest_block(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +345,30 @@ void main() {
             rs_dir = tmp_root / "backend/crates/e2e/tests"
             rs_dir.mkdir(parents=True)
             (rs_dir / "unsub_infra.rs").write_text("fn e2e_infra_ac1_job_due_and_posted_once() {}\n")
+            self.assertEqual(main(["--root", str(tmp_root)]), 0)
+
+    def test_task_local_story_ac_proved_by_a_shell_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            self._setup_tree(tmp_root)
+            (tmp_root / "docs/backlog/T-101-sample.md").write_text(
+                """# T-101
+## Acceptance criteria
+| ID | Behaviour |
+| --- | --- |
+| BOOT AC1 | A one-word task-local story whose checks are shell tests |
+"""
+            )
+            # No test exists yet: the row's own key must name a real test.
+            self.assertEqual(main(["--root", str(tmp_root)]), 1)
+
+            # A shell test file carries the id in its function name, exactly as
+            # the Rust and Dart tests do.
+            tests_dir = tmp_root / "scripts/infra/tests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "bootstrap_test.sh").write_text(
+                "boot_ac1_dry_run_creates_nothing() { :; }\n"
+            )
             self.assertEqual(main(["--root", str(tmp_root)]), 0)
 
     def test_inactive_id_in_task_fails(self):

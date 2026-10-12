@@ -21,16 +21,54 @@ the plan and runs `apply`**, from his own machine, one project at a time
 
 ## Bootstrap (one time, per environment, order matters)
 
-1. Create the Google Cloud project and link billing to it.
-2. Create the remote state bucket. `us-central1` keeps the state in the same
-   region as everything else:
+1. Create the Google Cloud project and link billing to it. Neither is scripted:
+   linking billing needs a billing admin, so the bootstrap script stops and
+   prints the console link when a project has no billing account.
+
+2. Run the one-command bootstrap (T-1116), as **your own user account** - it
+   refuses to run as a service account, refuses a project without billing, and
+   refuses production without `--i-know-the-log-bucket-lock-is-permanent`:
 
    ```
-   gcloud storage buckets create gs://<project>-tfstate \
-     --location=us-central1 --uniform-bucket-level-access \
-     --public-access-prevention
-   gcloud storage buckets update gs://<project>-tfstate --versioning
+   scripts/infra/bootstrap-project.sh --project <project> --env staging \
+     --repo <owner/name>
    ```
+
+   It prints the plan, asks for `y` (`--yes` skips the prompt on a re-run;
+   `--dry-run` prints the plan and stops, changing nothing), and then creates
+   what Terraform cannot create for itself:
+
+   - the six APIs Terraform needs to start (`serviceusage`,
+     `cloudresourcemanager`, `iam`, `iamcredentials`, `sts`, `storage`). The
+     rest are enabled by `modules/foundation/apis.tf`.
+   - the state bucket `gs://<project>-tfstate`: `us-central1`, uniform
+     bucket-level access, public access prevention, versioning on.
+   - two Workload Identity pools, `github-plan` and `github-apply`, one provider
+     each (a principalSet is scoped to a pool, so one pool with two providers
+     could not keep the planner away from the applier), and the `mt-planner` and
+     `mt-applier` service accounts with their bindings. `mt-planner` is bound to
+     the plan pool's `attribute.repository` and gets narrow per-service viewers
+     plus `objectViewer` on the state bucket (it plans with `-lock=false`);
+     `mt-applier` is bound to the apply pool's `attribute.environment` only and
+     gets the roles the two modules need, `objectAdmin` on the state bucket, and
+     **no rights at all** on the identity pools, the providers or the two service
+     accounts, so it cannot widen its own access. Its
+     `roles/resourcemanager.projectIamAdmin` grant carries an IAM Condition that
+     limits the roles it may grant to exactly the roles `modules/foundation` and
+     `modules/runtime` bind (ADR 0003 item 4, V13.2.2). The applier's role table,
+     mapped to the resource that needs each role, is in the script header.
+   - no service account key, no secret value, no Terraform state: the script
+     never touches any of the three.
+   - a second run creates nothing (every creating call sits behind a `describe`
+     probe and says so), and a run after a partial failure resumes where it
+     stopped.
+
+   It prints, last, the exact values to store as GitHub variables: repository
+   variables with an `<ENV>` suffix for the post-merge plan job (a job that names
+   no environment cannot read an environment-scoped variable) and Environment
+   variables in `staging`/`production` for the apply job, plus the
+   `TF_APPLY_ENABLED=false` reminder (ADR 0003 item 7). The project id and the
+   bucket name are arguments, never committed - this repository is public.
 
 3. From `envs/prod`, point the backend at that bucket and initialise:
 
@@ -72,14 +110,16 @@ billing link and **its own state bucket**. It runs the same three modules from
 this repository as production; only the variables differ. Staging passes
 `enable_alerts = false` to the monitoring module, so it gets the budgets and the
 email channel but no alert policy, no log-based metric and no uptime check
-(T-1107). Bootstrap it by repeating steps 1-4 above with the staging names,
-including staging's own `billing_account` and `alert_email` in
-`terraform.tfvars`:
+(T-1107). Bootstrap it by repeating steps 1 and 2 above with the staging names -
+the same one command, with staging's own project id, `--env staging` and
+staging's own `billing_account` and `alert_email` in `terraform.tfvars`:
 
 1. Create the staging project and link billing to it.
-2. Create `gs://<staging-project>-tfstate` (the same command, the staging name).
-   Never reuse the production bucket (S4 1: separate state), so a staging
-   destroy can never reach production state.
+2. `scripts/infra/bootstrap-project.sh --project <staging-project> --env staging
+   --repo <owner/name>`. It creates `gs://<staging-project>-tfstate`, staging's
+   own identity pools and its own `mt-planner`/`mt-applier`. Never reuse the
+   production bucket (S4 1: separate state), so a staging destroy can never reach
+   production state.
 3. From `envs/staging`:
 
    ```

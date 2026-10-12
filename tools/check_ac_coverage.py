@@ -3,7 +3,8 @@
 
 Proves that every acceptance criterion, invariant, S5 verification ID,
 classifier test ID and ASVS row named by a merged task file has a test
-whose name carries that ID, and prints overall S2 coverage.
+whose name carries that ID (Rust test functions, Dart test descriptions or
+shell test functions), and prints overall S2 coverage.
 """
 
 from __future__ import annotations
@@ -182,18 +183,29 @@ def test_key(known_id: str) -> str:
     return norm
 
 
+# A task-local story AC: `E2E-INFRA AC1` (a hyphenated story) or `BOOT AC1`
+# (a single word). The story must carry a letter, so the spec's own numeric
+# story suffixes (`SW-03 AC2`) never match here - they are looked up in the
+# parsed spec sources instead.
+_TASK_LOCAL_STORY_AC = re.compile(
+    r"^(?:[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][A-Z0-9]*"
+    r"|[A-Z][A-Z0-9]*[A-Z][A-Z0-9]*) AC\d+[a-z]?$"
+)
+
+
 def is_task_local_story_ac(raw_id: str) -> bool:
     """True for an `AC` row of a story the spec sources do not define.
 
     A task may name its own story (T-1101g's `E2E-INFRA AC1`, whose checks are
-    proved by `e2e_infra_ac1_*` tests). Such a row supplies its own test key
-    from the whole ID; the named test must still exist, so a typo fails exactly
-    like a missing test instead of being ignored.
+    proved by `e2e_infra_ac1_*` tests; T-1116's `BOOT AC1`, whose checks are
+    proved by the shell tests in `scripts/infra/tests/bootstrap_test.sh`). Such a
+    row supplies its own test key from the whole ID; the named test must still
+    exist, so a typo fails exactly like a missing test instead of being ignored.
 
     The story part must carry a word (letters, not only a number), which is what
-    distinguishes `E2E-INFRA` from the spec's own `SW-03` style IDs.
+    distinguishes `E2E-INFRA` and `BOOT` from the spec's own `SW-03` style IDs.
     """
-    return bool(re.match(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][A-Z0-9]* AC\d+[a-z]?$", raw_id))
+    return bool(_TASK_LOCAL_STORY_AC.match(raw_id))
 
 
 def rust_test_names(root: Path) -> set[str]:
@@ -213,6 +225,37 @@ def rust_test_names(root: Path) -> set[str]:
             continue
         for m in fn_re.finditer(content):
             names.add(m.group(1))
+
+    return names
+
+
+def bash_test_names(root: Path) -> set[str]:
+    """Collect test function names from the repository's shell test files.
+
+    A shell test file is one named `*_test.sh` or any `.sh` under a `tests/`
+    directory; the project's shell tests carry the AC id in the function name
+    (`boot_ac1_dry_run_creates_nothing`), exactly as the Rust and Dart tests do,
+    so a task whose checks are shell tests (T-1116) is covered like any other.
+    """
+    names: set[str] = set()
+    fn_re = re.compile(r"^(?:function\s+)?([a-z][a-z0-9_]*)\s*\(\s*\)", re.MULTILINE)
+
+    for base in ("scripts", "tools"):
+        base_dir = root / base
+        if not base_dir.exists():
+            continue
+        for sh_path in base_dir.rglob("*.sh"):
+            parts = set(sh_path.parts)
+            if parts & {"target", "node_modules", "build", ".terraform"}:
+                continue
+            if not (sh_path.name.endswith("_test.sh") or "tests" in sh_path.parts):
+                continue
+            try:
+                content = sh_path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for m in fn_re.finditer(content):
+                names.add(m.group(1))
 
     return names
 
@@ -260,15 +303,13 @@ def semgrep_rule_ids(root: Path) -> set[str]:
     return rules
 
 
-def has_test(key: str, rust: set[str], dart: set[str]) -> bool:
-    """True when some test name in rust or dart equals key or starts with key + '_'."""
+def has_test(key: str, *name_sets: set[str]) -> bool:
+    """True when some test name in any set equals key or starts with key + '_'."""
     prefix = key + "_"
-    for name in rust:
-        if name == key or name.startswith(prefix):
-            return True
-    for name in dart:
-        if name == key or name.startswith(prefix):
-            return True
+    for names in name_sets:
+        for name in names:
+            if name == key or name.startswith(prefix):
+                return True
     return False
 
 
@@ -332,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     # Scan test names and semgrep rules
     rust_names = rust_test_names(root)
     dart_keys = dart_test_keys(root)
+    bash_names = bash_test_names(root)
     semgrep_rules = semgrep_rule_ids(root)
 
     # Read enforced tasks
@@ -376,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
             # Check if S9 state test name
             if re.match(r"^s9_[a-z0-9_]+$", raw_id):
                 # Must exist exactly as Rust name or Dart key prefix (or exact match)
-                if not has_test(raw_id, rust_names, dart_keys):
+                if not has_test(raw_id, rust_names, dart_keys, bash_names):
                     failures.append(
                         f"{rel_task_path}: {raw_id}: missing test (expected a name starting {raw_id})"
                     )
@@ -397,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                 # exist, so a typo fails like a missing test.
                 if is_task_local_story_ac(raw_id):
                     key = test_key(raw_id)
-                    if not has_test(key, rust_names, dart_keys):
+                    if not has_test(key, rust_names, dart_keys, bash_names):
                         failures.append(
                             f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                         )
@@ -418,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
                 v = kid.verify or "-"
                 if v == "test":
                     key = test_key(kid.id)
-                    if not has_test(key, rust_names, dart_keys):
+                    if not has_test(key, rust_names, dart_keys, bash_names):
                         failures.append(
                             f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                         )
@@ -436,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             else:
                 key = test_key(kid.id)
-                if not has_test(key, rust_names, dart_keys):
+                if not has_test(key, rust_names, dart_keys, bash_names):
                     failures.append(
                         f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                     )
@@ -447,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
             v = kid.verify or "-"
             if v == "test":
                 key = test_key(kid.id)
-                if not has_test(key, rust_names, dart_keys):
+                if not has_test(key, rust_names, dart_keys, bash_names):
                     failures.append(
                         f"docs/security/asvs-l2-register.md: {kid.id}: missing test (expected a name starting {key})"
                     )
@@ -494,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         uncovered: list[str] = []
         for kid in acs:
             key = test_key(kid.id)
-            if has_test(key, rust_names, dart_keys):
+            if has_test(key, rust_names, dart_keys, bash_names):
                 covered_count += 1
             else:
                 uncovered.append(kid.id)
@@ -512,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     inv_total = len(s3_list)
     for kid in s3_list:
         key = test_key(kid.id)
-        if has_test(key, rust_names, dart_keys):
+        if has_test(key, rust_names, dart_keys, bash_names):
             inv_covered += 1
 
     # Register 'test' rows covered of their total
@@ -520,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
     reg_test_covered = 0
     for kid in reg_test_rows:
         key = test_key(kid.id)
-        if has_test(key, rust_names, dart_keys):
+        if has_test(key, rust_names, dart_keys, bash_names):
             reg_test_covered += 1
 
     report_lines.append("## Totals")
