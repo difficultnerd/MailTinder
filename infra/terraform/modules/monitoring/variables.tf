@@ -34,14 +34,14 @@ variable "alert_email" {
 
 variable "monthly_budget_usd" {
   type        = number
-  default     = 10
-  description = "Project budget in US dollars per month. [DEFAULT] 10: S4 1 puts the expected running cost at trial scale at \"roughly zero to a few dollars a month\", so this is a little headroom above it."
+  default     = 15
+  description = "Project budget per month, in var.budget_currency_code (AUD). [DEFAULT] 15 (about US$10): S4 1 puts the expected running cost at trial scale at \"roughly zero to a few dollars a month\", so this is a little headroom above it."
 }
 
 variable "vertex_budget_usd" {
   type        = number
-  default     = 5
-  description = "Vertex AI budget in US dollars per month, a second budget filtered to the Vertex AI service. [DEFAULT] 5: S4 5.7 wants a separate billing alert on Vertex AI usage."
+  default     = 8
+  description = "Vertex AI budget per month, in var.budget_currency_code (AUD; default 8, about US$5), a second budget filtered to the Vertex AI service. [DEFAULT] 5: S4 5.7 wants a separate billing alert on Vertex AI usage."
 }
 
 variable "vertex_billing_service" {
@@ -116,4 +116,10 @@ variable "log_fields" {
     outcome = "outcome"
   }
   description = "The event-type and outcome JSON keys of a content-free T-307 log line (event = \"action\", outcome = \"outcome\")."
+}
+
+variable "budget_currency_code" {
+  type        = string
+  default     = "AUD"
+  description = "Currency of both budgets. It MUST equal the billing account's own currency or the Budgets API answers 400 'Request contains an invalid argument' (found 12 Oct: account 010EAD-... is AUD). The monthly_budget_usd and vertex_budget_usd amounts are in this currency despite their names (rename is a later cleanup)."
 }
