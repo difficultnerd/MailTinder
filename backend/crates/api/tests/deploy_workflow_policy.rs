@@ -21,12 +21,41 @@
 //! behaviour above also has a mutation test: it applies ONE edit to the real
 //! text and has to be rejected, because a check that cannot fail proves
 //! nothing (S10 10.4).
+//!
+//! T-1104d closes the PR #89 review findings S-1 to S-8, which two rework
+//! rounds left open: the preflight's variable loops and its two
+//! `*_ready=false` assignments (S-1, S-8), the `permissions:` scope (S-2), a
+//! catch-all or empty `on.push.paths` list (S-3), the Cloud Run region as the
+//! runtime module declares it (S-4), `DEPLOY_ENABLED` (S-6) and the pin rule
+//! over every file under `.github/workflows/` rather than `deploy.yml` alone
+//! (S-7). Each has its own check and its own mutation, plus one test that runs
+//! the extracted preflight script with every variable unset.
 
 use std::ops::Range;
+use std::path::Path;
 
 const WORKFLOW: &str = include_str!("../../../../.github/workflows/deploy.yml");
 const CLOUD_RUN: &str = include_str!("../../../../infra/terraform/modules/runtime/cloud_run.tf");
 const FIREBASE: &str = include_str!("../../../../firebase.json");
+
+/// The runtime module's interface (S-4): its `region` default is the one region
+/// every regional service - Cloud Run, Cloud Tasks, Scheduler - takes.
+const RUNTIME_VARIABLES: &str =
+    include_str!("../../../../infra/terraform/modules/runtime/variables.tf");
+
+/// The deploy runbook. Read only, to prove `DEPLOY_ENABLED` is documented where
+/// the preflight's own warning points the owner (S-6).
+const README: &str = include_str!("../../../../infra/terraform/README.md");
+
+/// The staging repository variables the preflight has to test (S-1).
+const STAGING_VARIABLES: &[&str] = &[
+    "STAGING_PROJECT",
+    "STAGING_WIF_PROVIDER",
+    "STAGING_DEPLOYER",
+];
+
+/// The production repository variables the preflight has to test (S-1).
+const PROD_VARIABLES: &[&str] = &["PROD_PROJECT", "PROD_WIF_PROVIDER", "PROD_DEPLOYER"];
 
 /// The one summary line `configured` prints when it skips, verbatim.
 const SKIP_NOTICE: &str =
@@ -286,20 +315,260 @@ fn firebase_service_id(firebase: &str) -> Option<&str> {
     rest.find('"').map(|end| &rest[..end])
 }
 
+/// The region of `firebase.json`'s Hosting `run` rewrite (S-4).
+fn firebase_run_region(firebase: &str) -> Option<String> {
+    let (_, rest) = firebase.split_once("\"run\"")?;
+    let run = rest.split('}').next()?;
+    let (_, rest) = run.split_once("\"region\"")?;
+    let rest = rest
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
+    rest.find('"').map(|end| rest[..end].to_owned())
+}
+
+/// The `region` default of the runtime module, from `variables.tf`.
+///
+/// Hand rolled as in dockerfile_policy.rs: the shape read here is the HCL
+/// `default = "..."` of one variable block, and a HCL dependency would test the
+/// parser, not the module.
+fn region_default(variables: &str) -> Option<String> {
+    let lines: Vec<&str> = variables.lines().collect();
+    let open = lines
+        .iter()
+        .position(|line| text(line) == "variable \"region\" {")?;
+    let mut index = open + 1;
+    while index < lines.len() && text(lines[index]) != "}" {
+        if let Some(value) = hcl_string(lines[index], "default") {
+            return Some(value);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// The value of a `key = "..."` line, if the line is exactly that assignment.
+fn hcl_string(line: &str, key: &str) -> Option<String> {
+    let rest = text(line).strip_prefix(key)?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start().strip_prefix('"')?;
+    rest.find('"').map(|end| rest[..end].to_owned())
+}
+
+/// The value of `name` in the workflow's top-level `env` block (S-4).
+fn top_level_env(lines: &[&str], name: &str) -> Option<String> {
+    let open = key_line(lines, 0..lines.len(), 0, "env")?;
+    block_range(lines, open)
+        .find_map(|index| value_of(lines[index], name))
+        .map(|value| value.trim_matches('"').to_owned())
+}
+
+/// Every `gcloud run deploy` command, as the shell sees it: a line that ends in
+/// a backslash continues on the next one (S-4 reads the whole command).
+fn deploy_commands(lines: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if is_comment(lines[index]) || !text(lines[index]).contains("gcloud run deploy") {
+            index += 1;
+            continue;
+        }
+        let mut command = String::new();
+        while index < lines.len() {
+            command.push_str(text(lines[index]));
+            if !command.trim_end().ends_with('\\') {
+                break;
+            }
+            index += 1;
+        }
+        out.push(command);
+        index += 1;
+    }
+    out
+}
+
+/// A job's `run:` blocks, joined as one shell script (S-8 executes it).
+fn run_script(lines: &[&str], job: Range<usize>) -> Option<String> {
+    let shell = shell_lines(lines, job);
+    (!shell.is_empty()).then(|| shell.join("\n"))
+}
+
+/// Every workflow file, read at test time rather than through `include_str!`,
+/// so a file added to the directory later is covered too (S-7).
+fn workflow_sources() -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.github/workflows");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".yml") || name.ends_with(".yaml") {
+            out.push((name, std::fs::read_to_string(entry.path())?));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // The policy
 // ---------------------------------------------------------------------------
 
-/// Every way these texts break the T-1104b policy; empty means the workflow is
-/// the one the task describes. The tests below mutate one thing at a time.
-fn violations(workflow: &str, cloud_run: &str, firebase: &str) -> Vec<String> {
+/// Every way these texts break the T-1104b policy, extended by T-1104d with the
+/// `permissions:` scope, the Cloud Run region, the documented `DEPLOY_ENABLED`
+/// switch and the pin rule over the whole `.github/workflows/` directory; empty
+/// means the workflow is the one the task describes. The tests below mutate one
+/// thing at a time.
+fn violations(
+    workflow: &str,
+    cloud_run: &str,
+    firebase: &str,
+    runtime_variables: &str,
+    readme: &str,
+) -> Vec<String> {
     let lines = yaml_lines(workflow);
     let mut errors = Vec::new();
     check_triggers(&lines, &mut errors);
+    check_permissions(&lines, &mut errors);
     check_jobs(&lines, &mut errors);
-    check_pins(&lines, &mut errors);
-    check_services(&lines, cloud_run, firebase, &mut errors);
+    check_pins("deploy.yml", &lines, &mut errors);
+    match workflow_sources() {
+        Err(error) => errors.push(format!(".github/workflows could not be read: {error}")),
+        Ok(sources) => check_other_workflows(&sources, &mut errors),
+    }
+    check_services(&lines, cloud_run, firebase, runtime_variables, &mut errors);
+    check_deploy_enabled_docs(&lines, readme, &mut errors);
     errors
+}
+
+/// S-2: the checkout needs `contents: read` and nothing more, top level and in
+/// the preflight. A wider scope hands every job a token no step uses.
+fn check_permissions(lines: &[&str], errors: &mut Vec<String>) {
+    check_contents_read(lines, 0..lines.len(), 0, "the workflow", errors);
+
+    let all_jobs = jobs(lines);
+    if let Some(configured) = job(&all_jobs, "configured") {
+        check_contents_read(lines, configured, 4, "`configured`", errors);
+    }
+}
+
+/// The `contents:` scope a `permissions:` block at `depth` declares.
+fn check_contents_read(
+    lines: &[&str],
+    scope: Range<usize>,
+    depth: usize,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let contents = key_line(lines, scope, depth, "permissions")
+        .and_then(|open| key_line(lines, block_range(lines, open), depth + 2, "contents"))
+        .and_then(|line| value_of(lines[line], "contents"))
+        .map(|value| value.trim_matches('"'));
+    if contents != Some("read") {
+        errors.push(format!(
+            "{label} does not declare `permissions: contents: read` (found {contents:?}): the \
+             checkout needs read, and anything wider is a token no step here uses"
+        ));
+    }
+}
+
+/// S-7: the pin rule is a repository rule, so it covers every file under
+/// `.github/workflows/`, read at test time - not just the workflow this policy
+/// is about. `deploy.yml` itself is checked above, from the text under test.
+///
+/// Every file in the directory is pinned today, so the check needs no exclusion
+/// list; the owner fixes a workflow that is not, and the pull request that adds
+/// it lists the file.
+fn check_other_workflows(sources: &[(String, String)], errors: &mut Vec<String>) {
+    if sources.is_empty() {
+        errors.push(".github/workflows holds no workflow file".to_owned());
+    }
+    for (name, source) in sources {
+        if name == "deploy.yml" {
+            continue;
+        }
+        check_pins(name, &yaml_lines(source), errors);
+    }
+}
+
+/// S-6: `DEPLOY_ENABLED` is a documented switch, not a variable only the shell
+/// knows. The workflow's own comment block has to name it, and so has the
+/// runbook the skip notice points the owner at.
+fn check_deploy_enabled_docs(lines: &[&str], readme: &str, errors: &mut Vec<String>) {
+    if !lines
+        .iter()
+        .any(|line| is_comment(line) && line.contains("DEPLOY_ENABLED"))
+    {
+        errors.push(
+            "no comment in deploy.yml names `DEPLOY_ENABLED`: nobody reading the workflow learns \
+             the switch exists"
+                .to_owned(),
+        );
+    }
+    if !readme.contains("DEPLOY_ENABLED") {
+        errors.push(
+            "infra/terraform/README.md does not name `DEPLOY_ENABLED`: the notice this workflow \
+             prints points the owner at a runbook that never mentions it"
+                .to_owned(),
+        );
+    }
+}
+
+/// S-4: one region, declared once by the runtime module and used everywhere -
+/// the workflow's `REGION`, every `gcloud run deploy` command (as
+/// `--region "${REGION}"`, never a literal) and the Hosting rewrite.
+fn check_regions(
+    lines: &[&str],
+    runtime_variables: &str,
+    firebase: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(declared) = region_default(runtime_variables) else {
+        errors.push(
+            "infra/terraform/modules/runtime/variables.tf declares no `region` default: the \
+             workflow's region cannot be checked against the module"
+                .to_owned(),
+        );
+        return;
+    };
+    let Some(region) = top_level_env(lines, "REGION") else {
+        errors.push(
+            "the workflow's top-level `env` has no `REGION`: the deploy commands and the Hosting \
+             rewrite would be left to guess"
+                .to_owned(),
+        );
+        return;
+    };
+    if region != declared {
+        errors.push(format!(
+            "the workflow deploys to `{region}`, but the runtime module's `region` default is \
+             `{declared}`: the services it deploys to are in the other region"
+        ));
+    }
+
+    let commands = deploy_commands(lines);
+    if commands.is_empty() {
+        errors.push("no `gcloud run deploy` command was found in the workflow".to_owned());
+    }
+    for command in &commands {
+        if !command.contains("--region \"${REGION}\"") {
+            errors.push(format!(
+                "`{command}` does not pass `--region \"${{REGION}}\"`: a literal or missing region \
+                 puts the service beside the ones Terraform manages"
+            ));
+        }
+    }
+
+    match firebase_run_region(firebase) {
+        None => errors.push("firebase.json's Hosting `run` rewrite names no `region`".to_owned()),
+        Some(hosting) => {
+            if hosting != region {
+                errors.push(format!(
+                    "firebase.json's rewrite runs in `{hosting}`, but the workflow deploys to \
+                     `{region}`: the rewrite would reach no service"
+                ));
+            }
+        }
+    }
 }
 
 /// B2 and B3: only a push that can change a deployed artifact starts a run, and
@@ -333,9 +602,26 @@ fn check_triggers(lines: &[&str], errors: &mut Vec<String>) {
             ),
             Some(paths) => {
                 let entries: Vec<String> = block_range(lines, paths)
-                    .map(|index| list_item(lines[index]).trim_matches('"').to_owned())
+                    .map(|index| {
+                        list_item(lines[index])
+                            .trim_matches(|quote| quote == '"' || quote == '\'')
+                            .to_owned()
+                    })
                     .collect();
+                if entries.is_empty() {
+                    errors.push(
+                        "`on.push.paths` is an empty list: it matches nothing, so a change that \
+                         should deploy would never start a run"
+                            .to_owned(),
+                    );
+                }
                 for entry in &entries {
+                    if entry == "*" || entry == "**" || entry == "**/*" {
+                        errors.push(format!(
+                            "`on.push.paths` lists `{entry}`, a catch-all: it brings back the \
+                             docs-only merge the filter exists to stop"
+                        ));
+                    }
                     if entry.starts_with("docs/") || entry.starts_with("infra/") {
                         errors.push(format!(
                             "`on.push.paths` lists `{entry}`, which cannot change a deployed \
@@ -496,7 +782,72 @@ fn check_configured(lines: &[&str], job: Range<usize>, errors: &mut Vec<String>)
         }
     }
 
+    // S-1: the preflight reports what is missing BY NAME, so every variable is
+    // named twice - as an env key the step reads, and in the loop that tests
+    // it. A variable left out of either reads as set.
+    for (environment, required) in [
+        ("staging", STAGING_VARIABLES),
+        ("production", PROD_VARIABLES),
+    ] {
+        for name in required {
+            let read = job.clone().any(|index| {
+                value_of(lines[index], name)
+                    .is_some_and(|value| value.contains(&format!("vars.{name}")))
+            });
+            if !read {
+                errors.push(format!(
+                    "`configured` does not read `vars.{name}`: the {environment} deploy would run \
+                     against an empty value"
+                ));
+            }
+        }
+    }
+
+    // S-6: the switch that turns the quiet skip into a loud failure.
+    if !job.clone().any(|index| {
+        value_of(lines[index], "DEPLOY_ENABLED")
+            .is_some_and(|value| value.contains("vars.DEPLOY_ENABLED"))
+    }) {
+        errors.push(
+            "`configured` does not read `vars.DEPLOY_ENABLED`: the owner could not make a missing \
+             staging variable fail loudly"
+                .to_owned(),
+        );
+    }
+
     let shell = shell_lines(lines, job);
+
+    // S-1, second half: the loops are what actually test the variables.
+    let loops = loop_variables(&shell);
+    for (environment, required) in [
+        ("staging", STAGING_VARIABLES),
+        ("production", PROD_VARIABLES),
+    ] {
+        let covered = loops.iter().any(|(_, values)| {
+            required
+                .iter()
+                .all(|name| values.iter().any(|value| value.as_str() == *name))
+        });
+        if !covered {
+            errors.push(format!(
+                "`configured`'s {environment} loop does not name all of {}: a variable the loop \
+                 skips is never tested, so an unset one counts as set",
+                required.join(", ")
+            ));
+        }
+    }
+
+    // S-8: the assignments the loop makes. Without them the output stays
+    // `true`, and a deploy would run against an empty project.
+    for output in ["staging_ready", "prod_ready"] {
+        let assignment = format!("{output}=false");
+        if !shell.iter().any(|line| text(line) == assignment) {
+            errors.push(format!(
+                "`configured` never assigns `{assignment}`: a missing variable would not be \
+                 reported"
+            ));
+        }
+    }
 
     if !failure_branch(&shell, "DEPLOY_ENABLED") {
         errors.push(
@@ -530,8 +881,10 @@ fn check_configured(lines: &[&str], job: Range<usize>, errors: &mut Vec<String>)
     }
 }
 
-/// Actions stay pinned to a 40-character commit sha (repository rule).
-fn check_pins(lines: &[&str], errors: &mut Vec<String>) {
+/// Actions stay pinned to a 40-character commit sha (repository rule). `source`
+/// names the file the reference was read from, because S-7 runs this over every
+/// workflow.
+fn check_pins(source: &str, lines: &[&str], errors: &mut Vec<String>) {
     for line in lines {
         if is_comment(line) {
             continue;
@@ -547,15 +900,22 @@ fn check_pins(lines: &[&str], errors: &mut Vec<String>) {
         let pinned = pin.len() == 40 && pin.chars().all(|c| c.is_ascii_hexdigit());
         if !pinned {
             errors.push(format!(
-                "`uses: {reference}` is not pinned to a 40-character commit sha"
+                "`{source}` uses `{reference}`, which is not pinned to a 40-character commit sha"
             ));
         }
     }
 }
 
 /// B5: every service deployed, and the Hosting rewrite's `serviceId`, is one
-/// Terraform declares.
-fn check_services(lines: &[&str], cloud_run: &str, firebase: &str, errors: &mut Vec<String>) {
+/// Terraform declares - and S-4: the region is the runtime module's, in the
+/// commands and in the rewrite.
+fn check_services(
+    lines: &[&str],
+    cloud_run: &str,
+    firebase: &str,
+    runtime_variables: &str,
+    errors: &mut Vec<String>,
+) {
     let declared = declared_services(cloud_run);
     if declared.len() < 3 {
         errors.push(format!(
@@ -591,6 +951,8 @@ fn check_services(lines: &[&str], cloud_run: &str, firebase: &str, errors: &mut 
             }
         }
     }
+
+    check_regions(lines, runtime_variables, firebase, errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +968,7 @@ fn workflow_mutation(from: &str, to: &str) -> Result<(), Box<dyn std::error::Err
         mutated, WORKFLOW,
         "the mutation {from:?} matches nothing in deploy.yml; the test is stale"
     );
-    let errors = violations(&mutated, CLOUD_RUN, FIREBASE);
+    let errors = violations(&mutated, CLOUD_RUN, FIREBASE, RUNTIME_VARIABLES, README);
     assert!(
         !errors.is_empty(),
         "the policy accepted a deploy.yml with {from:?} replaced by {to:?}"
@@ -621,7 +983,7 @@ fn firebase_mutation(from: &str, to: &str) -> Result<(), Box<dyn std::error::Err
         mutated, FIREBASE,
         "the mutation {from:?} matches nothing in firebase.json; the test is stale"
     );
-    let errors = violations(WORKFLOW, CLOUD_RUN, &mutated);
+    let errors = violations(WORKFLOW, CLOUD_RUN, &mutated, RUNTIME_VARIABLES, README);
     assert!(
         !errors.is_empty(),
         "the policy accepted a firebase.json with {from:?} replaced by {to:?}"
@@ -632,7 +994,7 @@ fn firebase_mutation(from: &str, to: &str) -> Result<(), Box<dyn std::error::Err
 /// The real workflow, module and Hosting config hold the policy.
 #[test]
 fn deploy_policy_accepts_the_real_files() -> Result<(), Box<dyn std::error::Error>> {
-    let errors = violations(WORKFLOW, CLOUD_RUN, FIREBASE);
+    let errors = violations(WORKFLOW, CLOUD_RUN, FIREBASE, RUNTIME_VARIABLES, README);
     assert!(
         errors.is_empty(),
         "deploy.yml is not the workflow T-1104b describes: {errors:#?}"
@@ -809,4 +1171,222 @@ fn deploy_policy_rejects_an_unpinned_action() -> Result<(), Box<dyn std::error::
 fn deploy_policy_rejects_an_environment_on_the_configured_job(
 ) -> Result<(), Box<dyn std::error::Error>> {
     workflow_mutation("    outputs:\n", "    environment: staging\n    outputs:\n")
+}
+
+// ---------------------------------------------------------------------------
+// T-1104d: the PR #89 review findings S-1 to S-4, S-6 and S-7, and the PR #91
+// finding S-8. Each check above has the mutation that proves it can fail.
+// ---------------------------------------------------------------------------
+
+/// S-1: a staging variable the preflight's loop does not test reads as set.
+#[test]
+fn deploy_policy_rejects_a_staging_loop_that_skips_a_variable(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation(
+        "for name in STAGING_PROJECT STAGING_WIF_PROVIDER STAGING_DEPLOYER; do",
+        "for name in STAGING_PROJECT STAGING_WIF_PROVIDER; do",
+    )
+}
+
+/// S-1: the same for the production loop, which decides the approval request.
+#[test]
+fn deploy_policy_rejects_a_prod_loop_that_skips_a_variable(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation(
+        "for name in PROD_PROJECT PROD_WIF_PROVIDER PROD_DEPLOYER; do",
+        "for name in PROD_PROJECT PROD_WIF_PROVIDER; do",
+    )
+}
+
+/// S-1: a variable named in the loop but never read by the step, which tests an
+/// empty string and reports the variable set.
+#[test]
+fn deploy_policy_rejects_a_configured_job_that_does_not_read_a_variable(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation(
+        "          STAGING_DEPLOYER: ${{ vars.STAGING_DEPLOYER }}\n",
+        "",
+    )
+}
+
+/// S-2: a wider `contents:` scope than the checkout needs.
+#[test]
+fn deploy_policy_rejects_a_write_contents_permission() -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation(
+        "permissions:\n  contents: read\n  id-token: write\n",
+        "permissions:\n  contents: write\n  id-token: write\n",
+    )
+}
+
+/// S-2: the preflight's own `permissions:` block, dropped.
+#[test]
+fn deploy_policy_rejects_a_configured_job_without_the_contents_read_permission(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("    permissions:\n      contents: read\n", "")
+}
+
+/// S-3: a catch-all filter starts a deploy for a docs-only merge again.
+#[test]
+fn deploy_policy_rejects_a_catch_all_path_filter() -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation(
+        "      - .firebaserc\n",
+        "      - .firebaserc\n      - '**'\n",
+    )
+}
+
+/// S-3: an empty `paths:` list matches nothing, so a deployable change would
+/// never start a run.
+#[test]
+fn deploy_policy_rejects_an_empty_path_filter() -> Result<(), Box<dyn std::error::Error>> {
+    let lines = yaml_lines("on:\n  push:\n    paths:\n  workflow_dispatch:\n");
+    let mut errors = Vec::new();
+    check_triggers(&lines, &mut errors);
+    assert!(
+        errors.iter().any(|error| error.contains("empty list")),
+        "the triggers check accepted an empty `on.push.paths`: {errors:#?}"
+    );
+    Ok(())
+}
+
+/// S-4 (a): a workflow region the runtime module does not declare.
+#[test]
+fn deploy_policy_rejects_a_region_the_runtime_module_does_not_declare(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("  REGION: us-central1\n", "  REGION: europe-west1\n")
+}
+
+/// S-4 (b): a literal region in a `gcloud run deploy` command, which would
+/// deploy beside the services Terraform manages.
+#[test]
+fn deploy_policy_rejects_a_literal_deploy_region() -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("--region \"${REGION}\"", "--region \"us-central1\"")
+}
+
+/// S-4 (c): a Hosting rewrite in another region than the one deployed to.
+#[test]
+fn deploy_policy_rejects_a_firebase_region_the_workflow_does_not_deploy_to(
+) -> Result<(), Box<dyn std::error::Error>> {
+    firebase_mutation(
+        "\"region\": \"us-central1\"",
+        "\"region\": \"europe-west1\"",
+    )
+}
+
+/// S-6: the switch that turns the quiet skip into a loud failure, unread.
+#[test]
+fn deploy_policy_rejects_a_configured_job_without_the_deploy_enabled_variable(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}\n", "")
+}
+
+/// S-7: the pin rule covers every workflow, not only the deploy one.
+#[test]
+fn deploy_policy_rejects_an_unpinned_action_in_another_workflow(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.github/workflows/ci.yml");
+    let source = std::fs::read_to_string(path)?;
+    let mutated = source.replacen(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@v7",
+        1,
+    );
+    assert_ne!(
+        mutated, source,
+        "ci.yml no longer pins actions/checkout; the test is stale"
+    );
+    let mut sources = workflow_sources()?;
+    let ci = sources
+        .iter_mut()
+        .find(|(name, _)| name == "ci.yml")
+        .ok_or("the workflow directory holds no ci.yml")?;
+    ci.1 = mutated;
+    let mut errors = Vec::new();
+    check_other_workflows(&sources, &mut errors);
+    assert!(
+        !errors.is_empty(),
+        "the pin check accepted an unpinned `uses:` in ci.yml"
+    );
+    Ok(())
+}
+
+/// S-7: every file under `.github/workflows/` is read by the scan, and every one
+/// of them is pinned. `deploy.yml` is checked through the text under test, so
+/// the scan skips it.
+#[test]
+fn deploy_policy_pins_every_workflow_file() -> Result<(), Box<dyn std::error::Error>> {
+    let sources = workflow_sources()?;
+    let names: Vec<&str> = sources.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        names.contains(&"deploy.yml") && names.len() > 1,
+        "the pin scan read {names:?}, which is not the workflow directory"
+    );
+    let mut errors = Vec::new();
+    check_other_workflows(&sources, &mut errors);
+    assert!(errors.is_empty(), "{errors:#?}");
+    Ok(())
+}
+
+/// S-8: the `staging_ready=false` assignment the loop makes.
+#[test]
+fn deploy_policy_rejects_a_configured_job_without_the_staging_false_assignment(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("              staging_ready=false\n", "")
+}
+
+/// S-8: the `prod_ready=false` assignment.
+#[test]
+fn deploy_policy_rejects_a_configured_job_without_the_prod_false_assignment(
+) -> Result<(), Box<dyn std::error::Error>> {
+    workflow_mutation("              prod_ready=false\n", "")
+}
+
+/// S-8: the extracted script, run with every variable unset, has to answer
+/// `false` for both environments - reading the text alone cannot see a script
+/// that reports nothing at all.
+#[test]
+fn deploy_policy_runs_the_preflight_with_every_variable_unset(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let lines = yaml_lines(WORKFLOW);
+    let configured =
+        job(&jobs(&lines), "configured").ok_or("deploy.yml has no `configured` job to run")?;
+    let script = run_script(&lines, configured).ok_or("`configured` has no `run:` block to run")?;
+
+    // Cargo gives integration tests a scratch directory inside the target tree.
+    // `std::env::temp_dir` is banned (rust.lang.security.temp-dir): a fixed name
+    // in a world-writable directory invites a symlink attack, and CI runs
+    // semgrep with `p/rust`, where the rule is an error.
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("deploy-policy-preflight");
+    std::fs::create_dir_all(&directory)?;
+    let output = directory.join(format!("deploy-policy-{}.out", std::process::id()));
+    let summary = directory.join(format!("deploy-policy-{}.summary", std::process::id()));
+    let mut command = std::process::Command::new("bash");
+    command
+        .arg("-c")
+        .arg(&script)
+        .env("GITHUB_OUTPUT", &output)
+        .env("GITHUB_STEP_SUMMARY", &summary);
+    for name in STAGING_VARIABLES
+        .iter()
+        .copied()
+        .chain(PROD_VARIABLES.iter().copied())
+        .chain(["DEPLOY_ENABLED", "GITHUB_EVENT_NAME"])
+    {
+        command.env_remove(name);
+    }
+    let status = command.status()?;
+    assert!(
+        status.success(),
+        "the preflight exited with {status} with every variable unset"
+    );
+
+    let written = std::fs::read_to_string(&output).unwrap_or_default();
+    for expected in ["staging_ready=false", "prod_ready=false"] {
+        assert!(
+            written.contains(expected),
+            "the preflight wrote {written:?} with every variable unset"
+        );
+    }
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_file(&summary);
+    Ok(())
 }
