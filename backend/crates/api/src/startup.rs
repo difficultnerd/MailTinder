@@ -176,6 +176,78 @@ fn e2e_startup() -> Result<(Ports, ApiConfig), SetupError> {
     Err(SetupError::E2eNeedsTestkit)
 }
 
+/// A required, non-empty value from a variable lookup, for the loaders below.
+/// Only the name is ever surfaced.
+fn required(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+) -> Result<String, SetupError> {
+    lookup(name)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or(SetupError::Missing(name))
+}
+
+/// The complete production environment [`build_production_ports`] reads
+/// (T-1119).
+///
+/// Every variable the start-up path requires is resolved here, and
+/// `build_production_ports` resolves it through [`ProductionEnv::from_env`], so
+/// the boot check (`tests/service_boot_env.rs`) drives the same loader start-up
+/// does and the two cannot diverge: a required variable added to the start-up
+/// path must go through this struct to be covered.
+pub struct ProductionEnv {
+    /// The API's own configuration (`config.rs`): `APP_ORIGIN`,
+    /// `GOOGLE_OAUTH_CLIENT_ID`, `PORT` and `API_BIND_HOST`.
+    pub config: ApiConfig,
+    /// `GOOGLE_CLOUD_PROJECT`, validated before it is interpolated into a
+    /// resource name.
+    pub project: String,
+    /// `UNSUB_BASE_URL`, parsed.
+    pub unsub_base: Url,
+    /// `UNSUB_AUDIENCE`: the `aud` every Cloud Tasks ID token must carry.
+    pub unsub_audience: String,
+    /// `UNSUB_TASKS_CALLER`: the only service account allowed to invoke unsub.
+    pub tasks_caller: String,
+}
+
+impl ProductionEnv {
+    /// Resolve every required variable of the production start-up path from a
+    /// lookup, so callers and tests never touch the process environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetupError::Missing`] for an absent or blank required variable
+    /// and [`SetupError::Invalid`] for a present but malformed one.
+    pub fn from_lookup(
+        lookup: impl Fn(&str) -> Option<String>,
+        mode: Mode,
+    ) -> Result<Self, SetupError> {
+        let config = ApiConfig::from_lookup(&lookup, mode)?;
+        let project = required(&lookup, "GOOGLE_CLOUD_PROJECT")?;
+        validate_project_id(&project)?;
+        let unsub_base = Url::parse(&required(&lookup, "UNSUB_BASE_URL")?)
+            .map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
+        let unsub_audience = required(&lookup, "UNSUB_AUDIENCE")?;
+        let tasks_caller = required(&lookup, "UNSUB_TASKS_CALLER")?;
+        Ok(Self {
+            config,
+            project,
+            unsub_base,
+            unsub_audience,
+            tasks_caller,
+        })
+    }
+
+    /// As [`ProductionEnv::from_lookup`], over the process environment.
+    ///
+    /// # Errors
+    ///
+    /// As [`ProductionEnv::from_lookup`].
+    pub fn from_env(mode: Mode) -> Result<Self, SetupError> {
+        Self::from_lookup(|name| std::env::var(name).ok(), mode)
+    }
+}
+
 /// Build the production `Ports` and `ApiConfig` from the environment.
 ///
 /// # Errors
@@ -184,13 +256,13 @@ fn e2e_startup() -> Result<(Ports, ApiConfig), SetupError> {
 /// environment and [`SetupError::Adapter`] when an adapter cannot be built.
 #[allow(clippy::too_many_lines)]
 pub async fn build_production_ports() -> Result<(Ports, ApiConfig), SetupError> {
-    let base = ApiConfig::from_env(Mode::Production)?;
-    let project = env("GOOGLE_CLOUD_PROJECT")?;
-    validate_project_id(&project)?;
-    let unsub_base =
-        Url::parse(&env("UNSUB_BASE_URL")?).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
-    let audience = env("UNSUB_AUDIENCE")?;
-    let tasks_caller = env("UNSUB_TASKS_CALLER")?;
+    let ProductionEnv {
+        config: base,
+        project,
+        unsub_base,
+        unsub_audience: audience,
+        tasks_caller,
+    } = ProductionEnv::from_env(Mode::Production)?;
 
     let clock = production_clock();
     let rng = production_rng();

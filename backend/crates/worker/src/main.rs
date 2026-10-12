@@ -27,6 +27,7 @@ use adapters_gcp::{
 use egress::{ProdEgress, Service, SystemResolver};
 use ports::{HttpEgress, Ports, Secrets};
 use svc_common::internal_auth::InternalAuthConfig;
+use worker::startup::ProductionEnv;
 use worker::sweep::WorkerState;
 use worker::{router, ROUTE_TEMPLATES};
 
@@ -39,48 +40,17 @@ const KEY_RING: &str = "mailtinder";
 const USER_KEY_NAME: &str = "data-key-kek";
 /// The KMS key that seals pre-user data (S6 5).
 const SYSTEM_KEY_NAME: &str = "system-fields";
-/// The default listen port when `PORT` is unset (Cloud Run sets it).
-const DEFAULT_PORT: u16 = 8080;
 
 /// A start-up failure. Nothing is printed through the print macros; the process
 /// logs one line through `tracing` and exits non-zero.
 #[derive(Debug, thiserror::Error)]
 enum SetupError {
-    #[error("missing environment variable {0}")]
-    Missing(&'static str),
-    #[error("invalid value for {0}")]
-    Invalid(&'static str),
+    #[error("config")]
+    Config(worker::startup::ProductionEnvError),
     #[error("adapter")]
     Adapter,
     #[error("obs")]
     Obs,
-}
-
-/// Everything `worker` needs to start.
-struct Config {
-    /// The `aud` every internal ID token must carry.
-    audience: String,
-    /// The only service account email allowed to call the internal route.
-    scheduler_caller: String,
-    /// The listen port.
-    port: u16,
-}
-
-impl Config {
-    /// Load the configuration from the process environment.
-    fn from_env() -> Result<Self, SetupError> {
-        let audience = env("WORKER_AUDIENCE")?;
-        let scheduler_caller = env("WORKER_SCHEDULER_CALLER")?;
-        let port = match non_empty(std::env::var("PORT").ok()) {
-            None => DEFAULT_PORT,
-            Some(p) => p.parse::<u16>().map_err(|_| SetupError::Invalid("PORT"))?,
-        };
-        Ok(Self {
-            audience,
-            scheduler_caller,
-            port,
-        })
-    }
 }
 
 #[tokio::main]
@@ -95,7 +65,12 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), SetupError> {
-    let config = Config::from_env()?;
+    let ProductionEnv {
+        audience,
+        scheduler_caller,
+        port,
+        project,
+    } = ProductionEnv::from_env().map_err(SetupError::Config)?;
     let clock = production_clock();
     let rng = production_rng();
     obs::init(
@@ -106,7 +81,6 @@ async fn run() -> Result<(), SetupError> {
     .map_err(|_| SetupError::Obs)?;
     obs::register_http_routes(ROUTE_TEMPLATES);
 
-    let project = env("GOOGLE_CLOUD_PROJECT")?;
     let tokens: Arc<dyn TokenSource> = Arc::new(MetadataTokenSource::new(Arc::clone(&clock)));
     let http = Arc::new(GcpHttp::new(tokens).map_err(|_| SetupError::Adapter)?);
     let egress: Arc<dyn HttpEgress> = Arc::new(
@@ -163,12 +137,12 @@ async fn run() -> Result<(), SetupError> {
     let state = WorkerState {
         ports,
         auth: InternalAuthConfig {
-            audience: config.audience,
-            allowed_caller_email: config.scheduler_caller,
+            audience,
+            allowed_caller_email: scheduler_caller,
         },
     };
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port))
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
         .await
         .map_err(|_| SetupError::Adapter)?;
     tracing::info!(event = "op", route = "worker.startup", outcome = "success");
@@ -176,16 +150,6 @@ async fn run() -> Result<(), SetupError> {
         .await
         .map_err(|_| SetupError::Adapter)?;
     Ok(())
-}
-
-/// A required environment variable.
-fn env(name: &'static str) -> Result<String, SetupError> {
-    non_empty(std::env::var(name).ok()).ok_or(SetupError::Missing(name))
-}
-
-/// A value that is present and not blank.
-fn non_empty(value: Option<String>) -> Option<String> {
-    value.filter(|v| !v.trim().is_empty())
 }
 
 /// The full KMS key resource name for `key` in the project.

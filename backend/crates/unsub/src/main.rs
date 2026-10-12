@@ -32,7 +32,7 @@ use egress::{ProdEgress, Service, SystemResolver};
 use obs::Sensitive;
 use ports::{HttpEgress, InviteMailer, MailProvider, Ports, SecretName, Secrets};
 use svc_common::internal_auth::InternalAuthConfig;
-use unsub::config::UnsubConfig;
+use unsub::config::ProductionEnv;
 use unsub::mailto::MailtoSender;
 use unsub::runner::UnsubState;
 use unsub::sender::UnsubSender;
@@ -60,9 +60,7 @@ const QUEUE_ID: &str = "unsubscribe";
 #[derive(Debug, thiserror::Error)]
 enum SetupError {
     #[error("config")]
-    Config(unsub::config::ConfigError),
-    #[error("missing environment variable {0}")]
-    Missing(&'static str),
+    Config(unsub::config::ProductionEnvError),
     #[error("invalid value for {0}")]
     Invalid(&'static str),
     #[error("e2e mode requires a testkit build")]
@@ -133,14 +131,14 @@ async fn e2e_startup() -> Result<(), SetupError> {
 
 #[allow(clippy::too_many_lines)]
 async fn production_run() -> Result<(), SetupError> {
-    let config = UnsubConfig::from_env().map_err(SetupError::Config)?;
+    let ProductionEnv {
+        config,
+        project,
+        unsub_base,
+        client_id,
+    } = ProductionEnv::from_env().map_err(SetupError::Config)?;
     let clock = production_clock();
     let rng = production_rng();
-
-    let project = env("GOOGLE_CLOUD_PROJECT")?;
-    let unsub_base =
-        Url::parse(&env("UNSUB_BASE_URL")?).map_err(|_| SetupError::Invalid("UNSUB_BASE_URL"))?;
-    let client_id = env("GOOGLE_OAUTH_CLIENT_ID")?;
 
     let tokens: Arc<dyn TokenSource> = Arc::new(MetadataTokenSource::new(Arc::clone(&clock)));
     let http = Arc::new(GcpHttp::new(tokens).map_err(|_| SetupError::Adapter)?);
@@ -260,14 +258,6 @@ async fn production_run() -> Result<(), SetupError> {
         .await
         .map_err(|_| SetupError::Adapter)?;
     Ok(())
-}
-
-/// A required environment variable.
-fn env(name: &'static str) -> Result<String, SetupError> {
-    std::env::var(name)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .ok_or(SetupError::Missing(name))
 }
 
 /// A pinned endpoint URL.
