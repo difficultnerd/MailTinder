@@ -45,10 +45,11 @@ A CI test that fails whenever a service's COMPLETE production environment (every
 | B5 | If the parser finds no maps or bindings, or meets an unsupported construct, the test fails (it never passes vacuously) |
 | B6 | Deleting `UNSUB_BASE_URL` (or `UNSUB_AUDIENCE`, `UNSUB_TASKS_CALLER`, `GOOGLE_CLOUD_PROJECT`) from `api_env`/`base_env` fails the test naming the variable |
 | B7 | Rebinding the worker resource's `for_each` to `local.unsub_env`, or setting a required literal to blank, fails the test |
+| B8 | Changing `value = env.value` to `value = env.key` (or `name = env.key` to `name = env.value`) in any service's `content` block fails the test |
 
 ## Tests that must pass
 
-The new test file (B1 to B7; show B2, B3, B5, B6 and B7 as mutation transcripts in the PR description), plus all existing tests and required checks. No Terraform command is run.
+The new test file (B1 to B8; show B2, B3, B5, B6, B7 and B8 as mutation transcripts in the PR description), plus all existing tests and required checks. No Terraform command is run.
 
 ## Edge cases and traps
 
