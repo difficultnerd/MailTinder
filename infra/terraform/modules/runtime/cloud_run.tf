@@ -35,6 +35,10 @@ data "google_project" "current" {
 locals {
   unsub_url  = "https://mt-unsub-${data.google_project.current.number}.${var.region}.run.app"
   worker_url = "https://mt-worker-${data.google_project.current.number}.${var.region}.run.app"
+  # The browser origin the API trusts and builds the OAuth redirect from
+  # (backend/crates/api/src/config.rs `APP_ORIGIN`: https, no path, no trailing
+  # slash). Firebase Hosting serves the default domain `<site_id>.web.app`.
+  app_origin = "https://${google_firebase_hosting_site.app.site_id}.web.app"
 }
 locals {
   # Variables every service gets. Only non-secret values: the secret *names* go
@@ -57,6 +61,20 @@ locals {
     MT_TASKS_QUEUE      = google_cloud_tasks_queue.unsubscribe.id
     MT_UNSUB_URL        = local.unsub_url
     MT_TASKS_INVOKER_SA = var.service_accounts["tasks_invoker"]
+    # The API refuses to start without these two (config.rs:102 and :105,
+    # `required`): the first staging deploy failed with "container failed to
+    # listen on PORT=8080" because only unsub had the client id and nothing
+    # set the origin (T-1104c).
+    APP_ORIGIN             = local.app_origin
+    GOOGLE_OAUTH_CLIENT_ID = var.google_oauth_client_id
+    # `build_production_ports` (api/src/startup.rs:189-193) also requires the
+    # unsub base URL, the unsub audience and the Cloud Tasks caller. The MT_*
+    # names above are not read by the api; these are. Same values as unsub's own
+    # UNSUB_AUDIENCE / UNSUB_BASE_URL so the audience Cloud Tasks signs for
+    # cannot diverge from the one unsub checks.
+    UNSUB_BASE_URL     = local.unsub_url
+    UNSUB_AUDIENCE     = local.unsub_url
+    UNSUB_TASKS_CALLER = var.service_accounts["tasks_invoker"]
   })
 
   unsub_env = merge(local.base_env, {

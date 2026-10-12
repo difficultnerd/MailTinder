@@ -54,9 +54,9 @@ variable "secret_ids" {
 variable "google_oauth_client_id" {
   type        = string
   description = <<-EOT
-    The Google OAuth client id the unsub service presents for the Gmail
-    identity flow; it reads it as GOOGLE_OAUTH_CLIENT_ID at start-up and
-    refuses to start without a non-empty value. It is deliberately an input
+    The Google OAuth client id the api and unsub services present for the
+    Gmail identity flow; each reads it as GOOGLE_OAUTH_CLIENT_ID at start-up
+    and refuses to start without a non-empty value. It is deliberately an input
     with no default: a missing or blank value fails the plan loudly instead of
     deploying a service that cannot boot. Each environment has its own client
     id (staging's differs from production's, T-1103).
