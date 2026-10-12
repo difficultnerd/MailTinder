@@ -222,6 +222,48 @@ run "sweep_every_15_minutes_with_oidc" {
   }
 }
 
+# T-1104c: the API's config loader requires APP_ORIGIN and
+# GOOGLE_OAUTH_CLIENT_ID (backend/crates/api/src/config.rs); the first staging
+# deploy failed to start because the api service had neither.
+run "api_carries_app_origin_and_client_id" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.api.template[0].containers[0].env :
+      e.name == "APP_ORIGIN" && e.value == "https://mailtinder-prod.web.app"
+    ])
+    error_message = "api must be given APP_ORIGIN (https://<site_id>.web.app, no trailing slash) or it refuses to start (T-1104c)"
+  }
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.api.template[0].containers[0].env :
+      e.name == "GOOGLE_OAUTH_CLIENT_ID" && length(trimspace(e.value)) > 0
+    ])
+    error_message = "api must be given a non-empty GOOGLE_OAUTH_CLIENT_ID or it refuses to start (T-1104c)"
+  }
+
+  assert {
+    condition = alltrue([
+      for k in ["UNSUB_BASE_URL", "UNSUB_AUDIENCE"] :
+      anytrue([
+        for e in google_cloud_run_v2_service.api.template[0].containers[0].env :
+        e.name == k && e.value == "https://mt-unsub-123456789012.us-central1.run.app"
+      ])
+    ])
+    error_message = "api must be given UNSUB_BASE_URL and UNSUB_AUDIENCE (the unsub service URL) or build_production_ports fails (T-1104c)"
+  }
+
+  assert {
+    condition = anytrue([
+      for e in google_cloud_run_v2_service.api.template[0].containers[0].env :
+      e.name == "UNSUB_TASKS_CALLER" && length(trimspace(e.value)) > 0
+    ])
+    error_message = "api must be given UNSUB_TASKS_CALLER (the Cloud Tasks invoker) or build_production_ports fails (T-1104c)"
+  }
+}
+
 run "internal_services_carry_their_own_oidc_audience" {
   command = plan
 
