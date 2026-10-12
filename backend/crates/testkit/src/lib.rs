@@ -37,6 +37,7 @@ pub mod runner_standin;
 pub mod scheduler;
 pub mod secrets;
 pub mod store;
+pub mod synth;
 
 pub use app_folder::InMemoryAppFolder;
 pub use classifier::FakeClassifier;

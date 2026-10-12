@@ -35,3 +35,7 @@ path = "src/bin/write_corpus.rs"
 
 [dev-dependencies]
 tokio.workspace = true
+# B7 of T-1120a seeds a generated manifest through the fake-google seeder.
+# A dev-dependency cycle (fake-google depends on testkit) is the supported way
+# to test a fake that is built on this crate's seed types.
+fake-google = { path = "../fake-google", version = "0.1.0" }
