@@ -421,25 +421,303 @@ fn stat_5_suppress_known_cases() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn stat_5_no_cell_recoverable() -> TestResult {
-    let mut rng = SplitMix64::new(42);
-    for _ in 0..200 {
-        let len = 2 + rng.below(6) as usize;
-        let cells: Vec<u64> = (0..len).map(|_| rng.below(30)).collect();
-        let group: Vec<usize> = (0..len).collect();
-        let out = suppress_cells(&cells, &[group], MIN_CELL_SIZE);
-        let hidden = out.iter().filter(|cell| cell.is_none()).count();
-        assert!(
-            hidden == 0 || hidden >= 2,
-            "cells {cells:?} -> {out:?} hides exactly one cell"
-        );
-        for (index, cell) in out.iter().enumerate() {
-            if let Some(shown) = cell {
-                assert_eq!(*shown, cells[index]);
+/// The values a suppressed cell can take in an assignment that reproduces every
+/// shown cell and every group total: what a reader holding the report can
+/// reconstruct. An empty vector means no group holds the cell, so nothing
+/// constrains it; `None` means the enumeration hit its node budget and proved
+/// nothing either way.
+fn reconstructed_values(
+    cells: &[u64],
+    groups: &[Vec<usize>],
+    out: &[Option<u64>],
+    target: usize,
+) -> Option<Vec<u64>> {
+    let hidden: Vec<usize> = (0..cells.len())
+        .filter(|&index| out.get(index).copied().flatten().is_none())
+        .collect();
+    let equations: Vec<(Vec<usize>, u64)> = groups
+        .iter()
+        .filter(|group| group.len() >= 2)
+        .filter_map(|group| {
+            let total: u64 = group.iter().map(|&index| cells[index]).sum();
+            let shown: u64 = group.iter().filter_map(|&index| out[index]).sum();
+            let positions: Vec<usize> = group
+                .iter()
+                .filter_map(|&index| hidden.iter().position(|&cell| cell == index))
+                .collect();
+            if positions.is_empty() {
+                None
+            } else {
+                Some((positions, total - shown))
+            }
+        })
+        .collect();
+    let target_position = hidden.iter().position(|&index| index == target)?;
+    if !equations
+        .iter()
+        .any(|(positions, _)| positions.contains(&target_position))
+    {
+        return Some(Vec::new());
+    }
+    let upper: Vec<u64> = (0..hidden.len())
+        .map(|position| {
+            equations
+                .iter()
+                .filter(|(positions, _)| positions.contains(&position))
+                .map(|(_, residual)| *residual)
+                .min()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut walker = Reconstruction {
+        equations: &equations,
+        upper,
+        target: target_position,
+        values: Vec::new(),
+        assigned: vec![0; hidden.len()],
+        sums: vec![0; equations.len()],
+        nodes: 0,
+        budget: 2_000_000,
+    };
+    walker.walk(0);
+    if walker.nodes > walker.budget {
+        return None;
+    }
+    Some(walker.values)
+}
+
+/// Backtracking over the assignments a reader could reconstruct, with every
+/// equation's partial sum pruned as it goes.
+struct Reconstruction<'a> {
+    equations: &'a [(Vec<usize>, u64)],
+    upper: Vec<u64>,
+    target: usize,
+    values: Vec<u64>,
+    assigned: Vec<u64>,
+    sums: Vec<u64>,
+    nodes: u64,
+    budget: u64,
+}
+
+impl Reconstruction<'_> {
+    fn walk(&mut self, position: usize) {
+        if self.values.len() >= 2 || self.nodes > self.budget {
+            return;
+        }
+        if position == self.upper.len() {
+            let complete = self
+                .equations
+                .iter()
+                .enumerate()
+                .all(|(index, (_, residual))| self.sums.get(index) == Some(residual));
+            if complete {
+                let value = self.assigned.get(self.target).copied().unwrap_or(0);
+                if !self.values.contains(&value) {
+                    self.values.push(value);
+                }
+            }
+            return;
+        }
+        let reachable = self.upper.get(position).copied().unwrap_or(0);
+        for value in 0..=reachable {
+            self.nodes += 1;
+            if self.nodes > self.budget || self.values.len() >= 2 {
+                return;
+            }
+            if !self.fits(position, value) {
+                continue;
+            }
+            if let Some(slot) = self.assigned.get_mut(position) {
+                *slot = value;
+            }
+            for (index, (positions, _)) in self.equations.iter().enumerate() {
+                if positions.contains(&position) {
+                    if let Some(sum) = self.sums.get_mut(index) {
+                        *sum += value;
+                    }
+                }
+            }
+            self.walk(position + 1);
+            for (index, (positions, _)) in self.equations.iter().enumerate() {
+                if positions.contains(&position) {
+                    if let Some(sum) = self.sums.get_mut(index) {
+                        *sum -= value;
+                    }
+                }
             }
         }
     }
+
+    /// True when the value keeps every equation at or below its residual and
+    /// leaves the cells not assigned yet able to reach it.
+    fn fits(&self, position: usize, value: u64) -> bool {
+        self.equations
+            .iter()
+            .enumerate()
+            .all(|(index, (positions, residual))| {
+                if !positions.contains(&position) {
+                    return true;
+                }
+                let partial = self.sums.get(index).copied().unwrap_or(0) + value;
+                if partial > *residual {
+                    return false;
+                }
+                let remaining: u64 = positions
+                    .iter()
+                    .filter(|&&member| member > position)
+                    .filter_map(|&member| self.upper.get(member).copied())
+                    .sum();
+                partial + remaining >= *residual
+            })
+    }
+}
+
+/// A reader's reconstruction must not pin a suppressed count down: every
+/// suppressed cell that some group holds has at least two possible values.
+fn assert_nothing_recovered(
+    cells: &[u64],
+    groups: &[Vec<usize>],
+    out: &[Option<u64>],
+) -> TestResult {
+    for index in 0..cells.len() {
+        if out.get(index).copied().flatten().is_some() {
+            continue;
+        }
+        match reconstructed_values(cells, groups, out, index) {
+            Some(values) => assert!(
+                values.len() != 1,
+                "cells {cells:?} groups {groups:?} out {out:?}: cell {index} is reconstructed as {values:?}"
+            ),
+            None => {
+                return Err(format!(
+                    "cells {cells:?} groups {groups:?}: reconstructing cell {index} needed more than the node budget"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Two partitions of the indices, like a table's rows and its columns.
+fn random_groups(rng: &mut SplitMix64, len: usize) -> Vec<Vec<usize>> {
+    let cut = 1 + rng.below((len - 1) as u64) as usize;
+    let mut groups: Vec<Vec<usize>> = vec![(0..cut).collect(), (cut..len).collect()];
+    groups.push((0..len).step_by(2).collect());
+    groups.push((1..len).step_by(2).collect());
+    groups.retain(|group| group.len() >= 2);
+    groups
+}
+
+#[test]
+fn stat_5_no_cell_recoverable() -> TestResult {
+    let mut rng = SplitMix64::new(42);
+    let mut exercised = 0_usize;
+    for _ in 0..300 {
+        let len = 3 + rng.below(5) as usize;
+        let cells: Vec<u64> = (0..len).map(|_| rng.below(40)).collect();
+        let groups = random_groups(&mut rng, len);
+        let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+        for (index, cell) in out.iter().enumerate() {
+            if let Some(shown) = cell {
+                assert_eq!(*shown, cells[index], "cells {cells:?}");
+            }
+        }
+        // S7 5.13: no group of two or more cells shows its total with exactly
+        // one cell suppressed.
+        for group in &groups {
+            let hidden = group.iter().filter(|&&index| out[index].is_none()).count();
+            assert_ne!(hidden, 1, "cells {cells:?} groups {groups:?} out {out:?}");
+        }
+        if out.iter().all(Option::is_none) {
+            continue; // fail closed: nothing is shown at all
+        }
+        exercised += 1;
+        assert_nothing_recovered(&cells, &groups, &out)?;
+    }
+    assert!(
+        exercised > 50,
+        "only {exercised} cases ran the reconstruction"
+    );
+    Ok(())
+}
+
+#[test]
+fn stat_5_overlapping_totals_are_not_recoverable() -> TestResult {
+    // Three intersecting groups of two suppressed cells each: the totals give
+    // a + b = 7, b + c = 9 and a + c = 8, so a = 3, b = 4 and c = 5 even though
+    // every group hides the two cells the one-group rule looks at.
+    let groups = vec![vec![0, 1, 3], vec![1, 2, 3], vec![0, 2, 3]];
+    let cells = vec![3, 4, 5, 50];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None, None]);
+    assert_nothing_recovered(&cells, &groups, &out)?;
+    // A cell no group holds stays shown.
+    let cells = vec![3, 4, 5, 50, 60];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None, None, Some(60)]);
+    assert_nothing_recovered(&cells, &groups, &out)
+}
+
+#[test]
+fn stat_5_zero_residual_is_not_recoverable() -> TestResult {
+    // A group total that is all shown cells pins every suppressed cell of the
+    // group to zero, with two of them suppressed: the one-group rule hides
+    // nothing here, so the shown 50 is the leak and has to go with them.
+    let cells = vec![0, 0, 50];
+    let groups = vec![vec![0, 1, 2]];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None]);
+    assert_nothing_recovered(&cells, &groups, &out)?;
+    // A cell no group holds stays shown while the leaking group is closed.
+    let cells = vec![0, 0, 50, 60];
+    let groups = vec![vec![0, 1, 2]];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None, Some(60)]);
+    assert_nothing_recovered(&cells, &groups, &out)
+}
+
+#[test]
+fn stat_5_fail_closed_when_a_total_cannot_be_protected() -> TestResult {
+    // The zero total of a fully suppressed group is itself the leak: it gives
+    // both of the group's cells as zero, and no further cell suppression can
+    // take that equation away. Rather than label a recoverable count as
+    // protected, the function suppresses every cell (fail closed); the caller
+    // must not publish that group's total beside its siblings.
+    let cells = vec![0, 0, 50, 60];
+    let groups = vec![vec![0, 1]];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None, None]);
+    // The reconstruction the fail-closed answer removes: with the group total
+    // published, both suppressed counts are exactly zero.
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 0),
+        Some(vec![0])
+    );
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 1),
+        Some(vec![0])
+    );
+    // The counts no group holds are unrecoverable either way.
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 2),
+        Some(Vec::new())
+    );
+    // A confusion table whose first row is empty is the same leak in the 2 by 2
+    // shape T-908a builds from confusion rows and columns: row and column
+    // totals then give every count of the table.
+    let cells = vec![0, 0, 40, 50];
+    let groups = vec![vec![0, 1], vec![2, 3], vec![0, 2], vec![1, 3]];
+    let out = suppress_cells(&cells, &groups, MIN_CELL_SIZE);
+    assert_eq!(out, vec![None, None, None, None]);
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 0),
+        Some(vec![0])
+    );
+    assert_eq!(
+        reconstructed_values(&cells, &groups, &out, 2),
+        Some(vec![40])
+    );
     Ok(())
 }
 
