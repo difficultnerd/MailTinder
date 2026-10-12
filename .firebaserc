@@ -2,5 +2,21 @@
   "projects": {
     "staging": "mailtinder-staging-placeholder",
     "prod": "mailtinder-prod-placeholder"
+  },
+  "targets": {
+    "mailtinderstaging": {
+      "hosting": {
+        "app": [
+          "mailtinder-staging"
+        ]
+      }
+    },
+    "mailtinderprod": {
+      "hosting": {
+        "app": [
+          "mailtinder-prod"
+        ]
+      }
+    }
   }
 }
