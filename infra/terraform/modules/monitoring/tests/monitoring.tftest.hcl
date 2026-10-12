@@ -19,6 +19,16 @@ override_resource {
   }
 }
 
+# The Budgets API takes the project NUMBER (data.google_project.watched.number,
+# T-1107c); a mock provider invents one, so pin it and prove the budget filters
+# use it rather than the id.
+override_data {
+  target = data.google_project.watched
+  values = {
+    number = "123456789012"
+  }
+}
+
 # The uptime check's id is computed by the API, and it is the value the
 # uptime_check/check_passed metric labels each series with (`check_id`), so the
 # plan-time suite cannot read it. Give each check a distinct fixed id during
@@ -67,7 +77,7 @@ run "budget_thresholds_50_90_100_and_forecast" {
   }
 
   assert {
-    condition     = google_billing_budget.project.amount[0].specified_amount[0].currency_code == "USD"
+    condition     = google_billing_budget.project.amount[0].specified_amount[0].currency_code == var.budget_currency_code
     error_message = "the budget amount must carry a currency"
   }
 
@@ -103,7 +113,7 @@ run "vertex_budget_filtered_to_vertex_ai" {
 
   assert {
     condition = (
-      toset(google_billing_budget.vertex.budget_filter[0].projects) == toset(["projects/${var.project_id}"]) &&
+      toset(google_billing_budget.vertex.budget_filter[0].projects) == toset(["projects/${data.google_project.watched.number}"]) &&
       toset(google_billing_budget.vertex.all_updates_rule[0].monitoring_notification_channels) == toset([google_monitoring_notification_channel.email.id])
     )
     error_message = "the Vertex AI budget belongs to var.project_id and notifies the one email channel (S4 5.7)"
