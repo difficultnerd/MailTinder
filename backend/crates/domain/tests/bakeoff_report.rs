@@ -930,15 +930,15 @@ fn stat_5_numerator_is_withheld_when_two_positive_cells_hide_it() -> TestResult 
     }
     let report = report_of(&rows)?;
     let jev = model(&report, Method::Jev);
-    let hidden: Vec<(MessageClass, &str, Option<u64>)> = report
+    let hidden: Vec<(MessageClass, String, Option<u64>)> = report
         .confusion
         .iter()
         .filter(|cell| cell.model == Method::Jev)
-        .map(|cell| (cell.class, cell.label, cell.count))
+        .map(|cell| (cell.class, cell.label.clone(), cell.count))
         .collect();
     assert_eq!(hidden.len(), 4, "one entry per non-empty combination");
     for (class, label, count) in &hidden {
-        let expected = match (class, *label) {
+        let expected = match (class, label.as_str()) {
             (MessageClass::List | MessageClass::BulkNoHeader, "junk") => None,
             _ => Some(10),
         };
