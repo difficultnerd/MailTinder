@@ -27,7 +27,7 @@ Port the reference implementation below. `Row = (task, text, kind)`, kind in `wa
 3. Idle: buildable, in ALLOW, `builders = 0` is DEFECT IDLE; **`builders = 1` is `ok`** (the v1 bug: one builder was read as zero).
 4. A gated buildable task is `owner`, not a defect; a task with an open PR in any stage is `wait`.
 5. Exit code 1 with a DEFECT, 0 without; output lines for defects start with `!!`.
-6. `main()` handles the box tools failing (missing `gh`, empty `pgrep`) by printing `!! MISSING <tool>` and exiting 1, never by silently producing an empty table.
+6. `main()` handles the box tools failing (missing `gh`, a `pgrep` that errors) by printing `!! MISSING <tool>` and exiting 1, never by silently producing an empty table. An *empty* `pgrep` (exit 1, no match) is not a failure: it is zero builders and must reach the table as IDLE (see test 3).
 
 ## Edge cases and traps
 - Counting builders: lines of `pgrep -af run-task.sh` that contain `bash`, excluding the `timeout` wrapper and the `pgrep` line itself.
