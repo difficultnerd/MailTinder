@@ -29,7 +29,9 @@ pub mod calibration;
 pub mod labels;
 pub mod latency;
 pub mod paired;
+pub mod prices;
 pub mod rates;
+pub mod report;
 pub mod rng;
 pub mod suppress;
 
