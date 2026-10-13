@@ -449,7 +449,27 @@ pub fn build_report(
     // suppress last, on the finished numbers.
     let mut cells = Cells::default();
     walk_report(&mut report, &mut cells);
-    let shown = suppress_cells(&cells.values, &cells.groups, report.min_cell_size);
+    let mut shown = suppress_cells(&cells.values, &cells.groups, report.min_cell_size);
+    // A published rate hands back its numerator as well as its denominator
+    // (`value * n` is the count it was built from), and a method's accuracy
+    // numerator adds up the labels it got right. When exactly one of those cells
+    // is suppressed, the numerator gives it straight back, so the count the
+    // accuracy is built on is forced below the minimum: the rate, and every rate
+    // and value guarded by it, goes with it (STAT-5). Forcing the count can hide
+    // the very cell that made the numerator unsafe, so the rule is repeated to a
+    // fixed point.
+    loop {
+        let withhold = cells.numerators_to_withhold(&shown);
+        if withhold.is_empty() {
+            break;
+        }
+        for index in withhold {
+            if let Some(cell) = cells.values.get_mut(index) {
+                *cell = 0;
+            }
+        }
+        shown = suppress_cells(&cells.values, &cells.groups, report.min_cell_size);
+    }
     let mut apply = Apply {
         shown: &shown,
         next: 0,
@@ -1012,6 +1032,35 @@ trait Walk {
         self.guard(slot, &[index]);
         index
     }
+
+    /// Whether a visited count is suppressed. Only the applying pass can
+    /// answer; the collecting pass reports every cell as shown.
+    fn suppressed_cell(&mut self, index: usize) -> bool {
+        let _ = index;
+        false
+    }
+
+    /// The count a visited cell carries, when it is shown.
+    fn shown_count(&mut self, index: usize) -> Option<u64> {
+        let _ = index;
+        None
+    }
+
+    /// Withholds a value whatever its guards say.
+    fn withhold<S: Withheld>(&mut self, slot: &mut S) {
+        let _ = slot;
+    }
+
+    /// Records the cells of one method's confusion table, split by whether the
+    /// cell counts towards the accuracy numerator.
+    fn confusion_split(&mut self, method: usize, diagonal: &[usize], off: &[usize]) {
+        let _ = (method, diagonal, off);
+    }
+
+    /// Records the count one method's accuracy is built on.
+    fn accuracy_cell(&mut self, method: usize, index: usize) {
+        let _ = (method, index);
+    }
 }
 
 /// Pass one: every count, in the order the report publishes them.
@@ -1019,6 +1068,36 @@ trait Walk {
 struct Cells {
     values: Vec<u64>,
     groups: Vec<Vec<usize>>,
+    /// Per method, the confusion cells whose label is the one the prediction
+    /// implies, so they count towards the accuracy numerator.
+    diagonal: [Vec<usize>; 3],
+    /// Per method, the rest of its confusion table.
+    off: [Vec<usize>; 3],
+    /// Per method, the count its accuracy is built on.
+    accuracy: [Option<usize>; 3],
+}
+
+impl Cells {
+    /// The accuracy cells whose published numerator adds up exactly one
+    /// suppressed cell, which the numerator would then hand back as the
+    /// difference (STAT-5).
+    fn numerators_to_withhold(&self, shown: &[Option<u64>]) -> Vec<usize> {
+        let suppressed = |index: usize| shown.get(index).copied().flatten().is_none();
+        let sole = |members: &[usize]| members.iter().filter(|&&m| suppressed(m)).count() == 1;
+        self.accuracy
+            .iter()
+            .enumerate()
+            .filter_map(|(method, &accuracy)| {
+                let accuracy = accuracy?;
+                if suppressed(accuracy)
+                    || !(sole(&self.diagonal[method]) || sole(&self.off[method]))
+                {
+                    return None;
+                }
+                Some(accuracy)
+            })
+            .collect()
+    }
 }
 
 impl Walk for Cells {
@@ -1028,6 +1107,21 @@ impl Walk for Cells {
     }
 
     fn hide<S: Withheld>(&mut self, _slot: &mut S, _guards: &[usize]) {}
+
+    fn confusion_split(&mut self, method: usize, diagonal: &[usize], off: &[usize]) {
+        if let Some(slot) = self.diagonal.get_mut(method) {
+            *slot = diagonal.to_vec();
+        }
+        if let Some(slot) = self.off.get_mut(method) {
+            *slot = off.to_vec();
+        }
+    }
+
+    fn accuracy_cell(&mut self, method: usize, index: usize) {
+        if let Some(slot) = self.accuracy.get_mut(method) {
+            *slot = Some(index);
+        }
+    }
 
     fn group(&mut self, members: Vec<usize>) {
         if members.len() < 2 {
@@ -1067,6 +1161,18 @@ impl Walk for Apply<'_> {
         }
     }
 
+    fn suppressed_cell(&mut self, index: usize) -> bool {
+        self.shown.get(index).copied().flatten().is_none()
+    }
+
+    fn shown_count(&mut self, index: usize) -> Option<u64> {
+        self.shown.get(index).copied().flatten()
+    }
+
+    fn withhold<S: Withheld>(&mut self, slot: &mut S) {
+        slot.withheld();
+    }
+
     fn group(&mut self, _members: Vec<usize>) {}
 }
 
@@ -1075,6 +1181,40 @@ impl Walk for Apply<'_> {
 /// The order is fixed by this function alone, so the collecting walk and the
 /// applying walk visit the same cells in the same sequence.
 fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
+    // A pair's four counts partition the paired cards, which are the labelled
+    // cards of both models only when the paired population is the whole of each
+    // model's labelled population. Then each model's published correct count is
+    // the sum of two of the paired cells, so the pair carries that equation
+    // (STAT-5). Captured before either count is rewritten, so both passes read
+    // the same answer.
+    let paired_is_labelled: Vec<(bool, bool)> = report
+        .paired
+        .iter()
+        .map(|pair| {
+            (
+                model_accuracy_n(&report.models, pair.model_a) == pair.n_paired,
+                model_accuracy_n(&report.models, pair.model_b) == pair.n_paired,
+            )
+        })
+        .collect();
+    // Whether a pair holds a small positive count at all: only a positive count
+    // can be handed back, so a pair of zeros and large cells constrains nothing.
+    let paired_has_small_positive: Vec<bool> = report
+        .paired
+        .iter()
+        .map(|pair| {
+            [
+                pair.only_a_correct,
+                pair.only_b_correct,
+                pair.both_correct,
+                pair.neither_correct,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|count| count > 0 && count < report.min_cell_size)
+        })
+        .collect();
+
     let labelled = walk.cell(&mut report.labelled_swipes);
     // The participant count is a count of its own: below the minimum it is
     // withheld, and the largest-contributor share goes with it (STAT-4).
@@ -1084,10 +1224,21 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.guard(share, &[labelled, participant_count]);
     }
 
-    for model in &mut report.models {
+    // The cell each method's accuracy is built on, so the figures read off the
+    // same labelled answers can be withheld with it (STAT-5).
+    let mut accuracy_cells: [Option<usize>; 3] = [None; 3];
+
+    for (model_index, model) in report.models.iter_mut().enumerate() {
         let cards = walk.cell(&mut model.cards);
         let valid = walk.cell(&mut model.valid_answers);
         let accuracy = walk.rate(&mut model.accuracy);
+        // The accuracy's numerator adds up the method's correct labels, which
+        // the confusion table publishes cell by cell; the collecting pass needs
+        // to know which count that is (STAT-5).
+        walk.accuracy_cell(model_index, accuracy);
+        if let Some(slot) = accuracy_cells.get_mut(model_index) {
+            *slot = Some(accuracy);
+        }
         let precision = walk.rate(&mut model.junk_precision);
         let recall = walk.rate(&mut model.junk_recall);
         let false_junk = walk.rate(&mut model.false_junk_rate);
@@ -1135,7 +1286,10 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         for bin in &mut model.calibration.bins {
             let populated = bin.count.is_some_and(|count| count > 0);
             let index = walk.cell(&mut bin.count);
-            walk.hide(&mut bin.observed_accuracy, &[index]);
+            // A bin's observed accuracy is the method's correct labels inside
+            // that bin, so it is withheld with the accuracy it adds up with, as
+            // well as with its own count (STAT-5).
+            walk.hide(&mut bin.observed_accuracy, &[index, accuracy]);
             if populated {
                 ece_guards.push(index);
             }
@@ -1149,7 +1303,11 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.group(members);
     }
 
-    for pair in &mut report.paired {
+    // The pairs whose agreement rate must be withheld with the counts it is read
+    // beside (STAT-5).
+    let mut agreement_withheld = vec![false; report.agreement.len()];
+
+    for (slot, pair) in report.paired.iter_mut().enumerate() {
         // The four counts are the group; `n_paired` is their sum, so publishing
         // it beside them adds no equation of its own (S7 5.13).
         let n_paired = walk.cell(&mut pair.n_paired);
@@ -1158,6 +1316,31 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         let both = walk.cell(&mut pair.both_correct);
         let neither = walk.cell(&mut pair.neither_correct);
         walk.group(vec![only_a, only_b, both, neither]);
+
+        // Where the paired cards are a model's whole labelled population, that
+        // model's published correct count is `only_a + both`: the marginals plus
+        // the paired total are one more system over the four counts, so with a
+        // positive discordant count hidden the two agreement cells go with it,
+        // or the marginals hand the hidden counts back (STAT-5). The derived
+        // difference and its interval are not the only route to those counts, so
+        // the counts themselves are protected, not only the object built on
+        // them.
+        let (a_is_paired, b_is_paired) = paired_is_labelled
+            .get(slot)
+            .copied()
+            .unwrap_or((false, false));
+        let small_positive = paired_has_small_positive
+            .get(slot)
+            .copied()
+            .unwrap_or(false);
+        let marginals_expose = (a_is_paired || b_is_paired) && small_positive;
+        if marginals_expose {
+            walk.withhold(&mut pair.both_correct);
+            walk.withhold(&mut pair.neither_correct);
+        }
+        if let Some(flag) = agreement_withheld.get_mut(slot) {
+            *flag = marginals_expose;
+        }
 
         // The bootstrap resamples whole participants, so its participant count
         // is a count of its own: below the minimum it is withheld, and the
@@ -1184,8 +1367,14 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         );
     }
 
-    for agreement in &mut report.agreement {
+    // How often two methods agree is read beside the paired counts: where the
+    // disagreement count would bound the discordant counts, the rate goes with
+    // them (STAT-5).
+    for (slot, agreement) in report.agreement.iter_mut().enumerate() {
         walk.rate(&mut agreement.rate);
+        if agreement_withheld.get(slot).copied().unwrap_or(false) {
+            walk.withhold(&mut agreement.rate);
+        }
     }
 
     // A segment dimension's values for one model are one group.
@@ -1200,15 +1389,47 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         {
             end += 1;
         }
-        let mut members = Vec::new();
-        let mut junk_members = Vec::new();
+        // Whether a value holds wanted mail at all: the false-junk denominator
+        // is positive. Only a positive count can be handed back, so a value
+        // with no wanted mail constrains nothing.
+        let wanted: Vec<bool> = report.by_segment[start..end]
+            .iter()
+            .map(|segment| segment.false_junk_rate.n.is_some_and(|count| count > 0))
+            .collect();
+        let mut members = Vec::with_capacity(end - start);
+        let mut junk_members = Vec::with_capacity(end - start);
         for segment in &mut report.by_segment[start..end] {
-            let index = walk.rate(&mut segment.accuracy);
-            let false_junk = walk.rate(&mut segment.false_junk_rate);
+            members.push(walk.rate(&mut segment.accuracy));
+        }
+        for segment in &mut report.by_segment[start..end] {
+            junk_members.push(walk.rate(&mut segment.false_junk_rate));
+        }
+        for (segment, &index) in report.by_segment[start..end].iter_mut().zip(&members) {
             // A suppressed segment cell suppresses both of its rates (STAT-5).
             walk.guard(&mut segment.false_junk_rate, &[index]);
-            members.push(index);
-            junk_members.push(false_junk);
+        }
+        // The accuracy numerator adds up the segment's correct answers, so a
+        // suppressed count of wanted mail comes back as `n` minus the numerator:
+        // the accuracy is withheld with it. The same numerator is what the
+        // method's own accuracy publishes, so a value whose whole dimension adds
+        // up to a withheld accuracy count goes with it as well (STAT-5).
+        let model_accuracy_hidden = accuracy_cells
+            .get(method_index(model))
+            .copied()
+            .flatten()
+            .is_some_and(|cell| walk.suppressed_cell(cell));
+        let withheld: Vec<bool> = (0..members.len())
+            .map(|offset| {
+                walk.suppressed_cell(members[offset])
+                    || model_accuracy_hidden
+                    || (wanted[offset] && walk.suppressed_cell(junk_members[offset]))
+            })
+            .collect();
+        let withheld = padded_withhold(walk, &members, withheld);
+        for (segment, &flag) in report.by_segment[start..end].iter_mut().zip(&withheld) {
+            if flag {
+                walk.withhold(&mut segment.accuracy);
+            }
         }
         // The dimension's segment values partition the method's own labelled
         // answers, and the false-junk denominators partition the method's own
@@ -1256,18 +1477,95 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.group(table);
     }
 
-    // A day's trend rows for the three methods are one group.
-    let mut days: Vec<(Date, Vec<usize>)> = Vec::new();
+    // The accuracy numerator is the sum of the cells whose label is the one the
+    // prediction implies, and `n` minus it is the sum of the rest: both are
+    // published sums, so the collecting pass is told which cells they add up
+    // (STAT-5).
+    for (method_index, &method) in METHODS.iter().enumerate() {
+        let mut diagonal = Vec::new();
+        let mut off = Vec::new();
+        for &(cell_method, class, label, index) in &cells {
+            if cell_method != method {
+                continue;
+            }
+            if label == label_str(predicted_label(class)) {
+                diagonal.push(index);
+            } else {
+                off.push(index);
+            }
+        }
+        walk.confusion_split(method_index, &diagonal, &off);
+    }
+
+    // A day's trend rows for the three methods are one group. A day's accuracy
+    // is read off the same labelled answers the method's accuracy is, so it goes
+    // with that count when the count is withheld (STAT-5).
+    let mut members: Vec<usize> = Vec::with_capacity(report.trend.len());
+    let mut withheld: Vec<bool> = Vec::with_capacity(report.trend.len());
     for point in &mut report.trend {
         let index = walk.rate(&mut point.accuracy);
-        match days.last_mut() {
-            Some((date, members)) if *date == point.date => members.push(index),
-            _ => days.push((point.date, vec![index])),
+        let model_accuracy_hidden = accuracy_cells
+            .get(method_index(point.model))
+            .copied()
+            .flatten()
+            .is_some_and(|cell| walk.suppressed_cell(cell));
+        withheld.push(model_accuracy_hidden || walk.suppressed_cell(index));
+        members.push(index);
+    }
+    let mut start = 0;
+    while start < report.trend.len() {
+        let date = report.trend[start].date;
+        let mut end = start + 1;
+        while end < report.trend.len() && report.trend[end].date == date {
+            end += 1;
+        }
+        let flags = padded_withhold(walk, &members[start..end], withheld[start..end].to_vec());
+        for (point, &flag) in report.trend[start..end].iter_mut().zip(&flags) {
+            if flag {
+                walk.withhold(&mut point.accuracy);
+            }
+        }
+        walk.group(members[start..end].to_vec());
+        start = end;
+    }
+}
+
+/// Withhold exactly one cell of a group would leave its published total beside a
+/// single hidden cell, so the smallest shown cell of the group goes too, as in
+/// the complementary pass (S7 5.13).
+fn padded_withhold<W: Walk>(walk: &mut W, members: &[usize], mut withheld: Vec<bool>) -> Vec<bool> {
+    if members.len() > 1 {
+        loop {
+            if withheld.iter().filter(|flag| **flag).count() != 1 {
+                break;
+            }
+            let mut victim: Option<(u64, usize)> = None;
+            let mut offset = 0;
+            while offset < withheld.len() {
+                if !withheld[offset] {
+                    if let Some(count) = walk.shown_count(members[offset]) {
+                        if victim.map_or(true, |(best, _)| count < best) {
+                            victim = Some((count, offset));
+                        }
+                    }
+                }
+                offset += 1;
+            }
+            match victim {
+                Some((_, offset)) => withheld[offset] = true,
+                None => break,
+            }
         }
     }
-    for (_, members) in days {
-        walk.group(members);
-    }
+    withheld
+}
+
+/// A method's position in [`METHODS`].
+fn method_index(method: Method) -> usize {
+    METHODS
+        .iter()
+        .position(|&candidate| candidate == method)
+        .unwrap_or(0)
 }
 
 /// Add a cell to the group keyed by `key`, creating it when it is new.
@@ -1279,4 +1577,12 @@ fn push_member<K: PartialEq>(groups: &mut Vec<(K, Vec<usize>)>, key: K, index: u
         }
     }
     groups.push((key, vec![index]));
+}
+
+/// The count a method's accuracy is built on, or `None` when it never answered.
+fn model_accuracy_n(models: &[MethodReport], method: Method) -> Option<u64> {
+    models
+        .iter()
+        .find(|model| model.model == method)
+        .and_then(|model| model.accuracy.n)
 }

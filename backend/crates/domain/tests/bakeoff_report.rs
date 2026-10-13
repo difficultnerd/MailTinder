@@ -252,11 +252,13 @@ fn junk_solutions(method: &MethodReport) -> Vec<(u64, u64, u64, u64)> {
         [0, 1, 0, 1],
         [0, 1, 0, 0],
     );
+    // The largest count the published rates bound the search by; with every rate
+    // withheld it is the fallback this test fixes.
     let bound = method
         .accuracy
         .n
         .or(method.junk_precision.n)
-        .unwrap_or(64)
+        .unwrap_or(16)
         .max(1);
     let mut solutions = Vec::new();
     for tp in 0..=bound {
@@ -537,12 +539,14 @@ fn stat_5_single_answered_call_publishes_no_record_value() -> TestResult {
 fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestResult {
     // 12 labelled cards, 10 junk and 2 wanted, every one answered `list`: the
     // junk-recall denominator is 10 and the false-junk denominator is 2, which is
-    // below the minimum. `accuracy.n` is their sum, so publishing the recall
-    // beside the accuracy would hand the hidden count back as a subtraction.
-    // The precision would hand it back too: a shown rate publishes its
-    // denominator and its numerator (`value * n`), so the accuracy and the
-    // precision together separate all four counts and fix the hidden
-    // false-junk denominator. Both junk rates are withheld with it (STAT-5).
+    // below the minimum. The precision would hand the hidden count back on its
+    // own: a shown rate publishes its denominator and its numerator (`value *
+    // n`), so the accuracy and the precision together separate all four counts.
+    // The accuracy is no safer: its numerator is `10 * 12 / 12`, the number of
+    // cards the label mapping calls correct, which is the `list`/`junk` cell —
+    // the only cell of the table's diagonal — and with it the hidden wanted
+    // count comes back as `12 - 10`. The accuracy goes with its cell, which
+    // takes the junk rates and the calibration error with it (STAT-5).
     let rows: Vec<EvalRow> = (0..12_u32)
         .map(|index| {
             let direction = if index < 10 {
@@ -563,13 +567,44 @@ fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestR
         .collect();
     let report = report_of(&rows)?;
     let jev = model(&report, Method::Jev);
-    assert_eq!(jev.accuracy.n, Some(12));
-    assert!(shown(jev.accuracy), "the total itself stays published");
+    // The count the accuracy is built on is withheld, so the rate, the rates
+    // read beside it and the error they feed all go.
+    assert!(suppressed(jev.accuracy));
     assert!(suppressed(jev.junk_precision));
     assert!(suppressed(jev.junk_recall));
     assert!(suppressed(jev.false_junk_rate));
-    // F1 reads both rates, so it goes with them.
     assert_eq!(jev.junk_f1, None);
+    assert_eq!(jev.calibration.ece, None);
+    // The confusion cells go with it: no published number adds the hidden
+    // wanted count back up.
+    let confusion: Vec<Option<u64>> = report
+        .confusion
+        .iter()
+        .filter(|cell| cell.model == Method::Jev)
+        .map(|cell| cell.count)
+        .collect();
+    assert!(
+        !confusion.is_empty() && confusion.iter().all(Option::is_none),
+        "the confusion cells go with the accuracy: {confusion:?}"
+    );
+    // Nothing built on those labels is published: no rate the hidden cell could
+    // be read off is left standing, in the segments, the day's trend or the
+    // calibration curve.
+    assert!(report
+        .by_segment
+        .iter()
+        .filter(|cell| cell.model == Method::Jev)
+        .all(|cell| suppressed(cell.accuracy) && suppressed(cell.false_junk_rate)));
+    assert!(report
+        .trend
+        .iter()
+        .filter(|point| point.model == Method::Jev)
+        .all(|point| suppressed(point.accuracy)));
+    assert!(jev
+        .calibration
+        .bins
+        .iter()
+        .all(|bin| bin.observed_accuracy.is_none()));
     // Nothing published determines the hidden counts: the false-junk
     // denominator takes more than one value across the assignments a reader
     // could hold.
@@ -582,6 +617,27 @@ fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestR
     assert!(
         hidden_wanted.len() >= 2,
         "the suppressed false-junk denominator is recoverable: {hidden_wanted:?}"
+    );
+    // The reader's assignments, from the numbers the report still publishes: the
+    // two present cells share the labelled answers it shows, and when the
+    // accuracy is shown its numerator is the `list`/`junk` cell, which would fix
+    // the wanted count as `12 - 10`. Only one split survives if that leaks, so
+    // this fails the moment the accuracy comes back.
+    let total = jev.valid_answers.unwrap_or_default();
+    let numerator = jev
+        .accuracy
+        .value
+        .map(|value| (value * total as f64).round() as u64);
+    let mut splits = BTreeSet::new();
+    for junk in 0..=total {
+        if numerator.is_some_and(|count| count != junk) {
+            continue;
+        }
+        splits.insert((junk, total - junk));
+    }
+    assert!(
+        splits.len() >= 2,
+        "the confusion cells must stay ambiguous: {splits:?}"
     );
     Ok(())
 }
@@ -631,12 +687,14 @@ fn stat_5_values_go_with_the_counts_they_are_built_on() -> TestResult {
 
 #[test]
 fn stat_5_paired_difference_is_withheld_with_the_discordant_counts() -> TestResult {
-    // 31 paired cards: 20 both right, 10 neither, 1 only Gemini. The two
-    // discordant counts are below the minimum and suppressed, and the paired
-    // totals publish their sum (`n_paired - both - neither`), so the published
-    // difference would fix them exactly: `a + b = 1` and `a - b = 31 *
-    // difference` give `a = 1`, `b = 0`. The difference and its interval are
-    // withheld with the counts they would hand back (STAT-5).
+    // 31 paired cards: 20 both right, 10 neither, 1 only Gemini. Every card is
+    // labelled and both models answered all of them, so each model's published
+    // correct count is `only + both` and the paired total is their sum: the
+    // marginals beside `both` would fix the hidden discordants exactly
+    // (`21 - 20` and `20 - 20`). The difference and its interval are withheld
+    // with the counts they would hand back, and so are the two agreement cells
+    // the marginals would add up with, so no route fixes the discordants
+    // (STAT-5).
     let rows: Vec<EvalRow> = (0..31_u32)
         .map(|index| {
             let (gemini_class, jev_class) = match index {
@@ -664,14 +722,45 @@ fn stat_5_paired_difference_is_withheld_with_the_discordant_counts() -> TestResu
         .find(|pair| pair.model_a == Method::Gemini && pair.model_b == Method::Jev)
         .unwrap_or_else(|| panic!("gemini and jev are compared"));
     assert_eq!(pair.n_paired, Some(31));
-    assert_eq!(pair.both_correct, Some(20));
-    assert_eq!(pair.neither_correct, Some(10));
     assert_eq!(pair.only_a_correct, None);
     assert_eq!(pair.only_b_correct, None);
+    assert_eq!(pair.both_correct, None, "the marginals would fix them");
+    assert_eq!(pair.neither_correct, None);
     assert_eq!(pair.mcnemar_exact_p, None);
     assert_eq!(pair.accuracy_difference.value, None);
     assert_eq!(pair.accuracy_difference.lower, None);
     assert_eq!(pair.accuracy_difference.upper, None);
+    // The marginals the reader still holds, 21 of 31 and 20 of 31, leave more
+    // than one split standing: the discordant counts are not fixed. Everything
+    // the report does publish about the pair is folded in, so this fails if a
+    // cell that would fix the split is shown again.
+    let gemini = model(&report, Method::Gemini);
+    let jev = model(&report, Method::Jev);
+    assert_eq!(gemini.accuracy.value, Some(21.0 / 31.0));
+    assert_eq!(jev.accuracy.value, Some(20.0 / 31.0));
+    let mut splits = BTreeSet::new();
+    for only_a in 0..=31_u64 {
+        let Some(both) = 21_u64.checked_sub(only_a) else {
+            continue;
+        };
+        if pair.both_correct.is_some_and(|count| count != both) {
+            continue;
+        }
+        let Some(only_b) = 20_u64.checked_sub(both) else {
+            continue;
+        };
+        let Some(neither) = 31_u64.checked_sub(only_a + only_b + both) else {
+            continue;
+        };
+        if pair.neither_correct.is_some_and(|count| count != neither) {
+            continue;
+        }
+        splits.insert((only_a, only_b));
+    }
+    assert!(
+        splits.len() >= 2,
+        "the discordant counts must stay ambiguous: {splits:?}"
+    );
     Ok(())
 }
 
@@ -786,6 +875,14 @@ fn stat_5_segment_denominator_is_not_the_difference_of_the_totals() -> TestResul
         suppressed(gmail.false_junk_rate),
         "the sibling goes with the hidden segment cell"
     );
+    // The segment accuracy is no safer than its false-junk rate: its numerator
+    // is the segment's correct count, and with every prediction `list` the
+    // wanted count comes back as `n` minus the numerator (`12 - 10` for graph).
+    // The accuracies are withheld with the hidden denominators, while the
+    // model's own accuracy stays: its confusion holds no hidden count (STAT-5).
+    assert!(suppressed(graph.accuracy));
+    assert!(suppressed(gmail.accuracy));
+    assert!(shown(jev.accuracy));
     // Every provider denominator is hidden beside the published model total, so
     // the hidden one is ambiguous: any split of 12 into two non-negative counts
     // fits, not the single value 2 the subtraction would give.
