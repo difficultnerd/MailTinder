@@ -1094,6 +1094,17 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.rate(&mut model.timeout_rate);
         walk.rate(&mut model.error_rate);
 
+        // A published rate gives away its numerator as well as its denominator
+        // (`value * n` is the count the rate was built from), so the four junk
+        // rates together determine all four confusion counts: the accuracy
+        // separates them once any one junk rate is shown beside it. With any of
+        // the four denominators withheld, a shown junk rate would hand back the
+        // hidden count, so every junk rate goes with the whole set (STAT-5).
+        let junk_guards = [accuracy, precision, recall, false_junk];
+        walk.guard(&mut model.junk_precision, &junk_guards);
+        walk.guard(&mut model.junk_recall, &junk_guards);
+        walk.guard(&mut model.false_junk_rate, &junk_guards);
+
         // Latency, tokens and cost describe the answered calls one record at a
         // time: with the answered-call count suppressed, a single answered call
         // would publish that record's latency, tokens and cost, so all three go
@@ -1103,11 +1114,8 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.hide(&mut model.input_tokens, &[valid]);
         walk.hide(&mut model.cost_per_1000_messages_usd, &[valid]);
 
-        // The junk F1 reads both rates and the expected calibration error reads
-        // the labelled answers: each derived figure is withheld with the counts
-        // it is computed from (STAT-5).
+        // The junk F1 reads both rates (STAT-5).
         walk.hide(&mut model.junk_f1, &[precision, recall]);
-        walk.hide(&mut model.calibration.ece, &[accuracy]);
 
         // The method's published counts nest: every answered call is a card,
         // and the two label columns partition the labelled answers, so
@@ -1118,10 +1126,22 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         walk.group(vec![cards, valid]);
         walk.group(vec![recall, false_junk]);
 
+        // The calibration curve's bins partition the labelled answers the
+        // expected calibration error reads, and each populated bin publishes
+        // its own count: a hidden populated bin is reconstructible from the
+        // error itself, so the error is withheld with the bins that feed it
+        // (`accuracy.n` guards it as well, as before) (STAT-5).
+        let mut ece_guards = vec![accuracy];
         for bin in &mut model.calibration.bins {
+            let populated = bin.count.is_some_and(|count| count > 0);
             let index = walk.cell(&mut bin.count);
             walk.hide(&mut bin.observed_accuracy, &[index]);
+            if populated {
+                ece_guards.push(index);
+            }
         }
+        walk.hide(&mut model.calibration.ece, &ece_guards);
+
         let mut members = Vec::new();
         for bin in &mut model.latency.histogram {
             members.push(walk.cell(&mut bin.count));
@@ -1139,15 +1159,29 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         let neither = walk.cell(&mut pair.neither_correct);
         walk.group(vec![only_a, only_b, both, neither]);
 
-        // McNemar reads the two discordant counts; the accuracy difference and
-        // its interval read the paired cards, and the bootstrap resamples those
-        // participants. Each is withheld with the counts it is computed from
-        // (STAT-5).
+        // The bootstrap resamples whole participants, so its participant count
+        // is a count of its own: below the minimum it is withheld, and the
+        // interval it produced goes with it (STAT-4, STAT-5).
+        let participants = walk.cell(&mut pair.bootstrap.participants);
+
+        // The accuracy difference is fixed by the two discordant counts it
+        // splits (`a - b` over `n_paired`), so with either of them hidden the
+        // difference hands it back; the interval is resampled from the
+        // participants, so it also goes with the participant count. McNemar
+        // reads the discordant counts and goes with them (STAT-5).
         walk.hide(&mut pair.mcnemar_exact_p, &[only_a, only_b]);
-        walk.hide(&mut pair.accuracy_difference.value, &[n_paired]);
-        walk.hide(&mut pair.accuracy_difference.lower, &[n_paired]);
-        walk.hide(&mut pair.accuracy_difference.upper, &[n_paired]);
-        walk.hide(&mut pair.bootstrap.participants, &[n_paired]);
+        walk.hide(
+            &mut pair.accuracy_difference.value,
+            &[n_paired, only_a, only_b],
+        );
+        walk.hide(
+            &mut pair.accuracy_difference.lower,
+            &[n_paired, only_a, only_b, participants],
+        );
+        walk.hide(
+            &mut pair.accuracy_difference.upper,
+            &[n_paired, only_a, only_b, participants],
+        );
     }
 
     for agreement in &mut report.agreement {
@@ -1167,14 +1201,22 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
             end += 1;
         }
         let mut members = Vec::new();
+        let mut junk_members = Vec::new();
         for segment in &mut report.by_segment[start..end] {
             let index = walk.rate(&mut segment.accuracy);
-            walk.rate(&mut segment.false_junk_rate);
+            let false_junk = walk.rate(&mut segment.false_junk_rate);
             // A suppressed segment cell suppresses both of its rates (STAT-5).
             walk.guard(&mut segment.false_junk_rate, &[index]);
             members.push(index);
+            junk_members.push(false_junk);
         }
+        // The dimension's segment values partition the method's own labelled
+        // answers, and the false-junk denominators partition the method's own
+        // false-junk denominator, so each set is a complementary group of its
+        // own: a hidden cell is the difference of the published total and the
+        // other segments (STAT-5).
         walk.group(members);
+        walk.group(junk_members);
         start = end;
     }
 

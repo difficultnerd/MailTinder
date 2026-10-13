@@ -12,6 +12,8 @@
     clippy::too_many_lines,
     clippy::cast_lossless,
     clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
     clippy::similar_names
 )]
 
@@ -28,6 +30,7 @@ use domain::bakeoff::report::{
 use domain::bakeoff::rng::SplitMix64;
 use domain::bakeoff::{BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED, MIN_CELL_SIZE};
 use domain::MessageClass;
+use std::collections::BTreeSet;
 use time::{Date, Month, OffsetDateTime, Time};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -213,6 +216,72 @@ fn shown(rate: Rate) -> bool {
 /// A rate is suppressed: every field null.
 fn suppressed(rate: Rate) -> bool {
     rate == Rate::suppressed()
+}
+
+/// Add the equations one published rate gives a reader: its denominator and,
+/// through its value, its numerator (`value * n` is the count it was built
+/// from). A suppressed rate adds none.
+fn add_rate_equations(
+    rows: &mut Vec<([u64; 4], u64)>,
+    rate: Rate,
+    denom: [u64; 4],
+    numer: [u64; 4],
+) {
+    let (Some(n), Some(value)) = (rate.n, rate.value) else {
+        return;
+    };
+    rows.push((denom, n));
+    let numerator = (value * n as f64).round();
+    if numerator.is_finite() && numerator >= 0.0 {
+        rows.push((numer, numerator as u64));
+    }
+}
+
+/// Every assignment of the four `JunkConfusion` counts (`tp`, `fp`, `fn`, `tn`)
+/// a reader can hold from one method's published rates, over non-negative
+/// integers. A hidden count is recoverable exactly when the assignments agree
+/// on it.
+fn junk_solutions(method: &MethodReport) -> Vec<(u64, u64, u64, u64)> {
+    let mut rows: Vec<([u64; 4], u64)> = Vec::new();
+    add_rate_equations(&mut rows, method.accuracy, [1, 1, 1, 1], [1, 0, 0, 1]);
+    add_rate_equations(&mut rows, method.junk_precision, [1, 1, 0, 0], [1, 0, 0, 0]);
+    add_rate_equations(&mut rows, method.junk_recall, [1, 0, 1, 0], [1, 0, 0, 0]);
+    add_rate_equations(
+        &mut rows,
+        method.false_junk_rate,
+        [0, 1, 0, 1],
+        [0, 1, 0, 0],
+    );
+    let bound = method
+        .accuracy
+        .n
+        .or(method.junk_precision.n)
+        .unwrap_or(64)
+        .max(1);
+    let mut solutions = Vec::new();
+    for tp in 0..=bound {
+        for fp in 0..=bound {
+            for fn_ in 0..=bound {
+                for tn in 0..=bound {
+                    let counts = [tp, fp, fn_, tn];
+                    if counts.iter().sum::<u64>() > bound {
+                        continue;
+                    }
+                    if rows.iter().all(|(coeff, rhs)| {
+                        coeff
+                            .iter()
+                            .zip(counts)
+                            .map(|(coefficient, count)| coefficient * count)
+                            .sum::<u64>()
+                            == *rhs
+                    }) {
+                        solutions.push((tp, fp, fn_, tn));
+                    }
+                }
+            }
+        }
+    }
+    solutions
 }
 
 #[test]
@@ -469,8 +538,11 @@ fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestR
     // 12 labelled cards, 10 junk and 2 wanted, every one answered `list`: the
     // junk-recall denominator is 10 and the false-junk denominator is 2, which is
     // below the minimum. `accuracy.n` is their sum, so publishing the recall
-    // beside the accuracy would hand the hidden count back as a subtraction: the
-    // recall is withheld with it (STAT-5).
+    // beside the accuracy would hand the hidden count back as a subtraction.
+    // The precision would hand it back too: a shown rate publishes its
+    // denominator and its numerator (`value * n`), so the accuracy and the
+    // precision together separate all four counts and fix the hidden
+    // false-junk denominator. Both junk rates are withheld with it (STAT-5).
     let rows: Vec<EvalRow> = (0..12_u32)
         .map(|index| {
             let direction = if index < 10 {
@@ -493,11 +565,24 @@ fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestR
     let jev = model(&report, Method::Jev);
     assert_eq!(jev.accuracy.n, Some(12));
     assert!(shown(jev.accuracy), "the total itself stays published");
-    assert!(shown(jev.junk_precision));
+    assert!(suppressed(jev.junk_precision));
     assert!(suppressed(jev.junk_recall));
     assert!(suppressed(jev.false_junk_rate));
     // F1 reads both rates, so it goes with them.
     assert_eq!(jev.junk_f1, None);
+    // Nothing published determines the hidden counts: the false-junk
+    // denominator takes more than one value across the assignments a reader
+    // could hold.
+    let solutions = junk_solutions(jev);
+    assert!(
+        solutions.len() >= 2,
+        "the confusion counts must stay ambiguous: {solutions:?}"
+    );
+    let hidden_wanted: BTreeSet<u64> = solutions.iter().map(|(_, fp, _, tn)| fp + tn).collect();
+    assert!(
+        hidden_wanted.len() >= 2,
+        "the suppressed false-junk denominator is recoverable: {hidden_wanted:?}"
+    );
     Ok(())
 }
 
@@ -534,8 +619,92 @@ fn stat_5_values_go_with_the_counts_they_are_built_on() -> TestResult {
     assert_eq!(pair.only_a_correct, None);
     assert_eq!(pair.only_b_correct, None);
     assert_eq!(pair.mcnemar_exact_p, None);
-    assert_eq!(pair.accuracy_difference.value, Some(0.0));
+    // The difference hands the suppressed discordant counts back (`a + b` is
+    // known from the paired totals, and `a - b` is the difference), so it goes
+    // with them (STAT-5).
+    assert_eq!(pair.accuracy_difference.value, None);
+    assert_eq!(pair.accuracy_difference.lower, None);
+    assert_eq!(pair.accuracy_difference.upper, None);
     assert_eq!(pair.bootstrap.participants, Some(40));
+    Ok(())
+}
+
+#[test]
+fn stat_5_paired_difference_is_withheld_with_the_discordant_counts() -> TestResult {
+    // 31 paired cards: 20 both right, 10 neither, 1 only Gemini. The two
+    // discordant counts are below the minimum and suppressed, and the paired
+    // totals publish their sum (`n_paired - both - neither`), so the published
+    // difference would fix them exactly: `a + b = 1` and `a - b = 31 *
+    // difference` give `a = 1`, `b = 0`. The difference and its interval are
+    // withheld with the counts they would hand back (STAT-5).
+    let rows: Vec<EvalRow> = (0..31_u32)
+        .map(|index| {
+            let (gemini_class, jev_class) = match index {
+                0 => (MessageClass::List, MessageClass::Personal),
+                1..=20 => (MessageClass::List, MessageClass::List),
+                _ => (MessageClass::Personal, MessageClass::Personal),
+            };
+            // Gemini answers `list` on 21 cards, Jev on 20, so only Gemini is
+            // right on card 0.
+            row(
+                index,
+                29,
+                MessageClass::List,
+                Some(gemini(gemini_class, 400, 500)),
+                Some(jev(jev_class, 150, 500)),
+                SwipeDirection::Left,
+                false,
+            )
+        })
+        .collect();
+    let report = report_of(&rows)?;
+    let pair = report
+        .paired
+        .iter()
+        .find(|pair| pair.model_a == Method::Gemini && pair.model_b == Method::Jev)
+        .unwrap_or_else(|| panic!("gemini and jev are compared"));
+    assert_eq!(pair.n_paired, Some(31));
+    assert_eq!(pair.both_correct, Some(20));
+    assert_eq!(pair.neither_correct, Some(10));
+    assert_eq!(pair.only_a_correct, None);
+    assert_eq!(pair.only_b_correct, None);
+    assert_eq!(pair.mcnemar_exact_p, None);
+    assert_eq!(pair.accuracy_difference.value, None);
+    assert_eq!(pair.accuracy_difference.lower, None);
+    assert_eq!(pair.accuracy_difference.upper, None);
+    Ok(())
+}
+
+#[test]
+fn stat_5_calibration_error_is_withheld_with_a_suppressed_bin() -> TestResult {
+    // 11 labelled cards, all predicted `personal` and all wrong: ten stated
+    // 0.09 and one stated 1.0. The last bin holds a single point and is
+    // suppressed, and every wrong point makes the expected calibration error
+    // its mean confidence, so the published error would fix that hidden count
+    // (the first ten points cannot lift it above 0.1 on their own). The error
+    // is withheld with the bin it would hand back (STAT-5).
+    let rows: Vec<EvalRow> = (0..11_u32)
+        .map(|index| {
+            let confidence = if index < 10 { 0.09 } else { 1.0 };
+            let mut prediction = jev(MessageClass::Personal, 150, 500);
+            prediction.confidence = Some(confidence);
+            row(
+                index,
+                30,
+                MessageClass::List,
+                None,
+                Some(prediction),
+                SwipeDirection::Left,
+                false,
+            )
+        })
+        .collect();
+    let report = report_of(&rows)?;
+    let jev = model(&report, Method::Jev);
+    assert_eq!(jev.accuracy.n, Some(11), "the labelled total stays");
+    assert_eq!(jev.calibration.bins[0].count, Some(10));
+    assert_eq!(jev.calibration.bins[9].count, None, "one point is hidden");
+    assert_eq!(jev.calibration.ece, None);
     Ok(())
 }
 
@@ -543,14 +712,17 @@ fn stat_5_values_go_with_the_counts_they_are_built_on() -> TestResult {
 fn stat_4_participant_count_below_minimum_is_hidden() -> TestResult {
     // Twelve labels all from one participant: the labels clear the minimum but
     // the participant count itself does not, so the count and the
-    // largest-contributor share are withheld with it (STAT-4).
+    // largest-contributor share are withheld with it (STAT-4). Every paired
+    // bootstrap resamples those same participants, so its participant count is
+    // an independently suppressible count of its own and the interval it
+    // produced goes with it.
     let rows: Vec<EvalRow> = (0..12_u32)
         .map(|_| {
             row(
                 7,
                 27,
                 MessageClass::List,
-                None,
+                Some(gemini(MessageClass::List, 400, 500)),
                 Some(jev(MessageClass::List, 150, 500)),
                 SwipeDirection::Left,
                 false,
@@ -565,6 +737,66 @@ fn stat_4_participant_count_below_minimum_is_hidden() -> TestResult {
         Some(Rate::suppressed()),
         "the share goes with the count it is read against"
     );
+    assert_eq!(report.paired.len(), 3);
+    for pair in &report.paired {
+        assert_eq!(
+            pair.bootstrap.participants, None,
+            "one participant must not be published by the paired bootstrap"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn stat_5_segment_denominator_is_not_the_difference_of_the_totals() -> TestResult {
+    // 32 Jev answers, all `list`: the gmail segment has 20 labelled cards and
+    // 10 wanted, the graph segment 12 and 2. The model's own false-junk
+    // denominator is 12 and gmail's is 10, so publishing gmail's beside the
+    // model's would hand back graph's suppressed 2 as the difference: the
+    // false-junk denominators are a complementary group of their own (STAT-5).
+    let mut rows: Vec<EvalRow> = Vec::new();
+    for index in 0..32_u32 {
+        let (provider, direction) = match index {
+            0..=9 => ("gmail", SwipeDirection::Left),
+            10..=19 => ("gmail", SwipeDirection::Right),
+            20..=29 => ("graph", SwipeDirection::Left),
+            _ => ("graph", SwipeDirection::Right),
+        };
+        let mut evaluation = row(
+            index,
+            31,
+            MessageClass::List,
+            None,
+            Some(jev(MessageClass::List, 150, 500)),
+            direction,
+            false,
+        );
+        evaluation.segments.provider = provider;
+        rows.push(evaluation);
+    }
+    let report = report_of(&rows)?;
+    let jev = model(&report, Method::Jev);
+    assert_eq!(jev.false_junk_rate.n, Some(12), "the model total stays");
+    let gmail = segment(&report, Method::Jev, "provider", "gmail")
+        .unwrap_or_else(|| panic!("gmail segment"));
+    let graph = segment(&report, Method::Jev, "provider", "graph")
+        .unwrap_or_else(|| panic!("graph segment"));
+    assert!(suppressed(graph.false_junk_rate));
+    assert!(
+        suppressed(gmail.false_junk_rate),
+        "the sibling goes with the hidden segment cell"
+    );
+    // Every provider denominator is hidden beside the published model total, so
+    // the hidden one is ambiguous: any split of 12 into two non-negative counts
+    // fits, not the single value 2 the subtraction would give.
+    let published: Vec<Option<u64>> = report
+        .by_segment
+        .iter()
+        .filter(|cell| cell.model == Method::Jev && cell.dimension == "provider")
+        .map(|cell| cell.false_junk_rate.n)
+        .collect();
+    assert_eq!(published.len(), 2);
+    assert!(published.iter().all(Option::is_none));
     Ok(())
 }
 
@@ -953,8 +1185,11 @@ fn cl_04_ac3_insufficient_participants_nulls_interval() -> TestResult {
         pair.bootstrap.method,
         BootstrapMethod::InsufficientParticipants
     );
-    assert_eq!(pair.bootstrap.participants, Some(4));
-    assert!(pair.accuracy_difference.value.is_some());
+    // Four participants is below the minimum, like every other count.
+    assert_eq!(pair.bootstrap.participants, None);
+    // The discordant counts are below the minimum too, so the difference that
+    // would hand them back is withheld with them (STAT-5).
+    assert_eq!(pair.accuracy_difference.value, None);
     assert_eq!(pair.accuracy_difference.lower, None);
     assert_eq!(pair.accuracy_difference.upper, None);
     Ok(())
