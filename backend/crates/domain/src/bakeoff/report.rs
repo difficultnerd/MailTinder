@@ -956,17 +956,52 @@ fn paired_report(model_a: Method, model_b: Method, acc: &PairAcc) -> PairedRepor
     }
 }
 
+/// A published value that has a suppressed form the walk can write.
+///
+/// Rates, percentiles, counts and costs are all withheld the same way: when a
+/// count they are built on is suppressed, the value goes away with it (STAT-5).
+trait Withheld {
+    /// Replaces the value with its suppressed form.
+    fn withheld(&mut self);
+}
+
+impl Withheld for Rate {
+    fn withheld(&mut self) {
+        *self = Rate::suppressed();
+    }
+}
+
+impl Withheld for Option<f64> {
+    fn withheld(&mut self) {
+        *self = None;
+    }
+}
+
+impl Withheld for Option<u32> {
+    fn withheld(&mut self) {
+        *self = None;
+    }
+}
+
+impl Withheld for Option<u64> {
+    fn withheld(&mut self) {
+        *self = None;
+    }
+}
+
 /// One traversal of every published count and every complementary group of a
 /// finished report, in a fixed order.
 trait Walk {
     /// Visits one published count and returns its cell index.
     fn cell(&mut self, slot: &mut Option<u64>) -> usize;
 
-    /// Suppresses a rate whose guard cells are suppressed.
-    fn guard(&mut self, slot: &mut Rate, guards: &[usize]);
+    /// Withholds a value whose guard cells are suppressed.
+    fn hide<S: Withheld>(&mut self, slot: &mut S, guards: &[usize]);
 
-    /// Nulls a value whose guard cells are suppressed.
-    fn hide(&mut self, slot: &mut Option<f64>, guards: &[usize]);
+    /// Suppresses a rate whose guard cells are suppressed.
+    fn guard(&mut self, slot: &mut Rate, guards: &[usize]) {
+        self.hide(slot, guards);
+    }
 
     /// One complementary group: cells that sum to a published total.
     fn group(&mut self, members: Vec<usize>);
@@ -992,9 +1027,7 @@ impl Walk for Cells {
         self.values.len() - 1
     }
 
-    fn guard(&mut self, _slot: &mut Rate, _guards: &[usize]) {}
-
-    fn hide(&mut self, _slot: &mut Option<f64>, _guards: &[usize]) {}
+    fn hide<S: Withheld>(&mut self, _slot: &mut S, _guards: &[usize]) {}
 
     fn group(&mut self, members: Vec<usize>) {
         if members.len() < 2 {
@@ -1028,15 +1061,9 @@ impl Walk for Apply<'_> {
         index
     }
 
-    fn guard(&mut self, slot: &mut Rate, guards: &[usize]) {
+    fn hide<S: Withheld>(&mut self, slot: &mut S, guards: &[usize]) {
         if guards.iter().any(|&guard| self.shown[guard].is_none()) {
-            *slot = Rate::suppressed();
-        }
-    }
-
-    fn hide(&mut self, slot: &mut Option<f64>, guards: &[usize]) {
-        if guards.iter().any(|&guard| self.shown[guard].is_none()) {
-            *slot = None;
+            slot.withheld();
         }
     }
 
@@ -1049,20 +1076,48 @@ impl Walk for Apply<'_> {
 /// applying walk visit the same cells in the same sequence.
 fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
     let labelled = walk.cell(&mut report.labelled_swipes);
+    // The participant count is a count of its own: below the minimum it is
+    // withheld, and the largest-contributor share goes with it (STAT-4).
+    let participant_count = walk.cell(&mut report.participants.count);
     if let Some(share) = report.participants.top_contributor_share.as_mut() {
         walk.rate(share);
-        walk.guard(share, &[labelled]);
+        walk.guard(share, &[labelled, participant_count]);
     }
 
     for model in &mut report.models {
-        walk.cell(&mut model.cards);
-        walk.cell(&mut model.valid_answers);
-        walk.rate(&mut model.accuracy);
-        walk.rate(&mut model.junk_precision);
-        walk.rate(&mut model.junk_recall);
-        walk.rate(&mut model.false_junk_rate);
+        let cards = walk.cell(&mut model.cards);
+        let valid = walk.cell(&mut model.valid_answers);
+        let accuracy = walk.rate(&mut model.accuracy);
+        let precision = walk.rate(&mut model.junk_precision);
+        let recall = walk.rate(&mut model.junk_recall);
+        let false_junk = walk.rate(&mut model.false_junk_rate);
         walk.rate(&mut model.timeout_rate);
         walk.rate(&mut model.error_rate);
+
+        // Latency, tokens and cost describe the answered calls one record at a
+        // time: with the answered-call count suppressed, a single answered call
+        // would publish that record's latency, tokens and cost, so all three go
+        // with the count they are built on (STAT-5).
+        walk.hide(&mut model.latency.p50_ms, &[valid]);
+        walk.hide(&mut model.latency.p95_ms, &[valid]);
+        walk.hide(&mut model.input_tokens, &[valid]);
+        walk.hide(&mut model.cost_per_1000_messages_usd, &[valid]);
+
+        // The junk F1 reads both rates and the expected calibration error reads
+        // the labelled answers: each derived figure is withheld with the counts
+        // it is computed from (STAT-5).
+        walk.hide(&mut model.junk_f1, &[precision, recall]);
+        walk.hide(&mut model.calibration.ece, &[accuracy]);
+
+        // The method's published counts nest: every answered call is a card,
+        // and the two label columns partition the labelled answers, so
+        // `accuracy.n` is `junk_recall.n + false_junk_rate.n`. Each pair is a
+        // complementary group, so a suppressed count is never the difference of
+        // the shown ones (STAT-5): without these, `false_junk_rate.n` comes back
+        // as `accuracy.n - junk_recall.n`.
+        walk.group(vec![cards, valid]);
+        walk.group(vec![recall, false_junk]);
+
         for bin in &mut model.calibration.bins {
             let index = walk.cell(&mut bin.count);
             walk.hide(&mut bin.observed_accuracy, &[index]);
@@ -1077,14 +1132,22 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
     for pair in &mut report.paired {
         // The four counts are the group; `n_paired` is their sum, so publishing
         // it beside them adds no equation of its own (S7 5.13).
-        walk.cell(&mut pair.n_paired);
-        let members = vec![
-            walk.cell(&mut pair.only_a_correct),
-            walk.cell(&mut pair.only_b_correct),
-            walk.cell(&mut pair.both_correct),
-            walk.cell(&mut pair.neither_correct),
-        ];
-        walk.group(members);
+        let n_paired = walk.cell(&mut pair.n_paired);
+        let only_a = walk.cell(&mut pair.only_a_correct);
+        let only_b = walk.cell(&mut pair.only_b_correct);
+        let both = walk.cell(&mut pair.both_correct);
+        let neither = walk.cell(&mut pair.neither_correct);
+        walk.group(vec![only_a, only_b, both, neither]);
+
+        // McNemar reads the two discordant counts; the accuracy difference and
+        // its interval read the paired cards, and the bootstrap resamples those
+        // participants. Each is withheld with the counts it is computed from
+        // (STAT-5).
+        walk.hide(&mut pair.mcnemar_exact_p, &[only_a, only_b]);
+        walk.hide(&mut pair.accuracy_difference.value, &[n_paired]);
+        walk.hide(&mut pair.accuracy_difference.lower, &[n_paired]);
+        walk.hide(&mut pair.accuracy_difference.upper, &[n_paired]);
+        walk.hide(&mut pair.bootstrap.participants, &[n_paired]);
     }
 
     for agreement in &mut report.agreement {
@@ -1130,12 +1193,14 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
     for &method in &METHODS {
         let mut rows: Vec<(MessageClass, Vec<usize>)> = Vec::new();
         let mut columns: Vec<(&'static str, Vec<usize>)> = Vec::new();
+        let mut table = Vec::new();
         for &(cell_method, class, label, index) in &cells {
             if cell_method != method {
                 continue;
             }
             push_member(&mut rows, class, index);
             push_member(&mut columns, label, index);
+            table.push(index);
         }
         for (_, members) in rows {
             walk.group(members);
@@ -1143,6 +1208,10 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         for (_, members) in columns {
             walk.group(members);
         }
+        // The whole table sums to `accuracy.n`, which is published: without
+        // this group a cell whose row and column hold no other published cell
+        // comes straight back as `accuracy.n` minus the other column (STAT-5).
+        walk.group(table);
     }
 
     // A day's trend rows for the three methods are one group.

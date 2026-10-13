@@ -302,8 +302,13 @@ fn stat_1_undo_flips_label() -> TestResult {
     let jev = model(&report, Method::Jev);
     assert_eq!(jev.accuracy.n, Some(12));
     assert_eq!(jev.accuracy.value, Some(0.0));
-    assert_eq!(jev.false_junk_rate.n, Some(12));
-    assert_eq!(jev.false_junk_rate.value, Some(1.0));
+    // Every card is labelled wanted, so no card is labelled junk: `junk_recall`
+    // has a denominator of zero and is suppressed, and `false_junk_rate` is its
+    // complementary sibling under `accuracy.n = junk_recall.n +
+    // false_junk_rate.n`, so it is withheld too instead of handing the hidden
+    // count back as a subtraction (STAT-5).
+    assert!(suppressed(jev.junk_recall));
+    assert!(suppressed(jev.false_junk_rate));
     Ok(())
 }
 
@@ -426,6 +431,140 @@ fn stat_5_trend_and_histogram_suppressed() -> TestResult {
         .find(|point| point.model == Method::Gemini)
         .unwrap_or_else(|| panic!("gemini trend point"));
     assert!(gemini_point.accuracy.n.is_none());
+    Ok(())
+}
+
+#[test]
+fn stat_5_single_answered_call_publishes_no_record_value() -> TestResult {
+    // One answered Jev call: the answered-call count is below the minimum, so
+    // the latency percentiles, the token sum and the cost that describe that one
+    // record are withheld with it (STAT-5).
+    let rows = vec![row(
+        0,
+        25,
+        MessageClass::List,
+        None,
+        Some(jev(MessageClass::List, 150, 500)),
+        SwipeDirection::Left,
+        false,
+    )];
+    let report = report_of(&rows)?;
+    let jev = model(&report, Method::Jev);
+    assert_eq!(jev.cards, None);
+    assert_eq!(jev.valid_answers, None);
+    assert_eq!(jev.latency.p50_ms, None);
+    assert_eq!(jev.latency.p95_ms, None);
+    assert_eq!(jev.input_tokens, None);
+    assert_eq!(jev.cost_per_1000_messages_usd, None);
+    // Header rules answer in process with a latency of zero, and that zero is
+    // still a per-record value: it goes with the count too.
+    let header = model(&report, Method::HeaderRules);
+    assert_eq!(header.latency.p50_ms, None);
+    assert_eq!(header.cost_per_1000_messages_usd, None);
+    Ok(())
+}
+
+#[test]
+fn stat_5_suppressed_label_column_is_not_the_difference_of_the_totals() -> TestResult {
+    // 12 labelled cards, 10 junk and 2 wanted, every one answered `list`: the
+    // junk-recall denominator is 10 and the false-junk denominator is 2, which is
+    // below the minimum. `accuracy.n` is their sum, so publishing the recall
+    // beside the accuracy would hand the hidden count back as a subtraction: the
+    // recall is withheld with it (STAT-5).
+    let rows: Vec<EvalRow> = (0..12_u32)
+        .map(|index| {
+            let direction = if index < 10 {
+                SwipeDirection::Left
+            } else {
+                SwipeDirection::Right
+            };
+            row(
+                index,
+                26,
+                MessageClass::List,
+                None,
+                Some(jev(MessageClass::List, 150, 500)),
+                direction,
+                false,
+            )
+        })
+        .collect();
+    let report = report_of(&rows)?;
+    let jev = model(&report, Method::Jev);
+    assert_eq!(jev.accuracy.n, Some(12));
+    assert!(shown(jev.accuracy), "the total itself stays published");
+    assert!(shown(jev.junk_precision));
+    assert!(suppressed(jev.junk_recall));
+    assert!(suppressed(jev.false_junk_rate));
+    // F1 reads both rates, so it goes with them.
+    assert_eq!(jev.junk_f1, None);
+    Ok(())
+}
+
+#[test]
+fn stat_5_values_go_with_the_counts_they_are_built_on() -> TestResult {
+    // 40 paired cards where the models disagree twice: `n_paired` is published
+    // and the discordant counts are below the minimum. McNemar reads those two
+    // counts and is withheld with them; the accuracy difference reads the paired
+    // cards and stays, beside the count it is computed over (STAT-5).
+    let mut rows = Vec::new();
+    for index in 0..40_u32 {
+        let (gemini_class, jev_class) = match index {
+            38 => (MessageClass::List, MessageClass::Personal),
+            39 => (MessageClass::Personal, MessageClass::List),
+            _ => (MessageClass::List, MessageClass::List),
+        };
+        rows.push(row(
+            index,
+            28,
+            MessageClass::List,
+            Some(gemini(gemini_class, 400, 500)),
+            Some(jev(jev_class, 150, 500)),
+            SwipeDirection::Left,
+            false,
+        ));
+    }
+    let report = report_of(&rows)?;
+    let pair = report
+        .paired
+        .iter()
+        .find(|pair| pair.model_a == Method::Gemini && pair.model_b == Method::Jev)
+        .unwrap_or_else(|| panic!("gemini and jev are compared"));
+    assert_eq!(pair.n_paired, Some(40));
+    assert_eq!(pair.only_a_correct, None);
+    assert_eq!(pair.only_b_correct, None);
+    assert_eq!(pair.mcnemar_exact_p, None);
+    assert_eq!(pair.accuracy_difference.value, Some(0.0));
+    assert_eq!(pair.bootstrap.participants, Some(40));
+    Ok(())
+}
+
+#[test]
+fn stat_4_participant_count_below_minimum_is_hidden() -> TestResult {
+    // Twelve labels all from one participant: the labels clear the minimum but
+    // the participant count itself does not, so the count and the
+    // largest-contributor share are withheld with it (STAT-4).
+    let rows: Vec<EvalRow> = (0..12_u32)
+        .map(|_| {
+            row(
+                7,
+                27,
+                MessageClass::List,
+                None,
+                Some(jev(MessageClass::List, 150, 500)),
+                SwipeDirection::Left,
+                false,
+            )
+        })
+        .collect();
+    let report = report_of(&rows)?;
+    assert_eq!(report.labelled_swipes, Some(12));
+    assert_eq!(report.participants.count, None);
+    assert_eq!(
+        report.participants.top_contributor_share,
+        Some(Rate::suppressed()),
+        "the share goes with the count it is read against"
+    );
     Ok(())
 }
 
