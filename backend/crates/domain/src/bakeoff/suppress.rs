@@ -52,8 +52,66 @@ pub fn suppress_cells(cells: &[u64], groups: &[Vec<usize>], min_cell: u64) -> Ve
         .map(|&cell| if cell < min_cell { None } else { Some(cell) })
         .collect();
     suppress_sole_hidden(groups, &mut out);
-    suppress_recoverable(cells, groups, &mut out);
+    suppress_recoverable(cells, &[], groups, &mut out);
     out
+}
+
+/// The suppressed cells whose value the published sums and the lower bounds a
+/// reader knows settle between them (T-908a's side of STAT-5).
+///
+/// `equations` are the index sets whose sum the report publishes — a method's
+/// confusion row, a pair's four counts, the numerator of a shown rate — `shown`
+/// is the state a reader holds (`Some` for a published count, `None` for a
+/// suppressed one) and `floors` the smallest value each count can take: a count
+/// the report lists only when it is positive is known to be at least one, so a
+/// pair of them summing to two is one and one, never two and zero.
+///
+/// A returned count takes the same value in every assignment the reader can
+/// reach, so it must not be published as a difference, a numerator or a
+/// denominator. A search that runs out of its budget or overflows answers with
+/// every suppressed count, so a count whose safety is unproven is always
+/// reported.
+#[must_use]
+pub(crate) fn fixed_cells(
+    cells: &[u64],
+    floors: &[u64],
+    equations: &[Vec<usize>],
+    shown: &[Option<u64>],
+) -> Vec<usize> {
+    let hidden: Vec<usize> = (0..cells.len())
+        .filter(|&index| shown.get(index).copied().flatten().is_none())
+        .collect();
+    if hidden.is_empty() {
+        return Vec::new();
+    }
+    let mut published: Vec<(Vec<usize>, i128)> = Vec::new();
+    for equation in equations {
+        let total: i128 = equation
+            .iter()
+            .filter_map(|&index| cells.get(index))
+            .map(|&cell| i128::from(cell))
+            .sum();
+        let known: i128 = equation
+            .iter()
+            .filter_map(|&index| shown.get(index).copied().flatten())
+            .map(i128::from)
+            .sum();
+        let positions: Vec<usize> = equation
+            .iter()
+            .filter_map(|&index| hidden.iter().position(|&cell| cell == index))
+            .collect();
+        if positions.is_empty() {
+            continue;
+        }
+        published.push((positions, total - known));
+    }
+    if published.is_empty() {
+        return Vec::new();
+    }
+    match System::new(&published, cells, &hidden, floors) {
+        Some(system) => system.recoverable(&hidden),
+        None => hidden,
+    }
 }
 
 /// Pass 2 of S7 5.13: a group that shows its total and all but one of its cells
@@ -97,9 +155,14 @@ fn suppress_sole_hidden(groups: &[Vec<usize>], out: &mut [Option<u64>]) {
 
 /// Pass 3: suppress further cells until no suppressed count is fixed by the
 /// published system, or until nothing is shown any more (fail closed).
-fn suppress_recoverable(cells: &[u64], groups: &[Vec<usize>], out: &mut [Option<u64>]) {
+fn suppress_recoverable(
+    cells: &[u64],
+    floors: &[u64],
+    groups: &[Vec<usize>],
+    out: &mut [Option<u64>],
+) {
     loop {
-        let recovered = recoverable_cells(cells, groups, out);
+        let recovered = recoverable_cells(cells, floors, groups, out);
         if recovered.is_empty() {
             return;
         }
@@ -131,13 +194,19 @@ fn suppress_recoverable(cells: &[u64], groups: &[Vec<usize>], out: &mut [Option<
 /// The suppressed cells whose value the published information fixes exactly.
 ///
 /// The information a reader holds is the shown cells, the total of every group
-/// of two or more cells, and the fact that counts are not negative integers. A
+/// of two or more cells, and the fact that counts are not negative
+/// integers — nor below the `floors` the report's own shape proves. A
 /// suppressed count is left shown only when an alternative assignment of every
 /// suppressed count is exhibited: one that meets every equation, keeps every
 /// count a non-negative integer and gives that count a different value. Nothing
 /// weaker is treated as protection, so the answer errs towards suppressing
 /// more.
-fn recoverable_cells(cells: &[u64], groups: &[Vec<usize>], out: &[Option<u64>]) -> Vec<usize> {
+fn recoverable_cells(
+    cells: &[u64],
+    floors: &[u64],
+    groups: &[Vec<usize>],
+    out: &[Option<u64>],
+) -> Vec<usize> {
     let hidden: Vec<usize> = (0..out.len())
         .filter(|&index| out[index].is_none())
         .collect();
@@ -151,7 +220,7 @@ fn recoverable_cells(cells: &[u64], groups: &[Vec<usize>], out: &[Option<u64>]) 
     // An overflow in the exact arithmetic, or bounds that do not settle, are
     // answered with "fixed", so the result errs towards suppressing more
     // rather than towards leaving a recoverable count in place.
-    match System::new(&equations, cells, &hidden) {
+    match System::new(&equations, cells, &hidden, floors) {
         Some(system) => system.recoverable(&hidden),
         None => hidden,
     }
@@ -237,15 +306,19 @@ fn equality_fixed(equations: &[(Vec<usize>, i128)], columns: usize) -> Option<Ve
 }
 
 /// Valid bounds on every suppressed count: each one holds in every assignment
-/// that meets the equations with non-negative counts, so an equal lower and
-/// upper bound settles the count. `None` when the exact arithmetic overflows or
-/// the propagation does not settle within its pass budget; the caller then
-/// treats every suppressed count as recovered.
+/// that meets the equations with counts inside the reader's lower bounds, so an
+/// equal lower and upper bound settles the count. `floors` is the smallest
+/// value each position can take, empty for none. `None` when the exact
+/// arithmetic overflows or the propagation does not settle within its pass
+/// budget; the caller then treats every suppressed count as recovered.
 fn valid_bounds(
     equations: &[(Vec<usize>, i128)],
+    floors: &[i128],
     columns: usize,
 ) -> Option<(Vec<i128>, Vec<i128>)> {
-    let mut lower = vec![0_i128; columns];
+    let mut lower: Vec<i128> = (0..columns)
+        .map(|position| floors.get(position).copied().unwrap_or(0))
+        .collect();
     let mut upper = vec![i128::MAX; columns];
     for (positions, residual) in equations {
         let ceiling = (*residual).max(0);
@@ -321,8 +394,14 @@ struct System<'a> {
 
 impl<'a> System<'a> {
     /// `None` when the exact arithmetic overflows or the bounds do not settle,
-    /// which the caller answers with "recovered".
-    fn new(equations: &'a [(Vec<usize>, i128)], cells: &[u64], hidden: &[usize]) -> Option<Self> {
+    /// which the caller answers with "recovered". `floors` is the smallest
+    /// value a reader knows each count has, indexed by cell; empty for none.
+    fn new(
+        equations: &'a [(Vec<usize>, i128)],
+        cells: &[u64],
+        hidden: &[usize],
+        floors: &[u64],
+    ) -> Option<Self> {
         let columns = hidden.len();
         let mut membership = vec![Vec::new(); columns];
         for (index, (positions, _)) in equations.iter().enumerate() {
@@ -332,7 +411,11 @@ impl<'a> System<'a> {
                 }
             }
         }
-        let (lower, upper) = valid_bounds(equations, columns)?;
+        let known: Vec<i128> = hidden
+            .iter()
+            .map(|&index| i128::from(floors.get(index).copied().unwrap_or(0)))
+            .collect();
+        let (lower, upper) = valid_bounds(equations, &known, columns)?;
         let truth = hidden
             .iter()
             .map(|&index| i128::from(cells.get(index).copied().unwrap_or(0)))
@@ -795,7 +878,8 @@ mod tests {
         let equations = vec![(vec![0, 1], 20_000)];
         let cells = vec![10_000, 10_000];
         let hidden = vec![0, 1];
-        let system = System::new(&equations, &cells, &hidden).ok_or("the system did not build")?;
+        let system =
+            System::new(&equations, &cells, &hidden, &[]).ok_or("the system did not build")?;
         assert_eq!(system.alternative_with_budget(0, 1), None);
         assert_eq!(
             system.alternative_with_budget(0, SEARCH_NODE_BUDGET),
@@ -812,7 +896,8 @@ mod tests {
         let equations = vec![(vec![0, 1], 10)];
         let cells = vec![0, 10];
         let hidden = vec![0, 1];
-        let system = System::new(&equations, &cells, &hidden).ok_or("the system did not build")?;
+        let system =
+            System::new(&equations, &cells, &hidden, &[]).ok_or("the system did not build")?;
         assert_eq!(
             system.alternative_with_budget(0, SEARCH_NODE_BUDGET),
             Some(1)
