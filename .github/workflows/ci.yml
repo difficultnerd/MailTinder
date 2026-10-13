@@ -695,13 +695,14 @@ jobs:
   # jobs sharing one name would make it ambiguous which run gates a merge.
   ci-integrity:
     runs-on: ubuntu-latest
-    needs: [rust, dart, language-policy, ac-coverage, terraform, e2e]
+    needs: [rust, dart, language-policy, ac-coverage, infra-scripts, terraform, e2e]
     if: always()
     env:
       R_RUST: ${{ needs.rust.result }}
       R_DART: ${{ needs.dart.result }}
       R_LANG: ${{ needs.language-policy.result }}
       R_AC: ${{ needs.ac-coverage.result }}
+      R_INFRA: ${{ needs.infra-scripts.result }}
       R_TF: ${{ needs.terraform.result }}
       R_E2E: ${{ needs.e2e.result }}
     steps:
@@ -720,6 +721,7 @@ jobs:
           report dart            "$R_DART"
           report language-policy "$R_LANG"
           report ac-coverage     "$R_AC"
+          report infra-scripts   "$R_INFRA"
           report terraform       "$R_TF"
           report e2e             "$R_E2E"
           exit $fail

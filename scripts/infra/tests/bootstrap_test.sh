@@ -172,10 +172,75 @@ custom_role_ids_from_script() {
   ' "$SCRIPT" | sed -n 's/^\([A-Za-z0-9_]*\)|.*$/\1/p'
 }
 
-# The roles the modules actually bind: the ground truth for BOOT AC6.
+# Every role the modules grant, whatever resource grants it: the ground truth for
+# the split below.
 module_roles_from_terraform() {
   sed 's/#.*//' "${MODULES}"/foundation/*.tf "${MODULES}"/runtime/*.tf |
     grep -ohE 'roles/[a-zA-Z0-9._-]+' | sort -u
+}
+
+# The roles the modules grant on IAM resources, split by the *resource type* that
+# grants them and not by the role string (N-02):
+#   `project`  - exactly a `google_project_iam_member`, i.e. grantable at project
+#                scope, which is what the applier's projectIamAdmin condition may
+#                allow;
+#   `resource` - any other `google_*_iam_*` resource: bound on one crypto key, a
+#                secret, a service, a repository, a queue or a service account,
+#                and bound there by the applier with a resource-level role.
+# An oracle that collected role names alone would pass for exactly the reason the
+# script did - the shared flaw N-02 named - so it must read the resource type.
+iam_roles_from_terraform() { # <project|resource>
+  local want="$1"
+  awk -v want="$want" '
+    /^resource[ \t]+"/ {
+      type = $2; gsub(/"/, "", type)
+      is_project = (type == "google_project_iam_member")
+      inside = (type ~ /^google_.*_iam_/) && ((want == "project") == is_project)
+      next
+    }
+    inside && /^}/ { inside = 0; next }
+    inside && $1 == "role" {
+      line = $0
+      sub(/[ \t]*#.*/, "", line)
+      sub(/^[^"]*"/, "", line)
+      sub(/"?[ \t]*$/, "", line)
+      print line
+    }
+  ' "${MODULES}"/foundation/*.tf "${MODULES}"/runtime/*.tf | sort -u
+}
+
+project_scope_roles_from_terraform() { iam_roles_from_terraform project; }
+resource_bound_roles_from_terraform() { iam_roles_from_terraform resource; }
+
+# The three runtime identities, from the two places that name them: the
+# foundation module's `runtime_service_accounts` map (account ids `mt-<key>`) and
+# the `service_account` argument of the three Cloud Run services. The applier
+# must hold `actAs` on these and no others (N-04).
+runtime_accounts_from_foundation() {
+  awk '
+    index($0, "runtime_service_accounts = {") > 0 { inside = 1; next }
+    inside && /^}/ { inside = 0; next }
+    inside && /^[[:space:]]*[a-zA-Z0-9_-]+[[:space:]]*=/ {
+      key = $1; sub(/[[:space:]]*=.*/, "", key); print "mt-" key
+    }
+  ' "${MODULES}/foundation/service_accounts.tf" | sort -u
+}
+
+runtime_accounts_from_services() {
+  awk '
+    /service_account[ \t]*=[ \t]*var\.service_accounts\["/ {
+      line = $0
+      sub(/.*service_accounts\["/, "", line)
+      sub(/".*/, "", line)
+      print "mt-" line
+    }
+  ' "${MODULES}/runtime/cloud_run.tf" | sort -u
+}
+
+# The account ids the script itself binds actAs on.
+runtime_accounts_from_script() {
+  sed -n 's/^readonly RUNTIME_ACCOUNT_IDS=(\(.*\))$/\1/p' "$SCRIPT" |
+    tr ' ' '\n' | grep -v '^$' | sort -u
 }
 
 # The roles inside a condition's hasOnly([...]) list.
@@ -562,6 +627,24 @@ bootstrap() { # [extra args...]
 # A run's slice of the log, so "this run issued no grant" can be asserted.
 log_mark() { wc -l <"$LOG"; }
 slice_from() { tail -n "+$(($1 + 1))" "$LOG"; }
+
+sa_email() { # <account id>
+  printf '%s@%s.iam.gserviceaccount.com' "$1" "$PROJECT_ID"
+}
+
+# The actAs binding the applier must hold on one runtime identity, as the script
+# spells it (N-04): on the service account, with no condition.
+actas_grant_line() { # <account id>
+  printf 'iam service-accounts add-iam-policy-binding %s --project=%s --member=serviceAccount:%s --role=roles/iam.serviceAccountUser --condition=None\n' \
+    "$(sa_email "$1")" "$PROJECT_ID" "$APPLIER_EMAIL"
+}
+
+# Mark a service account as already existing in the stub's state, using the same
+# name-to-file mapping the stub's own key_for uses (`sa_<email>`), so the
+# post-first-apply run (N-04) sees the runtime identities as present.
+mark_existing_sa() { # <service account email>
+  : >"${STATE}/$(printf '%s' "sa_$1" | tr -c 'A-Za-z0-9._-' '_')"
+}
 
 impersonation_grants() { # <file>  every call that grants an impersonation role
   calls "$1" | grep -E -- '--role=roles/iam\.(workloadIdentityUser|serviceAccountUser)( |$)' || true
@@ -1007,28 +1090,60 @@ boot_ac6_iam_admin_grant_is_conditioned() {
   fi
 
   # The union of the project-IAM-admin conditions' lists is exactly the roles the
-  # two modules bind at project scope: the impersonation roles are deliberately
-  # absent (SEC-02).
+  # two modules grant on a `google_project_iam_member` resource, which is what
+  # "project scope" means here (BOOT AC6, N-02). The impersonation roles and the
+  # seven roles the modules bind on one resource are deliberately absent.
   classify_conditions "$CONDITIONS" "$COND_DIR" >/dev/null
   if [ -z "$SA_COND_FILE" ] || [ -z "$IAM_COND_FILES" ]; then
     fail "the two kinds of condition were not both recorded (service account policy: '${SA_COND_FILE}', project IAM admin: '${IAM_COND_FILES}')"
     return
   fi
-  local union expected modules
+  local union expected
   union="$(
     for line in $IAM_COND_FILES; do
       condition_list_roles "$line"
     done
   )"
   union="$(printf '%s\n' "$union" | sort -u | grep -v '^$')"
-  modules="$(module_roles_from_terraform)"
-  expected="$(printf '%s\n' "$modules" | grep -Fxv -f <(printf '%s\n' "$RESOURCE_SCOPED_ROLES") | sort -u)"
-  if [ "$union" = "$expected" ]; then
-    ok "together the project conditions allow exactly the modules' project-scope roles"
+  expected="$(project_scope_roles_from_terraform)"
+  if [ -n "$expected" ] && [ "$union" = "$expected" ]; then
+    ok "together the project conditions allow exactly the roles the modules grant on a project IAM member"
   else
-    fail "the conditions' roles differ from the modules' project-scope roles:
+    fail "the conditions' roles differ from the roles the modules grant on a google_project_iam_member:
 $(printf '%s\n' "$union" | sed 's/^/    condition: /')
 $(printf '%s\n' "$expected" | sed 's/^/    expected:  /')"
+  fi
+
+  # Each of these is bound by the modules on one resource (a crypto key, a
+  # secret, a service, a repository, a queue), so it must not be grantable at
+  # project scope: that widening was N-02 and the second half of SEC-02.
+  local resource_only
+  for resource_only in roles/cloudkms.cryptoKeyEncrypterDecrypter \
+    roles/secretmanager.secretAccessor roles/run.invoker roles/run.developer \
+    roles/artifactregistry.writer roles/cloudtasks.enqueuer \
+    roles/cloudtasks.taskDeleter; do
+    if printf '%s\n' "$union" | grep -Fxq -- "$resource_only"; then
+      fail "the project-scope allowlist holds ${resource_only}, which the modules grant on one resource only (N-02)"
+    else
+      ok "the project-scope allowlist excludes ${resource_only} (bound per resource)"
+    fi
+  done
+
+  # The split is exhaustive and nothing is lost by it: every role the modules
+  # grant is either project-scope (in the allowlist) or bound on one resource,
+  # and the applier binds those per resource with the resource-level roles it
+  # holds - so removing them from the allowlist removes no capability the
+  # modules need on the first apply (N-02).
+  local module_roles resource_bound unaccounted
+  module_roles="$(module_roles_from_terraform)"
+  resource_bound="$(resource_bound_roles_from_terraform)"
+  unaccounted="$(comm -23 <(printf '%s\n' "$module_roles") \
+    <(printf '%s\n' "$union" "$resource_bound" | sort -u))"
+  if [ -n "$module_roles" ] && [ -z "$unaccounted" ]; then
+    ok "every role the modules grant is either in the project-scope allowlist or bound on one resource"
+  else
+    fail "roles the modules grant that the allowlist and the per-resource binds do not account for:
+$(printf '%s\n' "$unaccounted" | sed 's/^/    /')"
   fi
 
   if printf '%s\n' "$union" | grep -Fxq -- 'roles/resourcemanager.projectIamAdmin'; then
@@ -1487,6 +1602,67 @@ boot_sec07_first_apply_capabilities_are_present() {
       fail "the applier does not hold $perm"
     fi
   done
+
+  # actAs on the runtime identities (N-04, SEC-07). The three Cloud Run services
+  # run as `mt-api`, `mt-unsub` and `mt-worker`, so creating or updating one
+  # requires `roles/iam.serviceAccountUser` on that account. The account list is
+  # derived from the two modules - not from the script - so a drift fails here.
+  local accounts from_foundation from_services
+  accounts="$(runtime_accounts_from_script)"
+  from_foundation="$(runtime_accounts_from_foundation)"
+  from_services="$(runtime_accounts_from_services)"
+  if [ -n "$accounts" ] && [ "$accounts" = "$from_foundation" ] && [ "$accounts" = "$from_services" ]; then
+    ok "the actAs accounts are exactly the runtime identities the two modules name"
+  else
+    fail "the actAs accounts differ from the modules:
+$(printf '%s\n' "$accounts" | sed 's/^/    script:     /')
+$(printf '%s\n' "$from_foundation" | sed 's/^/    foundation: /')
+$(printf '%s\n' "$from_services" | sed 's/^/    cloud_run:  /')"
+  fi
+
+  # (a) The accounts only exist after the first apply, so on this run (they are
+  # absent) the script grants nothing and prints the exact command instead.
+  local account command
+  for account in $accounts; do
+    command="gcloud iam service-accounts add-iam-policy-binding $(sa_email "$account") --project=${PROJECT_ID} --member=serviceAccount:${APPLIER_EMAIL} --role=roles/iam.serviceAccountUser --condition=None"
+    expect_contains "$OUT" "$command" "the run before the first apply prints the actAs command for $account"
+    if calls "$LOG" | grep -Fq -- "add-iam-policy-binding $(sa_email "$account")"; then
+      fail "the run bound actAs on $(sa_email "$account") before that account existed"
+    else
+      ok "no actAs binding was attempted on $account while it does not exist"
+    fi
+  done
+
+  # (b) A run after the first apply (the accounts are there) binds the role on
+  # exactly those three accounts - member, role and account - reads each one
+  # back, and still grants nothing at project scope.
+  setup_case
+  for account in $accounts; do
+    mark_existing_sa "$(sa_email "$account")"
+  done
+  bootstrap --yes
+  expect_status 0 "$?" "a run after the first apply exits 0"
+
+  local expected_actas actual_actas
+  expected_actas="$(for account in $accounts; do actas_grant_line "$account"; done | sort)"
+  actual_actas="$(calls "$LOG" | grep -F -- 'iam service-accounts add-iam-policy-binding' \
+    | grep -F -- "--project=${PROJECT_ID}" | grep -F -- '--role=roles/iam.serviceAccountUser' | sort)"
+  if [ -n "$expected_actas" ] && [ "$actual_actas" = "$expected_actas" ]; then
+    ok "the applier is bound actAs on exactly the three runtime identities, on the account"
+  else
+    fail "the actAs bindings differ from the intended ones:
+$(printf '%s\n' "$actual_actas" | sed 's/^/    actual:   /')
+$(printf '%s\n' "$expected_actas" | sed 's/^/    expected: /')"
+  fi
+  for account in $accounts; do
+    expect_contains "$OUT" "applier actAs on $(sa_email "$account") verified" \
+      "the actAs binding on $account is read back"
+  done
+  if calls "$LOG" | grep -F -- 'projects add-iam-policy-binding' | grep -Fq -- "--role=roles/iam.serviceAccountUser"; then
+    fail "roles/iam.serviceAccountUser was granted at project scope"
+  else
+    ok "roles/iam.serviceAccountUser is never granted at project scope"
+  fi
 }
 
 boot_sec09_key_detector_catches_an_injected_call() {
@@ -1532,6 +1708,11 @@ boot_sec09_key_detector_catches_an_injected_call() {
 boot_sec09_suite_runs_in_ci() {
   # A verification nothing runs is fail-open: the suite must be wired into CI
   # (SEC-09).
+  if grep -Eq '^  infra-scripts:' "$CI_WORKFLOW"; then
+    ok "ci.yml defines the infra-scripts job"
+  else
+    fail "ci.yml does not define an infra-scripts job"
+  fi
   if grep -Fq -- 'scripts/infra/tests/bootstrap_test.sh' "$CI_WORKFLOW"; then
     ok "ci.yml runs scripts/infra/tests/bootstrap_test.sh"
   else
@@ -1541,6 +1722,25 @@ boot_sec09_suite_runs_in_ci() {
     ok "ci.yml installs or runs shellcheck"
   else
     fail "ci.yml does not run shellcheck, so the shellcheck assertion would skip in CI"
+  fi
+
+  # Running is not enough: the job must be inside the aggregate gate, because
+  # branch protection keys on `ci-integrity` and a job outside its `needs` list
+  # can fail without blocking a merge (N-01).
+  local needs_line
+  needs_line="$(awk '
+    /^  ci-integrity:/ { inside = 1 }
+    inside && /^    needs:/ { print; exit }
+  ' "$CI_WORKFLOW")"
+  if printf '%s\n' "$needs_line" | grep -Fq 'infra-scripts'; then
+    ok "ci-integrity requires the infra-scripts job:${needs_line:+ $needs_line}"
+  else
+    fail "ci-integrity does not require the infra-scripts job (read '${needs_line}')"
+  fi
+  if grep -Fq -- 'report infra-scripts' "$CI_WORKFLOW"; then
+    ok "ci-integrity reports the infra-scripts result"
+  else
+    fail "ci-integrity does not report the infra-scripts result"
   fi
 }
 

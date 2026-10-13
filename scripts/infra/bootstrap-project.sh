@@ -153,6 +153,17 @@
 #     bootstrap pools is unreachable anyway because they are in the identity
 #     project.
 #
+# actAs on the runtime identities (N-04, SEC-07). Creating or updating a Cloud
+# Run service whose `service_account` is a user-managed identity requires
+# `iam.serviceAccounts.actAs` on that identity. That is a *per-service-account*
+# binding, never a project-wide role: `roles/iam.serviceAccountUser` is bound
+# nowhere at project scope by this script and does not appear in the
+# projectIamAdmin allowlist above (BOOT AC6, SEC-02). The three runtime accounts
+# exist only after the first apply has created them, so this is an explicit,
+# documented post-first-apply step: the script binds the role on each account it
+# finds and verifies the result, and while an account is still missing it prints
+# the exact command for the owner. Nothing else is granted by that step.
+#
 # Blast radius, stated honestly (S10 10.4, ADR 0003 item 4):
 #   - `roles/datastore.owner` can read Firestore documents, and the secret custom
 #     role can set the accessor binding on a secret it manages, so the applier
@@ -172,7 +183,12 @@
 #
 # The project-level grant of roles/resourcemanager.projectIamAdmin carries IAM
 # Conditions that limit the roles it may grant to exactly the roles the two
-# modules bind *at project scope* (BOOT AC6). Google's IAM Conditions
+# modules bind on a `google_project_iam_member` resource (BOOT AC6, N-02):
+# roles/datastore.user, roles/aiplatform.user and roles/firebasehosting.admin.
+# Every other role the modules grant is bound on one resource and stays out of
+# the list, because the API attribute limits role *names*, not the resource a
+# role is granted on - listing them would widen each of those grants from one
+# resource to the whole project. Google's IAM Conditions
 # documentation, "Set limits on granting roles" (verified 12 Oct 2026):
 #   - `iam.googleapis.com/modifiedGrantsByRole` is the documented API attribute
 #     for limiting role granting; the resource types that accept it are projects,
@@ -229,6 +245,15 @@ readonly WORKFLOW_PATH=".github/workflows/terraform.yml"
 readonly IAM_ADMIN_ROLE="roles/resourcemanager.projectIamAdmin"
 readonly WIF_ISSUER="https://token.actions.githubusercontent.com"
 readonly STATE_LOCATION="us-central1"
+# The three Cloud Run runtime identities, named as the two modules name them:
+# modules/foundation's `locals.runtime_service_accounts` map (account ids
+# `mt-<key>`) and the `service_account` argument of the three services in
+# modules/runtime/cloud_run.tf. The applier needs `iam.serviceAccounts.actAs` on
+# each of them to create or update a service that runs as another identity
+# (SEC-07, N-04). The suite derives this list from those two files and fails if
+# it drifts.
+readonly RUNTIME_ACCOUNT_IDS=(mt-api mt-unsub mt-worker)
+readonly ACTAS_ROLE="roles/iam.serviceAccountUser"
 readonly BOOTSTRAP_APIS=(
   serviceusage.googleapis.com
   cloudresourcemanager.googleapis.com
@@ -349,48 +374,46 @@ EOF
 # through it - and the bootstrap pools are in the identity project, out of its
 # reach entirely.
 
-# The roles the two modules bind, which is what the applier's conditional
-# projectIamAdmin grant may grant *at project scope* (BOOT AC6). Keep this list
-# equal to the roles that appear in infra/terraform/modules/{foundation,runtime}
-# /*.tf; the test derives that set from the modules and fails if the two drift.
-module_granted_roles() {
+# The roles the applier's conditional projectIamAdmin grant may grant *at
+# project scope* (BOOT AC6): exactly the roles the two modules grant on a
+# `google_project_iam_member` resource, three today -
+#   roles/datastore.user         foundation/firestore.tf (the database and its fields)
+#   roles/aiplatform.user        foundation/firestore.tf (the Firestore/Vertex path)
+#   roles/firebasehosting.admin  runtime/deploy_identity.tf (the Hosting site)
+# They are named here rather than derived at run time so the script stays
+# self-contained; the suite derives the same set from the modules by resource
+# type (not by role string) and fails if the two drift (N-02).
+#
+# Every *other* role the modules grant is bound on one resource, never on the
+# project, and the applier binds it there with the resource-level role it holds:
+#   roles/cloudkms.cryptoKeyEncrypterDecrypter  roles/cloudkms.admin
+#   roles/secretmanager.secretAccessor          mt_applier_secret_containers
+#   roles/run.invoker, roles/run.developer      roles/run.admin
+#   roles/artifactregistry.writer               roles/artifactregistry.admin
+#   roles/cloudtasks.enqueuer, .taskDeleter     roles/cloudtasks.admin
+#   roles/iam.workloadIdentityUser, .serviceAccountUser
+#                                               mt_applier_service_account_policies
+# Listing any of those seven here would let the applier turn a per-resource
+# grant into a project-wide one - secret access, KMS decryption, Cloud Run
+# invocation for any member, not one resource - which is what the previous
+# revision did and N-02 closed.
+project_scope_grantable_roles() {
   cat <<'EOF'
 roles/aiplatform.user
-roles/artifactregistry.writer
-roles/cloudkms.cryptoKeyEncrypterDecrypter
-roles/cloudtasks.enqueuer
-roles/cloudtasks.taskDeleter
 roles/datastore.user
 roles/firebasehosting.admin
-roles/iam.serviceAccountUser
-roles/iam.workloadIdentityUser
-roles/run.developer
-roles/run.invoker
-roles/secretmanager.secretAccessor
 EOF
 }
 
 # Impersonation and actAs. The modules bind these two on individual service
 # accounts, never on the project, so the applier may bind them too - but only on
 # a service account, through mt_applier_service_account_policies, and never at
-# project scope (SEC-02). The two lists below are derived from this one, so the
-# allowlist and the SA condition can never disagree.
+# project scope (SEC-02). This is the SA-policy condition's allowlist.
 resource_scoped_roles() {
   cat <<'EOF'
 roles/iam.serviceAccountUser
 roles/iam.workloadIdentityUser
 EOF
-}
-
-# The roles the applier may grant *at project scope*: the module roles that are
-# really project-scoped. Used by the allowlist condition and by the plan.
-project_scope_grantable_roles() {
-  local role
-  while IFS= read -r role; do
-    if ! resource_scoped_roles | grep -Fxq -- "$role"; then
-      printf '%s\n' "$role"
-    fi
-  done < <(module_granted_roles)
 }
 
 # The applier's roles-limiting conditions, one expression per line. Google's
@@ -478,6 +501,8 @@ print_plan() {
   printf '  the applier is granted no role at all in %s\n' "$IDENTITY_PROJECT"
   printf '  state bucket role roles/storage.objectViewer for %s\n' "$PLANNER_ACCOUNT"
   printf '  state bucket role roles/storage.objectAdmin for %s\n' "$APPLIER_ACCOUNT"
+  printf '  applier actAs %s on the runtime identities %s - bound on the service account itself, never at project scope, on the run after the first apply (N-04)\n' \
+    "$ACTAS_ROLE" "${RUNTIME_ACCOUNT_IDS[*]}"
   while IFS='|' read -r role covers note; do
     printf '  planner role %s - covers %s - %s\n' "$role" "$covers" "$note"
   done < <(planner_role_specs)
@@ -715,6 +740,56 @@ bind_service_account_role() {
     --project="$IDENTITY_PROJECT" --member="$member" --role="$role" --condition=None
 }
 
+# The runtime identities, by the account ids the two modules use.
+runtime_account_email() { # <account id>
+  printf '%s@%s.iam.gserviceaccount.com' "$1" "$PROJECT"
+}
+
+# Creating or updating a Cloud Run service that runs as another identity needs
+# `iam.serviceAccounts.actAs` on that identity (N-04). The binding goes on the
+# service account itself, exactly as the modules bind it for their own deployer,
+# so it is as narrow as a grant can be; the project-scope grant of the same role
+# is never made anywhere (SEC-02, BOOT AC6).
+#
+# The three runtime accounts exist only after the first apply has created them,
+# so on a first bootstrap run (before any apply) this prints the exact command
+# for each account - the documented post-first-apply step - and on a run after
+# the first apply it installs and verifies the binding. It never invents an
+# account: an account that is not there is reported, not created.
+bind_runtime_actas() {
+  local account email member="serviceAccount:${APPLIER_EMAIL}"
+  for account in "${RUNTIME_ACCOUNT_IDS[@]}"; do
+    email="$(runtime_account_email "$account")"
+    if probe iam service-accounts describe "$email" --project="$PROJECT"; then
+      apply_call iam service-accounts add-iam-policy-binding "$email" \
+        --project="$PROJECT" --member="$member" --role="$ACTAS_ROLE" --condition=None
+      verify_runtime_actas "$email" "$member"
+    else
+      printf '  applier actAs on %s: the account does not exist yet (the first\n' "$email"
+      printf '  apply creates it). After that apply, run again - or run this line:\n'
+      printf '    gcloud iam service-accounts add-iam-policy-binding %s --project=%s --member=%s --role=%s --condition=None\n' \
+        "$email" "$PROJECT" "$member" "$ACTAS_ROLE"
+    fi
+  done
+}
+
+# Read the binding back, so the capability the first apply needs is verified
+# rather than assumed. These accounts carry other bindings too (the modules bind
+# `api`-actAs and their deployer on them), so this asserts this one is present,
+# not that nothing else is - unlike the two bootstrap identities, whose policies
+# this script owns.
+verify_runtime_actas() { # <email> <member>
+  local email="$1" member="$2" roles members
+  roles="$(read_value iam service-accounts get-iam-policy "$email" --project="$PROJECT" \
+    --format='value(bindings.role)' | awk 'NF' | grep -Fx -- "$ACTAS_ROLE" || true)"
+  members="$(read_value iam service-accounts get-iam-policy "$email" --project="$PROJECT" \
+    --format='value(bindings.members)' | awk 'NF' | grep -Fx -- "$member" || true)"
+  if [ -z "$roles" ] || [ -z "$members" ]; then
+    die "the applier does not hold ${ACTAS_ROLE} on ${email}: a Cloud Run service running as that identity could not be created or updated (read roles '${roles}', members '${members}')"
+  fi
+  printf '  applier actAs on %s verified: %s\n' "$email" "$ACTAS_ROLE"
+}
+
 # The last thing the owner sees: exactly the values T-1117's workflow reads.
 print_github_variables() {
   local env_suffix
@@ -742,6 +817,12 @@ Repository variable reminder (ADR 0003 item 7): set TF_APPLY_ENABLED=false now.
 Set it to true only after 'Require review from Code Owners' is on for main with
 CODEOWNERS covering .github/workflows/**, infra/** and scripts/infra/**, so no
 plan can apply until then.
+
+Post-first-apply step (N-04): the applier must hold roles/iam.serviceAccountUser
+on mt-api, mt-unsub and mt-worker, because the three Cloud Run services run as
+them. Those accounts do not exist yet, so run this script again after the first
+apply: it binds the role on each account and verifies it. The role is bound on
+the service account, never on the project.
 EOF
 }
 
@@ -957,6 +1038,13 @@ while IFS= read -r condition; do
     "$condition" "modules-only-role-allowlist-${condition_index}" \
     "The applier may grant only the roles modules/foundation and modules/runtime bind at project scope (T-1116 BOOT AC6, part ${condition_index})"
 done < <(roles_limiting_conditions)
+
+# 9. The applier's actAs on the three runtime identities (N-04). Bound on each
+#    service account and only where the account exists: the first apply creates
+#    them, so a first run prints the exact command and a run after that apply
+#    installs and verifies the binding. The role is never granted at project
+#    scope, and nothing is created here.
+bind_runtime_actas
 
 printf '\nbootstrap complete for %s (environment %s), identity project %s.\n' \
   "$PROJECT" "$ENVIRONMENT" "$IDENTITY_PROJECT"

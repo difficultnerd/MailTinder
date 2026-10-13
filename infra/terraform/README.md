@@ -63,13 +63,22 @@ the plan and runs `apply`**, from his own machine, one project at a time
      identity project** - so it cannot rewrite the impersonation policy that
      admits it, cannot disable or delete either identity, and cannot edit an
      admission rule. Its `roles/resourcemanager.projectIamAdmin` grant carries
-     an IAM Condition that limits the roles it may grant to the modules'
-     project-scope roles, with `roles/iam.workloadIdentityUser` and
-     `roles/iam.serviceAccountUser` deliberately excluded (they are bound only
-     on the service accounts that need them) and the two conditions written
-     with `--condition-from-file`. Its other grants are custom roles with an
-     explicit permission list, in the script header, mapped to the resource
-     that needs each one.
+     an IAM Condition that limits the roles it may grant **at project scope** to
+     exactly the three roles the modules bind with a `google_project_iam_member`
+     (`roles/datastore.user`, `roles/aiplatform.user`,
+     `roles/firebasehosting.admin`). Every other role the modules grant is bound
+     on one resource and is deliberately **not** in that list - the API
+     attribute restricts role *names*, not the resource a role is granted on, so
+     listing one would widen the grant from a single crypto key, secret, service,
+     repository or queue to the whole project. The applier binds those
+     per-resource roles with the resource-level roles it holds
+     (`roles/run.admin` for `roles/run.invoker`, `roles/cloudkms.admin` for the
+     KMS encrypt/decrypt role, and so on, mapped in the script header), and
+     `roles/iam.workloadIdentityUser` and `roles/iam.serviceAccountUser` are
+     excluded too (they are bound only on the service accounts that need them).
+     Both conditions are written with `--condition-from-file`. Its other grants
+     are custom roles with an explicit permission list, in the script header,
+     mapped to the resource that needs each one.
    - nothing before the grants are verified: each pool must hold exactly its one
      provider with the intended issuer, mapping and `attribute_condition`, each
      bootstrap identity must carry nothing but its own impersonation binding,
@@ -109,6 +118,29 @@ the plan and runs `apply`**, from his own machine, one project at a time
    is personal data, so it lives only in `terraform.tfvars`. Then `terraform
    plan`. Read it. Then `terraform apply`, and confirm the test notification
    arrives from the channel.
+
+   That first apply also creates the three runtime identities `mt-api`,
+   `mt-unsub` and `mt-worker`, and the three Cloud Run services run as them.
+   Creating or updating a service that runs as another identity needs
+   `roles/iam.serviceAccountUser` (`actAs`) **on that account** - never on the
+   project - and the accounts do not exist until this apply has run, so it is a
+   post-first-apply step: run
+
+   ```
+   scripts/infra/bootstrap-project.sh --project <project> \
+     --identity-project <identity-project> --env <env> \
+     --repo <owner/name> --yes
+   ```
+
+   again (it is idempotent and changes nothing else; production additionally
+   needs `--i-know-the-log-bucket-lock-is-permanent`). It now finds the three
+   accounts, binds `roles/iam.serviceAccountUser` for the applier on each of
+   them, and reads each binding back; the first run printed the same three
+   `gcloud iam service-accounts add-iam-policy-binding` lines if you prefer to
+   run them by hand. Until that step is done the pipeline can plan a change to a
+   Cloud Run service but not apply it. Nothing about this step is project-wide:
+   the applier holds no `actAs` at project scope, in either project.
+
 5. Add the secret values. Terraform creates the four containers and stops
    there, so no value ever enters state:
 
@@ -155,6 +187,11 @@ staging's own `billing_account` and `alert_email` in `terraform.tfvars`:
    terraform apply
    ```
 
+   Then repeat the post-first-apply `actAs` step from Bootstrap 4: run the
+   bootstrap command from step 2 again, now that staging's own `mt-api`,
+   `mt-unsub` and `mt-worker` exist, so the applier can manage staging's Cloud
+   Run services.
+
 4. Add the staging secret values (step 5 above, with staging's own values:
    fresh `openssl rand -base64 32` HMAC keys). Never copy a production secret
    value into staging - that would put a production credential in the project
@@ -185,6 +222,13 @@ locked default. Once staging is applied, record its Hosting URL
   next `apply` - that is deliberate (S6 5, S13 `Edge cases and traps`).
 - No service account keys, ever. Every service authenticates with its own
   Google identity and short-lived OIDC tokens.
+- The three Cloud Run services run as `mt-api`, `mt-unsub` and `mt-worker`, so
+  the applier needs `roles/iam.serviceAccountUser` on each of them. That role is
+  bound **on the service account**, never on the project, and the accounts only
+  exist after the first apply - see the post-first-apply step in Bootstrap 4.
+  A pipeline `apply` that changes a Cloud Run service before that step fails on
+  `actAs`, and the script prints the exact commands when it is run before the
+  accounts exist.
 - Container scanning is not enabled here (CLAUDE.md keeps it out of the core;
   see S10 12).
 

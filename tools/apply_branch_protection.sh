@@ -18,7 +18,7 @@ branch="${2:-main}"
 # protection treats a skipped required check as a pass, so without them a gate
 # that silently does not execute still reads green. Each has a unique name
 # because branch protection keys on the bare check name.
-contexts='["rust","dart","e2e","language-policy","gitleaks","semgrep","cargo-audit","cargo-deny","dart-licenses","privacy-checks","ac-coverage","coverage","ci-integrity","security-integrity","privacy-integrity","heavy-integrity"]'
+contexts='["rust","dart","e2e","language-policy","gitleaks","semgrep","cargo-audit","cargo-deny","dart-licenses","privacy-checks","ac-coverage","infra-scripts","coverage","ci-integrity","security-integrity","privacy-integrity","heavy-integrity"]'
 
 gh api --method PUT "repos/${repo}/branches/${branch}/protection" --input - <<JSON
 {
