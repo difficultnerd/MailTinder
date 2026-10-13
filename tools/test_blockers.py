@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from tools.factory.blockers import (
     DEFECT,
@@ -25,6 +26,7 @@ from tools.factory.blockers import (
     has_defect,
     main,
     report_lines,
+    running_builders,
 )
 
 
@@ -287,6 +289,52 @@ class TestMain(unittest.TestCase):
         code, lines = self.run_main(picker, probe=lambda: "pgrep")
         self.assertEqual(code, 1)
         self.assertEqual(lines, ["!! MISSING pgrep"])
+
+    def test_main_reports_idle_when_no_builder_is_running(self):
+        # A genuinely idle box reads as zero builders (pgrep exits 1, no
+        # output), so the IDLE row must reach classify instead of main()
+        # aborting with `!! MISSING pgrep` before the table is built.
+        picker = fake_picker({"T-1": {"deps": []}})
+        code, lines = self.run_main(picker, builders=0, allow={"T-1"})
+        self.assertEqual(code, 1)
+        self.assertEqual(lines[0], "!! T-1      buildable, in ALLOW, NOTHING RUNNING")
+        self.assertEqual(lines[-1], "-- 1 unfinished, merged 0/1; defects: 1")
+
+
+class TestRunningBuilders(unittest.TestCase):
+    """The real running_builders(), driven through a fake pgrep (no box needed)."""
+
+    def _pgrep(self, returncode, stdout=""):
+        return mock.patch(
+            "tools.factory.blockers.subprocess.run",
+            return_value=SimpleNamespace(returncode=returncode, stdout=stdout),
+        )
+
+    def test_no_match_is_zero_builders_not_a_failure(self):
+        # pgrep exits 1 with no output when nothing matches: a real answer.
+        with self._pgrep(1, ""):
+            self.assertEqual(running_builders(), 0)
+
+    def test_counts_only_bash_run_task_lines(self):
+        out = "\n".join(
+            [
+                "1234 bash run-task.sh T-1",
+                "1235 timeout 1200 bash run-task.sh T-2",
+                "1236 pgrep -af run-task.sh",
+                "1237 python3 something-else.py",
+            ]
+        )
+        with self._pgrep(0, out):
+            self.assertEqual(running_builders(), 1)
+
+    def test_pgrep_failure_is_none_not_zero(self):
+        for code in (2, 3, -9):
+            with self._pgrep(code, ""):
+                self.assertIsNone(running_builders())
+
+    def test_missing_binary_is_none(self):
+        with mock.patch("tools.factory.blockers.subprocess.run", side_effect=OSError):
+            self.assertIsNone(running_builders())
 
 
 if __name__ == "__main__":

@@ -208,23 +208,29 @@ def pr_stages() -> dict[str, tuple[int, str]]:
 
 
 def running_builders() -> int | None:
-    """Count running builders, or None when pgrep tells us nothing.
+    """Count running builders, or None when pgrep itself failed.
+
+    pgrep's exit status is the answer, not noise: 0 = at least one process
+    matched, 1 = nothing matched. Exit 1 with no output is a real "zero
+    builders" and must reach classify, otherwise the IDLE defect - the very
+    stall T-907 hid - is unreachable through main(). Any other status (2
+    syntax, 3 fatal, a signal) or a missing binary is a tool failure and
+    returns None, so main() prints `!! MISSING pgrep` instead of a table that
+    reads as defect-free. `probe_tools` already covers an absent pgrep before
+    this runs; this None is the "pgrep is there but unusable" case.
 
     Counted lines of `pgrep -af run-task.sh` contain `bash`, excluding the
-    `timeout` wrapper and the `pgrep` line itself. Empty output is a tool
-    failure and not "zero builders": with no output we cannot tell "nothing is
-    running" from "pgrep is not there", and guessing in the quiet direction is
-    what made the v1 report a clean table (AAR 3.134). The caller prints
-    `!! MISSING pgrep` and exits 1 instead of claiming a defect-free box.
+    `timeout` wrapper and the `pgrep` line itself.
     """
-    done = subprocess.run(
-        ["pgrep", "-af", "run-task.sh"], capture_output=True, text=True
-    )
-    if done.returncode > 1:  # pgrep: 1 = no match; 127/2 = pgrep itself failed
+    try:
+        done = subprocess.run(
+            ["pgrep", "-af", "run-task.sh"], capture_output=True, text=True
+        )
+    except OSError:
+        return None
+    if done.returncode not in (0, 1):  # 0 = match, 1 = no match; else it failed
         return None
     lines = done.stdout.splitlines()
-    if not lines:
-        return None
     return len([line for line in lines if "pgrep" not in line and "timeout" not in line and "bash" in line])
 
 
