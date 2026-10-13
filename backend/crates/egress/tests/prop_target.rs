@@ -21,6 +21,7 @@ use egress::{
     REFUSED_SUFFIXES,
 };
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use url::Url;
 
 /// The refused IPv4 ranges, kept in sync with `egress/src/ranges.rs`.
@@ -76,12 +77,23 @@ fn core_encodings(ip: Ipv4Addr) -> Vec<String> {
 }
 
 /// A public, two-label host name that the checks must accept.
+///
+/// The label never begins with `xn--`. `idna` reads that prefix as punycode and
+/// refuses a malformed payload, so `Url::parse` rejects e.g. `xn--0.com` (or
+/// `xn--a`) before any check sees a URL. A 40 000-case run drew `xn--0.com` and
+/// panicked on the parse; a 217 700-name sweep over this label shape found every
+/// refusal to be an `xn--` label, and nothing else. The property below is about
+/// the checks, which only ever receive a parsed `Url`, so the generator must not
+/// emit a name the parser itself refuses.
 fn public_host() -> impl Strategy<Value = String> {
     (
         "[a-z][a-z0-9-]{0,12}[a-z0-9]",
         prop::sample::select(vec!["com", "net", "org", "test", "io", "dev", "example"]),
     )
         .prop_map(|(label, tld)| format!("{label}.{tld}"))
+        .prop_filter("no malformed-punycode label", |host| {
+            !host.starts_with("xn--")
+        })
 }
 
 fn service_strategy() -> impl Strategy<Value = Service> {
@@ -226,5 +238,27 @@ proptest! {
             prop_assert_eq!(allows(service, &url), allows(service, &url));
         }
         prop_assert_eq!(one_click_permitted(service), matches!(service, Service::Unsub));
+    }
+}
+
+/// Every name `public_host()` emits must parse.
+///
+/// The property above parses the URL, and `idna` reads an `xn--` label prefix as
+/// punycode and refuses a malformed payload, so that shape has to stay out of the
+/// input domain: the 2026-10-12 flake drew `host = "xn--0.com"` in a 40 000-case
+/// run and panicked on the parse. Remove the filter in `public_host()` and this
+/// goes red, which is the point of keeping the guard here.
+#[test]
+fn t1110_public_host_names_always_parse() {
+    let mut runner = proptest::test_runner::TestRunner::default();
+    for _ in 0..10_000 {
+        let Ok(tree) = public_host().new_tree(&mut runner) else {
+            continue;
+        };
+        let host = tree.current();
+        assert!(
+            Url::parse(&format!("https://{host}/x")).is_ok(),
+            "generated unparseable host {host}"
+        );
     }
 }
