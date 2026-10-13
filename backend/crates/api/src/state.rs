@@ -23,6 +23,9 @@ pub struct AppState {
     /// The per-request bake-off gate; a stand-in for T-902 consent AND the
     /// T-906b switch, closed here and opened only by integration tests.
     pub bakeoff_gate: crate::classify::BakeoffGate,
+    /// The classifier kill switches: the start-up environment AND
+    /// `config/classifiers`, re-read at most once a minute (T-906b).
+    pub switches: Arc<crate::classify::switches::ClassifierSwitches>,
     /// National holiday defaults, injectable for delivery checks.
     pub business_calendar: Arc<domain::delivery::BusinessCalendar>,
     /// The tunables the services apply (S2 `UNSUB_DELAY` and friends). The

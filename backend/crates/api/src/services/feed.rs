@@ -931,13 +931,7 @@ async fn input_gate(app: &AppState, user: &UserId) -> crate::experiments::Bakeof
     let Ok(Some(user)) = app.ports.store.users().get(user).await else {
         return crate::experiments::BakeoffGate::default();
     };
-    let Ok(Some(switches)) = app.ports.store.config().get_classifiers().await else {
-        return crate::experiments::BakeoffGate::default();
-    };
-    crate::experiments::bakeoff_gate(
-        &user.record,
-        (switches.record.gemini_enabled, switches.record.jev_enabled),
-    )
+    crate::experiments::bakeoff_gate(&user.record, app.switches.current(&app.ports).await)
 }
 
 /// The effective gate for this request: consent and the model switches, plus
