@@ -15,6 +15,7 @@
     clippy::too_many_lines
 )]
 
+pub mod eval;
 pub mod input;
 pub mod payload;
 pub mod prompt;
