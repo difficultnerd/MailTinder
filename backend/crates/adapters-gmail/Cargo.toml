@@ -25,6 +25,12 @@ jsonwebtoken.workspace = true
 sha2.workspace = true
 subtle = "2"
 
+[features]
+# T-1106: the nightly live contract run against the real Gmail sandbox. The
+# `live_contract` test and `live_support` module exist only under this feature,
+# so normal CI never compiles or runs them.
+live = []
+
 [dev-dependencies]
 proptest.workspace = true
 testkit.workspace = true
@@ -33,6 +39,7 @@ tokio.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
 time.workspace = true
+futures = "0.3"
 
 [lints]
 workspace = true
