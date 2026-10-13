@@ -1,6 +1,7 @@
 //! The `MailTinder` API service.
 
 pub mod auth;
+pub mod bakeoff;
 pub mod classify;
 pub mod config;
 pub mod error;
@@ -65,6 +66,9 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/admin/users",
     "/api/v1/admin/users/{user_id}/sessions",
     "/api/v1/admin/experiments/classifier",
+    "/api/v1/admin/bakeoff",
+    "/api/v1/admin/bakeoff/snapshots",
+    "/api/v1/admin/bakeoff/snapshots/{snapshot_id}",
 ];
 
 use crate::config::ApiConfig;
