@@ -34,6 +34,27 @@ API_PREFIX = "/gmail/v1"
 SUBJECT_CANARY = "canary-subject-zzq"
 BODY_CANARY = "canary-body-zzq"
 BASELINE = {"INBOX", "UNREAD", seed.SYNTHETIC_LABEL}
+# Gmail's system labels carry their own name as the id; only user labels get a
+# generated id. The fake models that, so a tool that puts a *name* on the wire
+# where the API takes an id is visibly wrong.
+SYSTEM_LABELS = frozenset(
+    {
+        "INBOX",
+        "UNREAD",
+        "STARRED",
+        "IMPORTANT",
+        "SENT",
+        "DRAFT",
+        "SPAM",
+        "TRASH",
+        "CHAT",
+        "CATEGORY_PERSONAL",
+        "CATEGORY_SOCIAL",
+        "CATEGORY_PROMOTIONS",
+        "CATEGORY_UPDATES",
+        "CATEGORY_FORUMS",
+    }
+)
 ENV = {
     seed.CLIENT_ID_VAR: "client-id.apps.googleusercontent.com",
     seed.CLIENT_SECRET_VAR: "client-secret-zzq",
@@ -51,6 +72,7 @@ class FakeGmail:
 
     def __init__(self, address=ADDRESS):
         self.address = address
+        # name -> id, user labels only: their id is what the API takes.
         self.labels = {}
         self.messages = {}
         self.calls = []
@@ -58,17 +80,43 @@ class FakeGmail:
         self.token_invalid = False
         self.page_size = None
         self._serial = 0
+        self._label_serial = 0
 
     # -- test-side helpers -------------------------------------------------
     def _next_ids(self):
         self._serial += 1
         return f"gm-{self._serial:06d}", f"th-{self._serial:06d}"
 
+    def _next_label_id(self):
+        self._label_serial += 1
+        return f"Label_{self._label_serial}"
+
+    def _ensure_label(self, name):
+        """Register a user label, giving it an id distinct from its name."""
+        if name in SYSTEM_LABELS:
+            return name
+        if name not in self.labels:
+            self.labels[name] = self._next_label_id()
+        return self.labels[name]
+
+    def label_id(self, name):
+        """The id a message carries for a label name."""
+        return self.labels.get(name, name)
+
+    def label_name(self, identifier):
+        """The name a wire-level label id stands for (ids round-trip)."""
+        for name, label_id in self.labels.items():
+            if label_id == identifier:
+                return name
+        return identifier
+
     def add_message(self, rfc822, provenance, labels=("INBOX", "UNREAD"), in_trash=False):
         gmail_id, thread = self._next_ids()
         label_set = set(labels)
         if in_trash:
             label_set.add("TRASH")
+        for name in label_set:
+            self._ensure_label(name)
         self.messages[gmail_id] = {
             "id": gmail_id,
             "thread": thread,
@@ -143,10 +191,15 @@ class FakeGmail:
             return 200, {"emailAddress": self.address, "messagesTotal": len(self.messages)}
         if p == "/users/me/labels":
             if method == "GET":
-                return 200, {"labels": [{"id": n, "name": n, "type": "user"} for n in sorted(self.labels)]}
+                return 200, {
+                    "labels": [
+                        {"id": identifier, "name": name, "type": "user"}
+                        for name, identifier in sorted(self.labels.items())
+                    ]
+                }
             name = (body or {}).get("name")
-            self.labels[name] = None
-            return 200, {"id": name, "name": name, "type": "user"}
+            identifier = self._ensure_label(name)
+            return 200, {"id": identifier, "name": name, "type": "user"}
         if p in ("/users/me/messages/send", "/users/me/drafts/send"):
             return 200, {"id": "gm-sent", "threadId": "th-sent"}
         if p == "/users/me/messages":
@@ -163,21 +216,21 @@ class FakeGmail:
             if action is None and method == "GET":
                 return 200, self._metadata(gmail_id)
             if action == "modify":
-                message["labels"] |= set((body or {}).get("addLabelIds") or [])
-                message["labels"] -= set((body or {}).get("removeLabelIds") or [])
-                return 200, {"id": gmail_id, "labelIds": sorted(message["labels"])}
+                message["labels"] |= {self.label_name(i) for i in (body or {}).get("addLabelIds") or []}
+                message["labels"] -= {self.label_name(i) for i in (body or {}).get("removeLabelIds") or []}
+                return 200, {"id": gmail_id, "labelIds": sorted(self._ids(message["labels"]))}
             if action == "untrash":
                 message["labels"].discard("TRASH")
-                return 200, {"id": gmail_id, "labelIds": sorted(message["labels"])}
+                return 200, {"id": gmail_id, "labelIds": sorted(self._ids(message["labels"]))}
             if action == "trash":
                 message["labels"].add("TRASH")
-                return 200, {"id": gmail_id, "labelIds": sorted(message["labels"])}
+                return 200, {"id": gmail_id, "labelIds": sorted(self._ids(message["labels"]))}
         return 404, {"error": {"code": 404, "message": "not found"}}
 
     def _list(self, params):
         query = (params.get("q") or [None])[0]
         include = (params.get("includeSpamTrash") or ["false"])[0] == "true"
-        label_ids = set(params.get("labelIds") or [])
+        label_ids = {self.label_name(i) for i in params.get("labelIds") or []}
         token = (params.get("pageToken") or [None])[0]
         matched = []
         for message in self.messages.values():
@@ -206,7 +259,7 @@ class FakeGmail:
         raw = base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4))
         rfc822 = (seed.header_value(raw, "Message-ID") or "").strip("<>")
         provenance = seed.header_value(raw, seed.PROVENANCE_HEADER)
-        labels = set(body.get("labelIds") or [])
+        labels = {self.label_name(i) for i in body.get("labelIds") or []}
         if body.get("neverMarkSpam"):
             labels.discard("SPAM")
         gmail_id, thread = self._next_ids()
@@ -217,14 +270,18 @@ class FakeGmail:
             "provenance": provenance,
             "labels": labels,
         }
-        return {"id": gmail_id, "threadId": thread, "labelIds": sorted(labels)}
+        return {"id": gmail_id, "threadId": thread, "labelIds": sorted(self._ids(labels))}
+
+    def _ids(self, names):
+        """The label ids a message's stored names are addressed by."""
+        return {self.label_id(name) for name in names}
 
     def _metadata(self, gmail_id):
         message = self.messages[gmail_id]
         return {
             "id": gmail_id,
             "threadId": message["thread"],
-            "labelIds": sorted(message["labels"]),
+            "labelIds": sorted(self._ids(message["labels"])),
             "payload": {
                 "headers": [
                     {"name": "Message-ID", "value": f"<{message['rfc822']}>"},
@@ -527,6 +584,18 @@ class SeedTest(SeedTestCase):
         for message in self.fake.messages.values():
             self.assertTrue(BASELINE <= message["labels"])
 
+    def test_seed_addresses_labels_by_id_not_by_name(self):
+        """F1: `labelIds` takes ids, so the created label's id is what seed sends."""
+        self.corpus(count=1)
+        self.run_tool("seed", apply_changes=True)
+        label_id = self.fake.labels[seed.SYNTHETIC_LABEL]
+        self.assertNotEqual(label_id, seed.SYNTHETIC_LABEL)
+        imports = [call for call in self.fake.calls if call["path"].endswith("/messages/import")]
+        self.assertEqual(len(imports), 1)
+        sent = imports[0]["body"]["labelIds"]
+        self.assertIn(label_id, sent)
+        self.assertNotIn(seed.SYNTHETIC_LABEL, sent)
+
     def test_seed_writes_mode_600_receipts_and_never_prints_them(self):
         self.corpus(count=1)
         code, out, err, _ = self.run_tool("seed", apply_changes=True)
@@ -595,6 +664,20 @@ class ResetTest(SeedTestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.fake.messages[extra]["labels"], {seed.SYNTHETIC_LABEL, "STARRED"})
         self.assertIn("extra=1", out)
+
+    def test_reset_addresses_labels_by_id_not_by_name(self):
+        """F1: `modify` re-applies the label id, never the label name."""
+        self.seed_once(count=1)
+        gmail_id = sorted(self.fake.messages)[0]
+        self.fake.set_labels(gmail_id, ["INBOX"])
+        self.run_tool("reset", apply_changes=True)
+        label_id = self.fake.labels[seed.SYNTHETIC_LABEL]
+        self.assertNotEqual(label_id, seed.SYNTHETIC_LABEL)
+        modifies = [call for call in self.fake.calls if call["path"].endswith("/modify")]
+        self.assertTrue(modifies)
+        added = modifies[-1]["body"]["addLabelIds"]
+        self.assertIn(label_id, added)
+        self.assertNotIn(seed.SYNTHETIC_LABEL, added)
 
     def test_reset_recreates_a_deleted_label(self):
         self.seed_once(count=2)

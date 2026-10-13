@@ -478,19 +478,29 @@ def metadata_header(metadata: dict, name: str) -> str | None:
     return None
 
 
-def find_label(http: Http, token: str) -> str | None:
-    """The `MT Synthetic` label id, or None. A read, so a dry run may call it."""
+def labels_by_name(http: Http, token: str) -> dict:
+    """Every label's name mapped to its id. A read, so a dry run may call it.
+
+    The REST API takes ids everywhere (`labelIds` on import, modify and list):
+    a label name is only ever a lookup key, never a value put on the wire.
+    """
     data = http.call("GET", "/users/me/labels", token=token)
+    mapping = {}
     for label in data.get("labels", []):
-        if label.get("name") == SYNTHETIC_LABEL:
-            return label.get("id") or SYNTHETIC_LABEL
-    return None
+        name = label.get("name")
+        identifier = label.get("id")
+        if isinstance(name, str) and identifier:
+            mapping[name] = identifier
+    return mapping
 
 
 def create_label(http: Http, token: str) -> str:
-    """Create the label once. Never called without `--apply`."""
+    """Create the label once, returning its id. Never called without `--apply`."""
     created = http.call("POST", "/users/me/labels", token=token, json_body={"name": SYNTHETIC_LABEL})
-    return created.get("id") or SYNTHETIC_LABEL
+    identifier = created.get("id")
+    if not identifier:
+        raise ToolError("the gmail api returned no label id", EXIT_TRANSPORT)
+    return identifier
 
 
 def import_message(http: Http, token: str, raw: bytes, label_ids: list) -> str:
@@ -545,6 +555,7 @@ class Context:
         directory: str,
         receipts,
         label_id,
+        labels=None,
         state_path: str = "",
     ):
         self.http = http
@@ -555,7 +566,19 @@ class Context:
         self.directory = directory
         self.receipts = receipts
         self.label_id = label_id
+        # Label *names* to ids. The API addresses labels by id, so every name
+        # that reaches import or modify is translated first.
+        self.labels = dict(labels or {})
         self.state_path = state_path
+
+    def label_ids(self, names) -> set:
+        """Manifest label names as the Gmail label ids the API takes."""
+        return {self.labels.get(name, name) for name in names}
+
+    def remember_created_label(self, label_id: str) -> None:
+        """Record the id `create_label` just minted so its name still maps."""
+        self.label_id = label_id
+        self.labels[SYNTHETIC_LABEL] = label_id
 
     def eml_bytes(self, message: dict) -> bytes:
         path = os.path.join(self.directory, *message["path"].split("/"))
@@ -581,14 +604,14 @@ def resolve(ctx: Context, message: dict, receipts, adopt: bool):
     labels = set(metadata.get("labelIds") or [])
     if adopt:
         # Header trust, and the label. Documented, never hidden.
-        if SYNTHETIC_LABEL not in labels:
+        if ctx.label_id not in labels:
             return "ambiguous", None, None
         return "accepted", gmail_id, metadata
     if receipts is None:
         # The workflow path: no receipts on an ephemeral runner, so the
         # `--adopt` check stands in. The spec accepts that weaker guarantee
         # instead of uploading receipts anywhere.
-        if SYNTHETIC_LABEL not in labels:
+        if ctx.label_id not in labels:
             return "ambiguous", None, None
         return "accepted", gmail_id, metadata
     if receipts["messages"].get(message["message_id"]) != gmail_id:
@@ -647,7 +670,7 @@ def run_seed(ctx: Context, apply_changes: bool, out) -> int:
     label_created = False
     if ctx.label_id is None:
         if apply_changes:
-            ctx.label_id = create_label(ctx.http, ctx.token)
+            ctx.remember_created_label(create_label(ctx.http, ctx.token))
             label_created = True
         else:
             label_created = True  # planned
@@ -659,7 +682,7 @@ def run_seed(ctx: Context, apply_changes: bool, out) -> int:
         imported += 1
         if not apply_changes:
             continue
-        label_ids = sorted(baseline_labels(message))
+        label_ids = sorted(ctx.label_ids(baseline_labels(message)))
         gmail_id = import_message(ctx.http, ctx.token, ctx.eml_bytes(message), label_ids)
         receipts[message["message_id"]] = gmail_id
         ctx.http.pause()
@@ -701,12 +724,12 @@ def run_reset(ctx: Context, apply_changes: bool, adopt: bool, reimport: bool, ou
         adopted_ids = {message["message_id"]: gmail_id for message, gmail_id, _ in accepted}
 
     if ctx.label_id is None and apply_changes:
-        ctx.label_id = create_label(ctx.http, ctx.token)
+        ctx.remember_created_label(create_label(ctx.http, ctx.token))
 
     restored = 0
     untrashed = 0
     for message, gmail_id, metadata in accepted:
-        target = baseline_labels(message)
+        target = ctx.label_ids(baseline_labels(message))
         current = set(metadata.get("labelIds") or [])
         if "TRASH" in current:
             untrashed += 1
@@ -728,7 +751,9 @@ def run_reset(ctx: Context, apply_changes: bool, adopt: bool, reimport: bool, ou
             reimported += 1
             if not apply_changes:
                 continue
-            gmail_id = import_message(ctx.http, ctx.token, ctx.eml_bytes(message), sorted(baseline_labels(message)))
+            gmail_id = import_message(
+                ctx.http, ctx.token, ctx.eml_bytes(message), sorted(ctx.label_ids(baseline_labels(message)))
+            )
             adopted_ids[message["message_id"]] = gmail_id
             ctx.http.pause()
 
@@ -761,7 +786,7 @@ def run_verify(ctx: Context, out) -> int:
     present = 0
     for message, _gmail_id, metadata in accepted:
         current = set(metadata.get("labelIds") or [])
-        if current == baseline_labels(message):
+        if current == ctx.label_ids(baseline_labels(message)):
             present += 1
         else:
             drifted += 1
@@ -832,7 +857,8 @@ def run(args, out, err, confirm, opener, sleep, env) -> int:
     state_dir = args.state_dir or DEFAULT_STATE_DIR
     state_path = receipts_path(state_dir, account)
     receipts = read_receipts(state_path)
-    label_id = find_label(http, token)
+    labels = labels_by_name(http, token)
+    label_id = labels.get(SYNTHETIC_LABEL)
 
     ctx = Context(
         http,
@@ -843,6 +869,7 @@ def run(args, out, err, confirm, opener, sleep, env) -> int:
         os.path.dirname(args.manifest) or ".",
         receipts,
         label_id,
+        labels,
         state_path,
     )
 
