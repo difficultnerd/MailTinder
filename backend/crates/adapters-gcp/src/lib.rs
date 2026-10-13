@@ -20,7 +20,6 @@
     clippy::unnested_or_patterns
 )]
 
-pub mod classifier_switches;
 pub mod crypto;
 pub mod firestore;
 pub mod gcp_http;
@@ -32,7 +31,6 @@ pub mod system_clock;
 pub mod tasks;
 pub mod token_source;
 
-pub use classifier_switches::{BakeoffModel, ClassifierSwitches, EnvSwitches, SwitchState};
 pub use crypto::envelope::EnvelopeKeyService;
 pub use crypto::kms::{CloudKms, KmsApi};
 pub use crypto::system::KmsSystemKeyService;

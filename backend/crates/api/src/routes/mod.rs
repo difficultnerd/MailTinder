@@ -1,6 +1,7 @@
 //! Route handlers, one module per feature area.
 
 pub mod account;
+pub mod admin_classifier;
 pub mod admin_users;
 pub mod categories;
 pub mod experiments;
@@ -103,5 +104,12 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/admin/users/:user_id/sessions",
             delete(admin_users::end),
+        )
+        // API-ADM-8 and API-ADM-9 (T-906b). The handlers' extractors are the
+        // authorisation: `AdminSession` for the read, `SteppedUpAdmin` for the
+        // write (admin first, then step-up, S7 3.6).
+        .route(
+            "/api/v1/admin/experiments/classifier",
+            get(admin_classifier::get_classifier).patch(admin_classifier::patch_classifier),
         )
 }

@@ -20,6 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use api::classify::switches::{ClassifierSwitches, EnvSwitches};
 use api::error::ApiError;
 use api::routes::feed::{CardDto, FeedPage, FeedRequest, Phase};
 use api::sealed::{SealedTokens, TokenType};
@@ -208,7 +209,15 @@ async fn seed_mailbox(
 impl World {
     async fn new() -> Result<World, Box<dyn std::error::Error>> {
         let (ports, fakes) = fake_ports();
-        let app = app_state(Arc::new(ports), Arc::new(config()?));
+        let mut app = app_state(Arc::new(ports), Arc::new(config()?));
+        // The effective switch is the start-up environment AND the document
+        // (T-906b). This process has no `CLASSIFIER_*` variables, so the
+        // fixtures turn both start-up switches on and the seeded document
+        // decides what the Feed may call.
+        app.switches = Arc::new(ClassifierSwitches::new(EnvSwitches {
+            gemini: true,
+            jev: true,
+        }));
         let user = UserId::new(fakes.rng.uuid_v4());
         let wrapped = fakes.keys.new_user_key(&user).await?;
         fakes
