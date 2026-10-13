@@ -721,6 +721,7 @@ async fn asvs_v9_2_1_undo_token_from_earlier_session_gone() -> TestResult {
         history_entry: None,
         na_item: None,
         skip_key: None,
+        eval_id: None,
     };
     let token = w
         .sealer()
