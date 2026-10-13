@@ -1,7 +1,7 @@
 //! McNemar's exact test, the participant cluster bootstrap and the largest
 //! contributor share (STAT-3, STAT-4).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::rates::Rate;
 use super::rng::SplitMix64;
@@ -45,7 +45,7 @@ pub struct ParticipantPair {
 }
 
 /// How a paired accuracy difference interval was produced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BootstrapMethod {
     /// Resampled whole participants, with replacement.
