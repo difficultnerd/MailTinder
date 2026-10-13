@@ -732,6 +732,159 @@ async fn bake_6_undo_flips_same_record() -> TestResult {
 }
 
 #[tokio::test(start_paused = true)]
+async fn bake_6_undo_flips_reject_record() -> TestResult {
+    // A reject is the Junk label, so its undo must flip the same record too
+    // (BAKE-6), not just a keep's.
+    let w = World::new(true).await?;
+    let session = w.session(1);
+    let now = w.fakes.clock.now();
+    let id = w.seed("bulk", plain_facts(), 10);
+    let gemini = Some(prediction_ok(
+        &ClassifierId("gemini@test".to_owned()),
+        &answer(MessageClass::List),
+        12,
+        Some(30),
+    ));
+    let token = w
+        .seal(&session, id.as_str(), MessageClass::List, gemini, None, now)
+        .await?;
+    let result = swipe(
+        &w.app,
+        &session,
+        key(1),
+        w.request(id.as_str(), ActionDto::Reject, token),
+    )
+    .await?;
+
+    let before = w.record(key(1)).await?.ok_or("record")?;
+    assert_eq!(before.outcome.direction, PortsDirection::Left);
+    assert_eq!(before.outcome.undone, false);
+    // Left is the Junk label (S3, S4 5.6).
+    assert_eq!(
+        label_for(
+            domain::bakeoff::labels::SwipeDirection::Left,
+            before.outcome.undone
+        ),
+        Some(Label::Junk)
+    );
+
+    // The undo token names the record the reject wrote.
+    let payload = w.open_undo(&session, &result.undo_token).await?;
+    assert_eq!(payload.eval_id, Some(before.eval_id.0));
+
+    undo(&w.app, &session, &result.undo_token).await?;
+    let after = w.record(key(1)).await?.ok_or("record")?;
+    assert_eq!(after.outcome.undone, true);
+    assert_eq!(after.eval_id, before.eval_id);
+    assert_eq!(after.outcome.direction, before.outcome.direction);
+    // One record, flipped: the undo withdrew the Junk label on the same record.
+    assert_eq!(w.records().await?.len(), 1);
+    assert_eq!(
+        label_for(domain::bakeoff::labels::SwipeDirection::Left, true),
+        Some(Label::Wanted)
+    );
+    Ok(())
+}
+
+/// A store outage on the eval write is best effort: it must not fail the swipe,
+/// and it must leave a usable undo behind (backlog edge case).
+#[tokio::test(start_paused = true)]
+async fn exp_1_failed_eval_write_leaves_swipe_unaffected() -> TestResult {
+    let (w, id, token) = world_with_card(
+        Scripted::Answer(answer(MessageClass::Personal)),
+        Scripted::Answer(answer(MessageClass::List)),
+    )
+    .await?;
+    let session = w.session(1);
+    // The eval store refuses the write; the swipe must still land.
+    w.fakes.store.fail_next_classifier_eval_put();
+    let result = swipe(
+        &w.app,
+        &session,
+        key(1),
+        w.request(&id, ActionDto::Keep, token),
+    )
+    .await?;
+    assert_eq!(result.outcome, SwipeOutcome::Kept);
+    // Nothing was recorded, and the undo token names no record.
+    assert!(w.records().await?.is_empty());
+    assert!(w
+        .open_undo(&session, &result.undo_token)
+        .await?
+        .eval_id
+        .is_none());
+    // Undoing a swipe that wrote no record still reverses it.
+    assert!(undo(&w.app, &session, &result.undo_token).await?.restored);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn exp_1_failed_eval_write_leaves_reject_unaffected() -> TestResult {
+    let w = World::new(true).await?;
+    let session = w.session(1);
+    let now = w.fakes.clock.now();
+    let id = w.seed("bulk", plain_facts(), 10);
+    let gemini = Some(prediction_ok(
+        &ClassifierId("gemini@test".to_owned()),
+        &answer(MessageClass::List),
+        12,
+        Some(30),
+    ));
+    let token = w
+        .seal(&session, id.as_str(), MessageClass::List, gemini, None, now)
+        .await?;
+    w.fakes.store.fail_next_classifier_eval_put();
+    let result = swipe(
+        &w.app,
+        &session,
+        key(1),
+        w.request(id.as_str(), ActionDto::Reject, token),
+    )
+    .await?;
+    assert_eq!(result.outcome, SwipeOutcome::Trashed);
+    assert!(w.records().await?.is_empty());
+    assert!(w
+        .open_undo(&session, &result.undo_token)
+        .await?
+        .eval_id
+        .is_none());
+    assert!(undo(&w.app, &session, &result.undo_token).await?.restored);
+    Ok(())
+}
+
+/// A store outage on the undo flip is best effort: it must not fail the undo,
+/// and the record it could not flip is left exactly as it was.
+#[tokio::test(start_paused = true)]
+async fn bake_6_failed_undo_flip_leaves_undo_unaffected() -> TestResult {
+    let (w, id, token) = world_with_card(
+        Scripted::Answer(answer(MessageClass::Personal)),
+        Scripted::Answer(answer(MessageClass::List)),
+    )
+    .await?;
+    let session = w.session(1);
+    let result = swipe(
+        &w.app,
+        &session,
+        key(1),
+        w.request(&id, ActionDto::Keep, token),
+    )
+    .await?;
+    let before = w.record(key(1)).await?.ok_or("record")?;
+    assert_eq!(before.outcome.undone, false);
+
+    // The store refuses the flip write; the undo must still reverse the swipe.
+    w.fakes.store.fail_next_classifier_eval_put();
+    assert!(undo(&w.app, &session, &result.undo_token).await?.restored);
+
+    // The flip failed, so the record is unchanged; it still exists, once.
+    let after = w.record(key(1)).await?.ok_or("record")?;
+    assert_eq!(after.outcome.undone, false);
+    assert_eq!(after.eval_id, before.eval_id);
+    assert_eq!(w.records().await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
 async fn bake_6_down_writes_no_record() -> TestResult {
     let (w, id, token) = world_with_card(
         Scripted::Answer(answer(MessageClass::List)),
