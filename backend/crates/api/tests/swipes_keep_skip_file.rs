@@ -712,6 +712,7 @@ async fn asvs_v9_2_2_undo_token_as_classification_refused() -> TestResult {
         history_entry: None,
         na_item: None,
         skip_key: None,
+        eval_id: None,
     };
     let undo_token = w
         .sealer()
