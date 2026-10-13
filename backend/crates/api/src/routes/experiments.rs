@@ -70,7 +70,7 @@ pub async fn get_experiments(
     s: AuthedSession,
 ) -> Result<Json<ExperimentsDto>, ApiError> {
     let user = load_user(&app, &s.user).await?;
-    let switches = switches(&app).await?;
+    let switches = switches(&app).await;
     Ok(Json(dto(&user, switches)))
 }
 
@@ -96,7 +96,7 @@ pub async fn put_experiments(
             request_id,
         )
         .await?;
-    let switches = switches(&app).await?;
+    let switches = switches(&app).await;
 
     if body.classifier_bakeoff.opted_in {
         // 2. Opt in: the exact current version, and a model switched on.
@@ -162,15 +162,11 @@ async fn load_user(app: &AppState, user: &UserId) -> Result<UserRecord, ApiError
         .ok_or(ApiError::Unauthenticated)
 }
 
-/// The effective switch state `(gemini, jev)`. Until T-906b's reader is wired
-/// here, read `config/classifiers` directly; a missing document means both off
-/// (fail closed).
-async fn switches(app: &AppState) -> Result<(bool, bool), ApiError> {
-    match app.ports.store.config().get_classifiers().await {
-        Ok(Some(v)) => Ok((v.record.gemini_enabled, v.record.jev_enabled)),
-        Ok(None) => Ok((false, false)),
-        Err(_) => Err(ApiError::Internal),
-    }
+/// The effective switch state `(gemini, jev)`: the start-up environment AND
+/// `config/classifiers`, through T-906b's cached reader (missing document or an
+/// unreadable store fails closed).
+async fn switches(app: &AppState) -> (bool, bool) {
+    app.switches.current(&app.ports).await
 }
 
 /// Apply a change to the user record with a compare-and-set, retrying once on
