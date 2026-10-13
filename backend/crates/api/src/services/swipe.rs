@@ -17,11 +17,12 @@ use domain::{
     derive_swipe_ids, header_guard, plan_swipe, CategoryId, HeaderRules, MailboxId, MessageId,
     MessageMeta, SenderStats, SwipeAction, SwipeInput, SwipePlan, Tunables, UserId,
 };
-use ports::{MailError, MailboxCtx, WrappedKey};
+use ports::{EvalId, MailError, MailboxCtx, WrappedKey};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::classify::eval::{direction_for, write_eval, EvalInput};
 use crate::error::ApiError;
 use crate::routes::feed::{CategoryRefDto, ClassificationPayload};
 use crate::routes::swipes::{ActionDto, SwipeRequest, SwipeResultDto};
@@ -47,6 +48,12 @@ pub struct UndoPayload {
     pub history_entry: Option<Uuid>,
     pub na_item: Option<Uuid>,
     pub skip_key: Option<String>,
+    /// The `classifier_eval` record this swipe wrote (T-906a), so the undo can
+    /// flip its `outcome.undone`. `None` for a skip, a card served without the
+    /// bake-off part, or a token that did not open. Defaults to `None` so a
+    /// token sealed before the field existed still opens.
+    #[serde(default)]
+    pub eval_id: Option<Uuid>,
 }
 
 /// The idempotency record for one swipe: the response, and the payload to
@@ -115,7 +122,8 @@ pub async fn swipe(
     // Steps 3 and 4: ownership, then the classification token.
     let mailbox = owned_mailbox(app, &user, req.mailbox_id).await?;
     let ctx = app.tokens.mailbox_ctx(app, &user, &mailbox).await?;
-    check_classification_token(&sealer, session, &user, &wrapped, &req).await?;
+    let classification =
+        check_classification_token(&sealer, session, &user, &wrapped, &req).await?;
 
     // Step 5: re-read; the token's class is never used for the action.
     let meta = fresh_message(app, &mailbox, &ctx, &req.message_id).await?;
@@ -160,9 +168,22 @@ pub async fn swipe(
     });
 
     // Step 7: `reject` is carried out by T-605 and returns before the
-    // keep, skip and file path below.
+    // keep, skip and file path below. It writes its own eval record, once the
+    // trash has landed, and puts the ID in its undo payload.
     if action == SwipeAction::Reject {
-        return crate::services::reject::execute(app, session, &ctx, &meta, &plan, sid).await;
+        return crate::services::reject::execute(
+            app,
+            session,
+            &ctx,
+            &meta,
+            &plan,
+            sid,
+            classification.as_ref().map(|payload| EvalInput {
+                payload,
+                idempotency_key,
+            }),
+        )
+        .await;
     }
 
     // Steps 8 and 9: `keep` and `skip` make no provider call; `file` labels.
@@ -175,8 +196,25 @@ pub async fn swipe(
         apply_file(app, &user, &ctx, &meta, cat).await?;
     }
 
+    // Step 9b (T-906a): the eval record for the labelled swipe, once the
+    // provider change has landed. Best effort: it never fails the swipe, and it
+    // writes nothing for a skip, a card served without the bake-off part, or a
+    // user who opted out since the card was served.
+    let eval_id = match classification.as_ref() {
+        Some(payload) => write_eval(
+            app,
+            session,
+            payload,
+            direction_for(action),
+            &idempotency_key,
+        )
+        .await
+        .unwrap_or_default(),
+        None => None,
+    };
+
     // Steps 10 and 11: one state write, then the sealed undo token.
-    let undo = undo_payload(&plan, &meta, action, now, sid);
+    let undo = undo_payload(&plan, &meta, action, now, sid, eval_id);
     let mut result = build_result(&plan, category.as_ref(), &seal, &undo).await?;
     result.achievements_unlocked = category_unlocks
         .into_iter()
@@ -306,13 +344,16 @@ async fn owned_mailbox(
 /// AES-GCM cannot tell these apart — is not an error: the swipe proceeds and
 /// no `classifier_eval` record is written (S7 5.5). No model is called here
 /// (BAKE-5).
+///
+/// `Some` is the payload T-906a builds the eval record from, so the token is
+/// opened once.
 async fn check_classification_token(
     sealer: &SealedTokens,
     session: &AuthedSession,
     user: &UserId,
     wrapped: &WrappedKey,
     req: &SwipeRequest,
-) -> Result<(), ApiError> {
+) -> Result<Option<ClassificationPayload>, ApiError> {
     let opened = sealer
         .open::<ClassificationPayload>(
             TokenType::Classification,
@@ -329,7 +370,7 @@ async fn check_classification_token(
                     fields: vec!["classification_token".to_owned()],
                 })
             } else {
-                Ok(())
+                Ok(Some(payload))
             }
         }
         // A well-formed token of another type is a client error (S7 5.5).
@@ -343,7 +384,7 @@ async fn check_classification_token(
         // An earlier session, expiry or tampering: not an error. Proceed, and
         // write no eval record (S7 5.5; the header rules below decide the
         // action, so an unopenable token cannot drive it).
-        Err(_) => Ok(()),
+        Err(_) => Ok(None),
     }
 }
 
@@ -441,6 +482,7 @@ fn undo_payload(
     action: SwipeAction,
     now: OffsetDateTime,
     sid: Uuid,
+    eval_id: Option<EvalId>,
 ) -> UndoPayload {
     UndoPayload {
         record: SwipeRecord::from_plan(plan, meta, action, now),
@@ -448,6 +490,7 @@ fn undo_payload(
         history_entry: matches!(action, SwipeAction::File { .. }).then_some(sid),
         na_item: None,
         skip_key: matches!(action, SwipeAction::Skip).then(|| skip_key(&meta.mailbox, &meta.id)),
+        eval_id: eval_id.map(|id| id.0),
     }
 }
 
