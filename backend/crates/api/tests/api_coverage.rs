@@ -109,7 +109,11 @@ fn error_status_code_title_for_every_variant() {
             "Experiment unavailable",
         ),
         (
-            ApiError::VersionsMixed,
+            ApiError::VersionsMixed {
+                input: vec!["1".to_owned()],
+                question: vec!["1".to_owned()],
+                price: vec!["1".to_owned()],
+            },
             StatusCode::CONFLICT,
             "versions_mixed",
             "Versions mixed",
