@@ -31,7 +31,7 @@ use super::{BOOTSTRAP_RESAMPLES, BOOTSTRAP_SEED, MIN_CELL_SIZE};
 time::serde::format_description!(iso_date, Date, "[year]-[month]-[day]");
 
 /// The three methods every report covers (CR-01a G1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     /// The free in-process baseline.
@@ -190,7 +190,7 @@ pub enum ReportError {
 }
 
 /// The versions the selected records carry (S7 5.13).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct VersionsPresent {
     /// Distinct input versions.
     pub input: Vec<String>,
@@ -201,7 +201,7 @@ pub struct VersionsPresent {
 }
 
 /// Who contributed the labels (CR-01a G3).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Participants {
     /// Distinct participants among the labelled rows.
     pub count: Option<u64>,
@@ -211,7 +211,7 @@ pub struct Participants {
 
 /// One calibration bin (`confidence_from`, `confidence_to`, `count`,
 /// `observed_accuracy`).
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct CalibrationBin {
     /// Inclusive lower confidence bound.
     pub confidence_from: f64,
@@ -224,7 +224,7 @@ pub struct CalibrationBin {
 }
 
 /// The calibration curve and its expected calibration error.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Calibration {
     /// Expected calibration error.
     pub ece: Option<f64>,
@@ -233,7 +233,7 @@ pub struct Calibration {
 }
 
 /// One fixed latency bin; timed-out calls are in no bin.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LatencyBin {
     /// Inclusive lower bound in milliseconds.
     pub from_ms: u32,
@@ -244,7 +244,7 @@ pub struct LatencyBin {
 }
 
 /// Latency percentiles and the fixed histogram.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Latency {
     /// Nearest-rank median.
     pub p50_ms: Option<u32>,
@@ -256,7 +256,7 @@ pub struct Latency {
 
 /// One method's figures (S7 5.13 `models`).
 // nosemgrep: privacy-rust-derive-debug-on-sensitive-struct -- input_tokens is an aggregate token count, not message text
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct MethodReport {
     /// Which method.
     pub model: Method,
@@ -291,7 +291,7 @@ pub struct MethodReport {
 }
 
 /// The paired accuracy difference `a - b` and its bootstrap interval.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct AccuracyDifference {
     /// Observed `(A - B)`.
     pub value: Option<f64>,
@@ -302,7 +302,7 @@ pub struct AccuracyDifference {
 }
 
 /// How the paired interval was produced.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Bootstrap {
     /// Resampling method.
     pub method: BootstrapMethod,
@@ -315,7 +315,7 @@ pub struct Bootstrap {
 }
 
 /// One pair of methods on the cards both answered (CR-01a G3).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct PairedReport {
     /// First method.
     pub model_a: Method,
@@ -340,7 +340,7 @@ pub struct PairedReport {
 }
 
 /// How often two methods agree (five-class, CR-01a G1).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct AgreementReport {
     /// First method.
     pub model_a: Method,
@@ -351,7 +351,7 @@ pub struct AgreementReport {
 }
 
 /// One segment cell for one method (CR-01a G4).
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct SegmentReport {
     /// The dimension, e.g. `age_bucket`.
     pub dimension: String,
@@ -366,20 +366,20 @@ pub struct SegmentReport {
 }
 
 /// One non-empty cell of a method's five-class by two-label confusion table.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ConfusionCell {
     /// Which method.
     pub model: Method,
     /// The predicted class.
     pub class: MessageClass,
     /// The label, `junk` or `wanted`.
-    pub label: &'static str,
+    pub label: String,
     /// Cards in the cell.
     pub count: Option<u64>,
 }
 
 /// One method's accuracy on one UTC day.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct TrendPoint {
     /// The UTC day.
     #[serde(with = "iso_date")]
@@ -391,7 +391,7 @@ pub struct TrendPoint {
 }
 
 /// The API-ADM-10 body (S7 5.13). Every count below `min_cell_size` is `None`.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct BakeoffReport {
     /// The query, echoed (including `pool_versions`).
     pub query: ReportQuery,
@@ -400,9 +400,9 @@ pub struct BakeoffReport {
     /// The smallest publishable cell.
     pub min_cell_size: u64,
     /// The label mapping version.
-    pub ground_truth_version: &'static str,
+    pub ground_truth_version: String,
     /// `wilson_95`.
-    pub interval_method: &'static str,
+    pub interval_method: String,
     /// Labelled rows in scope.
     pub labelled_swipes: Option<u64>,
     /// Participant count and largest share.
@@ -893,7 +893,7 @@ fn assemble(
                     confusion.push(ConfusionCell {
                         model: method,
                         class,
-                        label: label_str(label),
+                        label: label_str(label).to_owned(),
                         count: Some(count),
                     });
                 }
@@ -936,8 +936,8 @@ fn assemble(
         query: query.clone(),
         versions_present,
         min_cell_size: MIN_CELL_SIZE,
-        ground_truth_version: GROUND_TRUTH_VERSION,
-        interval_method: INTERVAL_METHOD,
+        ground_truth_version: GROUND_TRUTH_VERSION.to_owned(),
+        interval_method: INTERVAL_METHOD.to_owned(),
         labelled_swipes: Some(labelled_swipes),
         participants,
         models: model_reports,
@@ -1569,7 +1569,7 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
     }
 
     // A class row (two labels) and a label column (five classes) are groups.
-    let mut cells: Vec<(Method, MessageClass, &'static str, usize)> = Vec::new();
+    let mut cells: Vec<(Method, MessageClass, String, usize)> = Vec::new();
     for &method in &METHODS {
         for cell in report
             .confusion
@@ -1580,20 +1580,20 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
             // One cell per non-empty combination: the report's shape alone tells
             // a reader a suppressed cell holds at least one answer (STAT-5).
             walk.positive(index);
-            cells.push((method, cell.class, cell.label, index));
+            cells.push((method, cell.class, cell.label.clone(), index));
         }
     }
     for &method in &METHODS {
         let mut rows: Vec<(MessageClass, Vec<usize>)> = Vec::new();
-        let mut columns: Vec<(&'static str, Vec<usize>)> = Vec::new();
+        let mut columns: Vec<(String, Vec<usize>)> = Vec::new();
         let mut table = Vec::new();
-        for &(cell_method, class, label, index) in &cells {
-            if cell_method != method {
+        for (cell_method, class, label, index) in &cells {
+            if *cell_method != method {
                 continue;
             }
-            push_member(&mut rows, class, index);
-            push_member(&mut columns, label, index);
-            table.push(index);
+            push_member(&mut rows, *class, *index);
+            push_member(&mut columns, label.clone(), *index);
+            table.push(*index);
         }
         // A predicted class's own total is published by nothing, so its row
         // constrains no reader.
@@ -1630,20 +1630,20 @@ fn walk_report<W: Walk>(report: &mut BakeoffReport, walk: &mut W) {
         let mut off = Vec::new();
         let mut junk_diagonal = Vec::new();
         let mut junk_off = Vec::new();
-        for &(cell_method, class, label, index) in &cells {
-            if cell_method != method {
+        for (cell_method, class, label, index) in &cells {
+            if *cell_method != method {
                 continue;
             }
-            let correct = label == label_str(predicted_label(class));
+            let correct = label == label_str(predicted_label(*class));
             if correct {
-                diagonal.push(index);
+                diagonal.push(*index);
                 if label == "junk" {
-                    junk_diagonal.push(index);
+                    junk_diagonal.push(*index);
                 }
             } else {
-                off.push(index);
+                off.push(*index);
                 if label == "junk" {
-                    junk_off.push(index);
+                    junk_off.push(*index);
                 }
             }
         }

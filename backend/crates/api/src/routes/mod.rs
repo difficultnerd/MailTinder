@@ -1,6 +1,7 @@
 //! Route handlers, one module per feature area.
 
 pub mod account;
+pub mod admin_bakeoff;
 pub mod admin_classifier;
 pub mod admin_users;
 pub mod categories;
@@ -111,5 +112,18 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/v1/admin/experiments/classifier",
             get(admin_classifier::get_classifier).patch(admin_classifier::patch_classifier),
+        )
+        // API-ADM-10 to API-ADM-14 (T-908b). Every route's authorisation is its
+        // extractors: `AdminSession` for the reads (ADM-10, ADM-12, ADM-13),
+        // `SteppedUpAdmin` for the save and the delete (admin first, then
+        // step-up, S7 3.6).
+        .route("/api/v1/admin/bakeoff", get(admin_bakeoff::get_report))
+        .route(
+            "/api/v1/admin/bakeoff/snapshots",
+            get(admin_bakeoff::list_snapshots).post(admin_bakeoff::save_snapshot),
+        )
+        .route(
+            "/api/v1/admin/bakeoff/snapshots/:snapshot_id",
+            get(admin_bakeoff::get_snapshot).delete(admin_bakeoff::delete_snapshot),
         )
 }
