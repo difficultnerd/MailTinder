@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use api::classify::switches::{ClassifierSwitches, EnvSwitches};
 use api::experiments::{
     bakeoff_gate, consent_is_current, BakeoffGate, CURRENT_CONSENT_VERSION, OPT_CHANGES_PER_DAY,
 };
@@ -57,7 +58,15 @@ fn config() -> Result<ApiConfig, Box<dyn std::error::Error>> {
 
 fn fixture() -> Result<(AppState, Fakes), Box<dyn std::error::Error>> {
     let (ports, fakes) = fake_ports();
-    Ok((app_state(Arc::new(ports), Arc::new(config()?)), fakes))
+    let mut app = app_state(Arc::new(ports), Arc::new(config()?));
+    // The effective switch is the start-up environment AND the document
+    // (T-906b). This process has no `CLASSIFIER_*` variables, so the fixture
+    // turns both start-up switches on and each test's document decides.
+    app.switches = Arc::new(ClassifierSwitches::new(EnvSwitches {
+        gemini: true,
+        jev: true,
+    }));
+    Ok((app, fakes))
 }
 
 /// A time inside a test year.
@@ -585,8 +594,11 @@ async fn api_exp_1_available_false_when_both_off() -> TestResult {
     let body = bakeoff_of(router.clone().oneshot(get_req(&a.cookie)?).await?).await?;
     assert_eq!(body["available"], false);
 
-    // One model on is enough to make the experiment available.
+    // One model on is enough to make the experiment available. The document is
+    // re-read at most once a minute (T-906b), so step past the refresh window
+    // before asking again.
     seed_switches(&state, false, true).await?;
+    fakes.clock.advance(api::classify::switches::SWITCH_REFRESH);
     let body = bakeoff_of(router.clone().oneshot(get_req(&a.cookie)?).await?).await?;
     assert_eq!(body["available"], true);
     Ok(())
