@@ -897,6 +897,220 @@ fn stat_5_segment_denominator_is_not_the_difference_of_the_totals() -> TestResul
     Ok(())
 }
 
+#[test]
+fn stat_5_numerator_is_withheld_when_two_positive_cells_hide_it() -> TestResult {
+    // Twenty-two labelled junk cards, every one answered by Jev: `notice` on ten
+    // and `personal` on ten, so both off-diagonal cells clear the minimum, and
+    // `list` and `bulk_no_header` on one card each. The two diagonal cells are
+    // suppressed, but the report lists them, so a reader knows each holds at
+    // least one answer: with the accuracy numerator 2 the pair is one and one,
+    // and both small counts come back. Every rate's numerator is one more
+    // published sum over the table, so a numerator that fixes a small count
+    // withdraws the rate that publishes it, and the accuracy goes (STAT-5).
+    let mut rows = Vec::new();
+    let mut participant = 1;
+    for (class, count) in [
+        (MessageClass::Notice, 10_u32),
+        (MessageClass::Personal, 10),
+        (MessageClass::List, 1),
+        (MessageClass::BulkNoHeader, 1),
+    ] {
+        for _ in 0..count {
+            rows.push(row(
+                participant,
+                2,
+                MessageClass::List,
+                None,
+                Some(jev(class, 150, 500)),
+                SwipeDirection::Left,
+                false,
+            ));
+            participant += 1;
+        }
+    }
+    let report = report_of(&rows)?;
+    let jev = model(&report, Method::Jev);
+    let hidden: Vec<(MessageClass, &str, Option<u64>)> = report
+        .confusion
+        .iter()
+        .filter(|cell| cell.model == Method::Jev)
+        .map(|cell| (cell.class, cell.label, cell.count))
+        .collect();
+    assert_eq!(hidden.len(), 4, "one entry per non-empty combination");
+    for (class, label, count) in &hidden {
+        let expected = match (class, *label) {
+            (MessageClass::List | MessageClass::BulkNoHeader, "junk") => None,
+            _ => Some(10),
+        };
+        assert_eq!(*count, expected, "the {} {} cell", class.as_str(), label);
+    }
+    // Every split of the two hidden cells a reader can hold: each holds at least
+    // one answer, and a shown accuracy would fix their sum as well.
+    let numerator = jev
+        .accuracy
+        .value
+        .map(|value| (value * jev.accuracy.n.unwrap_or(0) as f64).round() as u64);
+    let mut splits = BTreeSet::new();
+    for list in 1..=20_u64 {
+        for bulk in 1..=20_u64 {
+            if numerator.is_some_and(|count| count != list + bulk) {
+                continue;
+            }
+            splits.insert((list, bulk));
+        }
+    }
+    assert!(
+        splits.len() >= 2,
+        "the two hidden cells must stay ambiguous: {splits:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn stat_5_small_paired_counts_are_withheld_with_the_marginals() -> TestResult {
+    // Forty-two paired cards, all labelled junk, every model answering `list`
+    // except where a case says otherwise. Every paired count is masked, but the
+    // two published marginals beside the paired total are one more system over
+    // the four counts, so a model that is right on every card — or on none —
+    // fixes the other model's small counts. The marginal that would hand one
+    // back goes with the numerator it publishes (STAT-5).
+    let paired_rows = |classes: Vec<(MessageClass, MessageClass)>| -> Vec<EvalRow> {
+        classes
+            .into_iter()
+            .enumerate()
+            .map(|(index, (gemini_class, jev_class))| {
+                row(
+                    index as u32,
+                    3,
+                    MessageClass::List,
+                    Some(gemini(gemini_class, 400, 500)),
+                    Some(jev(jev_class, 150, 500)),
+                    SwipeDirection::Left,
+                    false,
+                )
+            })
+            .collect()
+    };
+    let base = (MessageClass::List, MessageClass::List);
+
+    // A perfect Gemini and a Jev right on forty: the two wrong answers are two
+    // suppressed off-diagonal cells, and the marginals fix the four-way split.
+    let mut classes = vec![base; 42];
+    classes[40] = (MessageClass::List, MessageClass::Notice);
+    classes[41] = (MessageClass::List, MessageClass::Personal);
+    let report = report_of(&paired_rows(classes))?;
+    assert_discordant_ambiguous(&report, 0, 2)?;
+
+    // The same pair with six wrong answers in two off-diagonal cells that the
+    // confusion table leaves ambiguous on its own: only the marginals fix the
+    // discordant count.
+    let mut classes = vec![base; 42];
+    classes[0] = (MessageClass::List, MessageClass::Notice);
+    for class in classes.iter_mut().take(6).skip(1) {
+        *class = (MessageClass::List, MessageClass::Personal);
+    }
+    let report = report_of(&paired_rows(classes))?;
+    assert_discordant_ambiguous(&report, 0, 6)?;
+
+    // A Gemini right on nothing and a Jev right on two: the zero marginal fixes
+    // the split just as the perfect one does.
+    let mut classes = vec![(MessageClass::Notice, MessageClass::Personal); 42];
+    classes[0] = (MessageClass::Notice, MessageClass::List);
+    classes[1] = (MessageClass::Notice, MessageClass::List);
+    let report = report_of(&paired_rows(classes))?;
+    assert_discordant_ambiguous(&report, 1, 2)?;
+    Ok(())
+}
+
+/// Every split of one pair's four counts a reader can hold: the paired total,
+/// each model's published marginal and whatever paired counts are still shown.
+/// The entries are `only_a`, `only_b`, `both` and `neither` (STAT-5).
+fn paired_solutions(
+    report: &BakeoffReport,
+    method_a: Method,
+    method_b: Method,
+) -> BTreeSet<[u64; 4]> {
+    let pair = report
+        .paired
+        .iter()
+        .find(|pair| pair.model_a == method_a && pair.model_b == method_b)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} and {} are compared",
+                method_a.as_str(),
+                method_b.as_str()
+            )
+        });
+    let Some(total) = pair.n_paired else {
+        return BTreeSet::new();
+    };
+    let marginal = |method: Method| -> Option<u64> {
+        let model = model(report, method);
+        let n = model.accuracy.n?;
+        let value = model.accuracy.value?;
+        if n != total {
+            return None;
+        }
+        Some((value * n as f64).round() as u64)
+    };
+    let first = marginal(method_a);
+    let second = marginal(method_b);
+    let mut solutions = BTreeSet::new();
+    for only_a in 0..=total {
+        for only_b in 0..=total {
+            for both in 0..=total {
+                let Some(neither) = total.checked_sub(only_a + only_b + both) else {
+                    continue;
+                };
+                if pair.only_a_correct.is_some_and(|count| count != only_a)
+                    || pair.only_b_correct.is_some_and(|count| count != only_b)
+                    || pair.both_correct.is_some_and(|count| count != both)
+                    || pair.neither_correct.is_some_and(|count| count != neither)
+                {
+                    continue;
+                }
+                if first.is_some_and(|count| count != only_a + both)
+                    || second.is_some_and(|count| count != only_b + both)
+                {
+                    continue;
+                }
+                solutions.insert([only_a, only_b, both, neither]);
+            }
+        }
+    }
+    solutions
+}
+
+/// One pair's four counts stay one complementary group, and the count at
+/// `index` — which the report's own split puts at `truth` — is not the same in
+/// every assignment a reader can hold (STAT-5).
+fn assert_discordant_ambiguous(report: &BakeoffReport, index: usize, truth: u64) -> TestResult {
+    let pair = report
+        .paired
+        .iter()
+        .find(|pair| pair.model_a == Method::Gemini && pair.model_b == Method::Jev)
+        .unwrap_or_else(|| panic!("gemini and jev are compared"));
+    for count in [
+        pair.only_a_correct,
+        pair.only_b_correct,
+        pair.both_correct,
+        pair.neither_correct,
+    ] {
+        assert_eq!(count, None, "the four counts are one complementary group");
+    }
+    let solutions = paired_solutions(report, Method::Gemini, Method::Jev);
+    let values: BTreeSet<u64> = solutions.iter().map(|solution| solution[index]).collect();
+    assert!(
+        values.contains(&truth),
+        "the assignments must still hold the split the report counted: {values:?}"
+    );
+    assert!(
+        values.len() >= 2,
+        "a small discordant count is recoverable: {values:?}"
+    );
+    Ok(())
+}
+
 /// A group's suppressed cells must number zero or at least two (S7 5.13).
 fn assert_group(values: &[Option<u64>]) {
     let hidden = values.iter().filter(|value| value.is_none()).count();
