@@ -47,6 +47,15 @@ STAGING="${TICK_STAGING:-https://staging.mailtinder.dev}"
 BALANCE_FLOOR="${TICK_BALANCE_FLOOR:-1.00}"
 DISK_PATH="${TICK_DISK_PATH:-/}"
 HTTP_TIMEOUT="${TICK_HTTP_TIMEOUT:-10}"
+# Every external component gets a deadline, not just the staging probes: one
+# component that never returns (a balance call, a `gh` waiting on the network,
+# a helper hanging in an import) must not stop the sections after it or the
+# failure report itself.
+TIMEOUT_CMD="${TICK_TIMEOUT_CMD:-timeout}" # coreutils timeout, the deadline runner
+CMD_TIMEOUT="${TICK_CMD_TIMEOUT:-20}"      # seconds any one component may take
+# `gh pr list` asks for this many open PRs; reaching it is reported as
+# incomplete coverage rather than mistaken for a clean PRS section.
+PR_LIMIT="${TICK_PR_LIMIT:-200}"
 CLOUDFLARED_PATTERN="${TICK_CLOUDFLARED_PATTERN:-cloudflared}"
 BUILDER_PATTERN="${TICK_BUILDER_PATTERN:-run-task.sh}"
 REVIEW_PATTERN="${TICK_REVIEW_PATTERN:-review-task.sh}"
@@ -86,6 +95,93 @@ detail() { printf '   %-24s %s\n' "$1" "$2"; }
 first_line() { printf '%s' "${1%%$'\n'*}"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# run_deadline SECS CMD... - run CMD with a hard deadline; 124 when it fires
+# (the GNU coreutils `timeout` convention). Every external command below goes
+# through here, so a stalled component is reported and the other sections still
+# run. GNU timeout signals the command's whole process group, so a helper's own
+# children (blockers.py's `git`/`gh`, the picker's imports) are inside the
+# deadline too. When `timeout` is absent the command still runs, and the report
+# says so once, loudly, before the first section.
+run_deadline() {
+  local secs="$1"
+  shift
+  if have "$TIMEOUT_CMD"; then
+    "$TIMEOUT_CMD" "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
+# pending_has_pr PENDING_TEXT NUMBER - true only for that exact numeric PR
+# reference: "#9" must not be satisfied by "#90" or "#9a". A decimal-prefix
+# collision would hide an owner-only PR the owner was never told about.
+# TEXT ends in a newline, so the trailing boundary always has a character.
+pending_has_pr() {
+  [[ $1 =~ (^|[^0-9])#${2}([^0-9]|$) ]]
+}
+
+# exe_name TOKEN - the name of an executable token: its basename, so a process
+# invoked as /opt/timeout/bin/cloudflared is named `cloudflared`.
+exe_name() { printf '%s' "${1##*/}"; }
+
+# is_probe PATTERN LINE - true when a `pgrep -af PATTERN` line is this probe's
+# own instrumentation rather than the process asked for. Judged by process
+# identity, never by words that merely appear in a path or an argument: a
+# tunnel at /opt/timeout/bin/cloudflared, or one carrying `--log /tmp/pgrep.log`
+# in its argv, is still a tunnel and must still be counted.
+is_probe() {
+  local pattern="$1" line="$2" cmd exe child
+  cmd="${line#* }" # drop the PID column
+  [ "$cmd" = "$line" ] && cmd="$line"
+  exe="$(exe_name "${cmd%%[[:space:]]*}")"
+  case $exe in
+    pgrep | pgrep.exe | pkill | pkill.exe) return 0 ;;
+    timeout | gtimeout | timeout.exe)
+      # `timeout DURATION CMD ARGS...`: the wrapper itself is not the process
+      # being counted. Unwrap it and judge CMD, so a tunnel running under
+      # `timeout` is still counted while the wrapper of a separately listed
+      # child is not.
+      child="${cmd#*[[:space:]]}"   # drop `timeout`
+      child="${child#*[[:space:]]}" # drop DURATION
+      child="$(exe_name "${child%%[[:space:]]*}")"
+      case $child in
+        pgrep | pgrep.exe | pkill | pkill.exe) return 0 ;;
+      esac
+      # The wrapper of a process we are counting is not that process ... unless
+      # the wrapped command *is* the process the pattern names (a tunnel under
+      # `timeout`), which must still be counted.
+      [ "$child" = "$pattern" ] && return 1
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# count_processes PATTERN WORD - how many `pgrep -af PATTERN` matches are not
+# this probe's own process (see is_probe) and (when WORD is given) contain WORD.
+# Echoes the count; returns 2 when pgrep itself failed or timed out.
+count_processes() {
+  local pattern="$1" word="$2" out status line n=0
+  out=$(run_deadline "$CMD_TIMEOUT" "$PGREP" -af "$pattern" 2>/dev/null)
+  status=$?
+  if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+    return 2
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    is_probe "$pattern" "$line" && continue
+    if [ -n "$word" ]; then
+      case $line in
+        *"$word"*) ;;
+        *) continue ;;
+      esac
+    fi
+    n=$((n + 1))
+  done <<<"$out"
+  printf '%s' "$n"
+  return 0
+}
+
 # box_run CMD... - run CMD with the box checkout as the working directory, so
 # `gh` and pr_state.py resolve the same repository blockers.py reads (its
 # subprocesses run with cwd=REPO). When the checkout is not there the command
@@ -99,33 +195,6 @@ box_run() {
   else
     "$@"
   fi
-}
-
-# count_processes PATTERN WORD - how many `pgrep -af PATTERN` matches are not
-# the pgrep/timeout lines themselves and (when WORD is given) contain WORD.
-# Echoes the count; returns 2 when pgrep itself failed (any status but 0/1).
-count_processes() {
-  local pattern="$1" word="$2" out status line n=0
-  out=$("$PGREP" -af "$pattern" 2>/dev/null)
-  status=$?
-  if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
-    return 2
-  fi
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    case $line in
-      *pgrep* | *timeout*) continue ;;
-    esac
-    if [ -n "$word" ]; then
-      case $line in
-        *"$word"*) ;;
-        *) continue ;;
-      esac
-    fi
-    n=$((n + 1))
-  done <<<"$out"
-  printf '%s' "$n"
-  return 0
 }
 
 # rework_slot COUNT - the report line for the lane's single rework slot.
@@ -157,7 +226,7 @@ to_cents() {
 
 probe_staging() { # LABEL URL - a 200 detail line, or a loud FAILED
   local label="$1" url="$2" code status
-  code=$("$CURL" -s -o /dev/null -w '%{http_code}' --max-time "$HTTP_TIMEOUT" "$url" 2>/dev/null)
+  code=$(run_deadline "$CMD_TIMEOUT" "$CURL" -s -o /dev/null -w '%{http_code}' --max-time "$HTTP_TIMEOUT" "$url" 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "staging $label"
@@ -170,10 +239,14 @@ probe_staging() { # LABEL URL - a 200 detail line, or a loud FAILED
 }
 
 # --- 1. CLOCK ---------------------------------------------------------------
+# A missing deadline runner is a lost capability for every section, not one
+# section's component, so it is reported once, before the report proper.
+have "$TIMEOUT_CMD" || problem "!! MISSING $TIMEOUT_CMD (component deadlines disabled)"
+
 section CLOCK
 
 if have "$DATE"; then
-  out=$("$DATE" -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$DATE" -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null)
   status=$?
   if [ "$status" -eq 0 ]; then detail date "$(first_line "$out")"; else failed "$DATE"; fi
 else
@@ -181,7 +254,7 @@ else
 fi
 
 if have "$CLAUDE"; then
-  out=$("$CLAUDE" --version 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$CLAUDE" --version 2>/dev/null)
   status=$?
   if [ "$status" -eq 0 ]; then detail claude "$(first_line "$out")"; else failed "$CLAUDE"; fi
 else
@@ -189,7 +262,7 @@ else
 fi
 
 if have "$BALANCE"; then
-  out=$("$BALANCE" 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$BALANCE" 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "$BALANCE"
@@ -209,7 +282,7 @@ else
 fi
 
 if have "$DF"; then
-  out=$("$DF" -P "$DISK_PATH" 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$DF" -P "$DISK_PATH" 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "$DF"
@@ -240,7 +313,7 @@ else
 fi
 
 if have "$HERMES"; then
-  out=$("$HERMES" cron list 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$HERMES" cron list 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "$HERMES"
@@ -276,7 +349,7 @@ if [ ! -r "$PR_STATE" ]; then
 elif ! have "$PYTHON"; then
   missing "$PYTHON"
 else
-  out=$(box_run "$PYTHON" "$PR_STATE" 2>/dev/null)
+  out=$(box_run run_deadline "$CMD_TIMEOUT" "$PYTHON" "$PR_STATE" 2>/dev/null)
   status=$?
   while IFS= read -r line; do
     [ -n "$line" ] && printf '%s\n' "$line"
@@ -289,17 +362,35 @@ fi
 if [ ! -r "$PENDING" ]; then missing PENDING.md; fi
 if ! have "$GH"; then missing "$GH"; fi
 if [ -r "$PENDING" ] && have "$GH"; then
-  pending=$(<"$PENDING")
-  out=$(box_run "$GH" pr list --state open --json number,files --jq '.[] | "\(.number) \(.files[].path)"' 2>/dev/null)
+  # The trailing newline gives the last line's PR number a boundary too.
+  pending="$(<"$PENDING")"$'\n'
+  # --limit is explicit: the CLI's own window is 30 PRs, and an owner-only PR
+  # past that window would be invisible to this check (an owner who was never
+  # told they were being waited on).
+  out=$(box_run run_deadline "$CMD_TIMEOUT" "$GH" pr list --state open --limit "$PR_LIMIT" \
+    --json number,files --jq '.[] | "\(.number) \(.files[].path)"' 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "$GH"
   else
     seen=""
+    listed=""
+    listed_count=0
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       number="${line%% *}"
       path="${line#* }"
+      case $number in
+        '' | *[!0-9]*) continue ;;
+      esac
+      # How many open PRs the enumeration actually reached, for the cap check.
+      case " $listed " in
+        *" $number "*) ;;
+        *)
+          listed="$listed $number"
+          listed_count=$((listed_count + 1))
+          ;;
+      esac
       owner=0
       for prefix in $OWNER_PATH_PREFIXES; do
         case $path in
@@ -308,14 +399,16 @@ if [ -r "$PENDING" ] && have "$GH"; then
       done
       [ "$owner" -eq 1 ] || continue
       case " $seen " in
-        *" #$number "*) continue ;;
+        *" $number "*) continue ;;
       esac
-      seen="$seen #$number"
-      case $pending in
-        *"#$number"*) continue ;;
-      esac
+      seen="$seen $number"
+      pending_has_pr "$pending" "$number" && continue
       problem "!! NOT IN PENDING #$number"
     done <<<"$out"
+    # Enumeration that stopped at the cap cannot say the section is clean.
+    if [ "$listed_count" -ge "$PR_LIMIT" ]; then
+      problem "!! PRS INCOMPLETE $listed_count open PR(s) at the --limit $PR_LIMIT cap"
+    fi
   fi
 fi
 
@@ -327,7 +420,7 @@ if [ ! -r "$BLOCKERS" ]; then
 elif ! have "$PYTHON"; then
   missing "$PYTHON"
 else
-  out=$("$PYTHON" "$BLOCKERS" 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$PYTHON" "$BLOCKERS" 2>/dev/null)
   status=$?
   [ -n "$out" ] && printf '%s\n' "$out"
   if [ "$status" -eq 1 ]; then
@@ -377,7 +470,7 @@ if [ ! -d "$INBOX_DIR" ] || [ ! -r "$INBOX_DIR" ]; then
 elif ! have "$LS"; then
   missing "$LS"
 else
-  out=$("$LS" -t "$INBOX_DIR" 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$LS" -t "$INBOX_DIR" 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed "$LS"
@@ -405,7 +498,7 @@ if [ ! -r "$PICKER" ]; then
 elif ! have "$PYTHON"; then
   missing "$PYTHON"
 else
-  out=$("$PYTHON" -B -c "$COUNT_PY" "$PICKER" 2>/dev/null)
+  out=$(run_deadline "$CMD_TIMEOUT" "$PYTHON" -B -c "$COUNT_PY" "$PICKER" 2>/dev/null)
   status=$?
   if [ "$status" -ne 0 ]; then
     failed mailtinder_pick.py

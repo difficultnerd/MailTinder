@@ -30,6 +30,16 @@ The task's six required tests, and where they live here:
    TickLoudFailures.test_blockers_exiting_one_is_carried_and_its_rows_sit_under_blockers.
 6. staging /api/v1/healthz returning 404: `!! FAILED staging healthz` -
    TickLoudFailures.test_staging_healthz_not_200_fails_loudly_while_root_is_fine.
+
+The security review's findings on this task each have their own class, so a
+regression in one is named by its test:
+
+- F1 the forbidden-tunnel count judges process identity, not words anywhere in
+  argv: TickProcessIdentity.
+- F2 the owner-review alarm matches exact PR numbers and enumerates every open
+  PR instead of the CLI's default window of 30: TickOwnerPending.
+- F3 every external component has a deadline, and a stalled one is reported
+  while the later sections still run: TickComponentDeadlines.
 """
 
 from __future__ import annotations
@@ -127,10 +137,16 @@ exit 0
 
 PGREP_SHIM = """#!/bin/sh
 # T-1123 harness fake pgrep: -af PATTERN prints N fixture lines, exit 0/1 like pgrep.
+# pgrep.lines, when present, is printed verbatim whatever the pattern: the
+# identity tests need process lines the generator cannot express.
 data="${FAKE_DATA:?fake pgrep ran without FAKE_DATA}"
 if [ -f "$data/pgrep.status" ]; then
   read -r status <"$data/pgrep.status"
   exit "$status"
+fi
+if [ -f "$data/pgrep.lines" ]; then
+  while IFS= read -r line; do printf '%s\n' "$line"; done <"$data/pgrep.lines"
+  exit 0
 fi
 pattern=""
 for arg in "$@"; do
@@ -180,6 +196,112 @@ for arg in "$@"; do
 done
 printf '%s' "$code"
 exit "${FAKE_CURL_EXIT:-0}"
+"""
+
+GH_BODY = '''
+"""T-1123 harness fake gh: `gh pr list` honours --limit, as the real CLI does.
+
+The real CLI pages open PRs in windows of at most 30 unless --limit asks for
+more, so a fixture naming 31 open PRs is only visible to a report that asks for
+a window wider than the CLI's own default.
+"""
+import os
+import sys
+
+ARGS = sys.argv[1:]
+DEFAULT_LIMIT = 30
+
+
+def limit_from(args):
+    limit = DEFAULT_LIMIT
+    for index, arg in enumerate(args):
+        if arg == "--limit" and index + 1 < len(args):
+            limit = int(args[index + 1])
+        elif arg.startswith("--limit="):
+            limit = int(arg.split("=", 1)[1])
+    return limit
+
+
+def main():
+    data = os.environ.get("FAKE_DATA")
+    if not data:
+        print("fake gh ran without FAKE_DATA", file=sys.stderr)
+        return 1
+    status_file = os.path.join(data, "gh.status")
+    if os.path.exists(status_file):
+        return int(open(status_file).read().strip())
+    if "pr" not in ARGS or "list" not in ARGS:
+        return 0
+    path = os.path.join(data, "gh.out")
+    lines = []
+    if os.path.exists(path):
+        lines = [line for line in open(path).read().splitlines() if line.strip()]
+    order = []
+    for line in lines:
+        number = line.split(" ", 1)[0]
+        if number not in order:
+            order.append(number)
+    keep = set(order[: limit_from(ARGS)])
+    for line in lines:
+        if line.split(" ", 1)[0] in keep:
+            print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+TIMEOUT_BODY = '''
+"""T-1123 harness fake `timeout`: the coreutils deadline, near enough.
+
+`timeout SECS CMD...` runs CMD and kills it when the deadline passes, exiting
+124 like the real tool, so the report's per-component deadlines are exercised
+in the sandbox exactly as they are on the box.
+"""
+import subprocess
+import sys
+
+OPTIONS_WITH_VALUE = ("-k", "--kill-after", "-s", "--signal")
+FLAGS = ("-v", "--verbose")
+
+
+def parse(args):
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in OPTIONS_WITH_VALUE:
+            index += 2
+            continue
+        if arg.startswith("--kill-after=") or arg.startswith("--signal=") or arg in FLAGS:
+            index += 1
+            continue
+        if arg == "--":
+            index += 1
+        break
+    return float(args[index]), args[index + 1 :]
+
+
+def main():
+    try:
+        secs, cmd = parse(sys.argv[1:])
+    except (IndexError, ValueError):
+        return 125
+    if not cmd:
+        return 125
+    try:
+        return subprocess.run(cmd, timeout=secs).returncode
+    except subprocess.TimeoutExpired:
+        return 124
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+HANG_SHIM = f"""#!/bin/sh
+# T-1123 harness fake that never returns: the component deadline's own fixture.
+exec "{REAL_PYTHON}" -c 'import time; time.sleep(600)'
 """
 
 PR_STATE_SCRIPT = """#!/usr/bin/env python3
@@ -274,8 +396,14 @@ class Sandbox:
         picker_merged=118,
         picker_extra=2,
         pgrep_status=None,
+        pgrep_lines=None,
+        hang=None,
+        cmd_timeout=None,
+        pr_limit=None,
+        timeout_cmd=None,
     ):
         self.drop = drop
+        self.hang = hang
         self.root = Path(tempfile.mkdtemp(prefix="tick-sandbox-"))
         self.bin = self.root / "bin"
         self.data = self.root / "fixtures"
@@ -296,6 +424,8 @@ class Sandbox:
             self._fixture(*fixture)
         if pgrep_status is not None:
             (self.data / "pgrep.status").write_text(str(pgrep_status), encoding="utf-8")
+        if pgrep_lines is not None:
+            (self.data / "pgrep.lines").write_text(pgrep_lines, encoding="utf-8")
 
         (self.box / "PENDING.md").write_text(pending, encoding="utf-8")
         (self.box / "pr_state.py").write_text(
@@ -344,6 +474,12 @@ class Sandbox:
             "TICK_INBOX_MARKER": str(self.marker_file),
             "TICK_STAGING": "https://staging.invalid",
         }
+        if cmd_timeout is not None:
+            self.env["TICK_CMD_TIMEOUT"] = str(cmd_timeout)
+        if pr_limit is not None:
+            self.env["TICK_PR_LIMIT"] = str(pr_limit)
+        if timeout_cmd is not None:
+            self.env["TICK_TIMEOUT_CMD"] = timeout_cmd
         if drop in PATH_DROPS:
             self.env[PATH_DROPS[drop]] = str(self.root / "absent" / drop)
 
@@ -362,10 +498,19 @@ class Sandbox:
             (self.bin / name).write_text(
                 PGREP_SHIM if name == "pgrep" else CURL_SHIM, encoding="utf-8"
             )
+        # gh honours --limit the way the real CLI does; timeout is the deadline
+        # runner every component in the report goes through.
+        if self.drop != "gh":
+            (self.bin / "gh").write_text(f"#!{REAL_PYTHON}\n" + GH_BODY, encoding="utf-8")
+        (self.bin / "timeout").write_text(
+            f"#!{REAL_PYTHON}\n" + TIMEOUT_BODY, encoding="utf-8"
+        )
         for name in TOOLS:
-            if name in ("pgrep", "curl") or name == self.drop:
+            if name in ("pgrep", "curl", "gh") or name == self.drop:
                 continue
             (self.bin / name).write_text(GENERIC_SHIM, encoding="utf-8")
+        if self.hang is not None:
+            (self.bin / self.hang).write_text(HANG_SHIM, encoding="utf-8")
         for path in self.bin.iterdir():
             path.chmod(0o755)
 
@@ -602,6 +747,151 @@ class TickLoudFailures(unittest.TestCase):
             "   rework slot              busy",
         ):
             self.assertIn(expected, lines)
+
+
+class TickProcessIdentity(unittest.TestCase):
+    """F1: the forbidden-tunnel count must judge process identity, not words.
+
+    The old filter dropped every line containing `timeout` or `pgrep` anywhere
+    in its argv, so a tunnel whose path or arguments carried either word read as
+    zero tunnels: a security alarm that goes quiet exactly when it should fire.
+    """
+
+    def test_a_tunnel_whose_path_contains_a_wrapper_word_is_still_counted(self):
+        box = sandbox(
+            self,
+            pgrep_lines="1234 /opt/timeout/bin/cloudflared tunnel --url http://127.0.0.1:8080\n",
+        )
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("   cloudflared processes    1", lines)
+        self.assertEqual(section_of(lines, "!! CLOUDFLARED RUNNING"), "CLOCK")
+
+    def test_a_tunnel_carrying_wrapper_words_in_its_arguments_is_still_counted(self):
+        box = sandbox(
+            self,
+            pgrep_lines=(
+                "1234 cloudflared tunnel --url http://127.0.0.1:8080"
+                " --log /tmp/pgrep-timeout.log\n"
+            ),
+        )
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("   cloudflared processes    1", lines)
+        self.assertEqual(section_of(lines, "!! CLOUDFLARED RUNNING"), "CLOCK")
+
+    def test_a_tunnel_running_under_the_timeout_wrapper_is_still_counted(self):
+        box = sandbox(
+            self,
+            pgrep_lines="1234 timeout 30 cloudflared tunnel --url http://127.0.0.1:8080\n",
+        )
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("   cloudflared processes    1", lines)
+        self.assertEqual(section_of(lines, "!! CLOUDFLARED RUNNING"), "CLOCK")
+
+    def test_the_probes_own_processes_are_not_counted_as_tunnels(self):
+        box = sandbox(
+            self,
+            pgrep_lines=(
+                "1234 timeout 5 pgrep -af cloudflared\n"
+                "1235 pgrep -af cloudflared\n"
+            ),
+        )
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("   cloudflared processes    0", lines)
+        self.assertNotIn("!! CLOUDFLARED RUNNING", lines)
+
+
+class TickOwnerPending(unittest.TestCase):
+    """F2: the owner-review alarm must see every open PR, by exact number.
+
+    `#9` satisfied by `#90` and a 31st PR the CLI's default window hides are
+    both ways for an owner-only PR to vanish from this report.
+    """
+
+    def test_another_pr_number_does_not_satisfy_this_one(self):
+        box = sandbox(
+            self,
+            pending="# PENDING\n- #90 owner-only: .github/workflows/other.yml\n",
+            gh_out="9 .github/workflows/deploy.yml\n",
+        )
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(section_of(lines, "!! NOT IN PENDING #9"), "PRS")
+
+    def test_a_pending_entry_naming_the_exact_number_still_satisfies_it(self):
+        box = sandbox(
+            self,
+            pending="# PENDING\n- #9 owner-only: .github/workflows/deploy.yml\n",
+            gh_out="9 .github/workflows/deploy.yml\n",
+        )
+        done = box.run()
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertNotIn("!! NOT IN PENDING #9", done.stdout)
+
+    def test_an_owner_only_pr_beyond_the_cli_default_window_is_still_checked(self):
+        # 31 open PRs and the last one owner-only: `gh pr list` only leaves its
+        # default window of 30 when the report asks for a wider one.
+        gh_out = "".join(f"{n} app/lib/file{n}.dart\n" for n in range(1, 31))
+        gh_out += "31 infra/terraform/envs/prod/main.tf\n"
+        pending = "# PENDING\n" + "".join(f"- #{n} factory/T-{n:04d}\n" for n in range(1, 31))
+        box = sandbox(self, gh_out=gh_out, pending=pending)
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(section_of(lines, "!! NOT IN PENDING #31"), "PRS")
+
+    def test_reaching_the_enumeration_cap_is_reported_not_read_as_clean(self):
+        gh_out = "".join(f"{n} app/lib/file{n}.dart\n" for n in range(1, 4))
+        box = sandbox(self, gh_out=gh_out, pr_limit=3)
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertTrue(
+            any(line.startswith("!! PRS INCOMPLETE") for line in lines), done.stdout
+        )
+
+
+class TickComponentDeadlines(unittest.TestCase):
+    """F3: one stalled component must not stall the rest of the report."""
+
+    def test_a_balance_call_that_never_returns_fails_that_component_only(self):
+        box = sandbox(self, hang="deepseek-balance", cmd_timeout=1)
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(section_of(lines, "!! FAILED deepseek-balance"), "CLOCK")
+        self.assertIn("   disk                     43%", lines)
+        self.assertIn("   staging healthz          200", lines)
+        self.assertIn("merged 118/120 [built-not-merged 2]", lines)
+
+    def test_a_gh_call_that_never_returns_fails_prs_and_later_sections_continue(self):
+        box = sandbox(self, hang="gh", cmd_timeout=1)
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(section_of(lines, "!! FAILED gh"), "PRS")
+        self.assertIn("   T-1120   buildable; 2 builder(s) running", lines)
+        self.assertIn("   newest                   2026-10-13-0700.json", lines)
+        self.assertIn("merged 118/120 [built-not-merged 2]", lines)
+
+    def test_a_missing_deadline_runner_is_loud_once_and_the_report_still_runs(self):
+        box = sandbox(self, timeout_cmd="/nonexistent/timeout")
+        done = box.run()
+        lines = done.stdout.splitlines()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(
+            lines.count("!! MISSING /nonexistent/timeout (component deadlines disabled)"),
+            1,
+        )
+        self.assertIn("merged 118/120 [built-not-merged 2]", lines)
 
 
 class TickInboxMarker(unittest.TestCase):
