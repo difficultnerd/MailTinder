@@ -14,9 +14,10 @@ use domain::user_state::{HistoryAction, HistoryEntry, HistoryOutcome, UserState}
 use domain::{JobStatus, SwipeAction, UserId};
 use obs::{Pseudonymiser, SecurityEvent};
 use ports::store::NeedsAttentionId;
-use ports::{Precondition, WrappedKey};
+use ports::{EvalId, Precondition, WrappedKey};
 use time::OffsetDateTime;
 
+use crate::classify::eval::mark_undone;
 use crate::error::ApiError;
 use crate::sealed::{http_status_for, SealedTokens, TokenType};
 use crate::services::categories::provider_error;
@@ -107,6 +108,13 @@ pub async fn undo(
 
     // The `undo` metric (S10 8), once the reversal has committed.
     emit_undo(app, &user, payload.record.action);
+
+    // T-906a (BAKE-6): flip the same eval record's `outcome.undone`, if this
+    // swipe wrote one. A missing record (TTL, opt-out) is fine, and a failure
+    // never fails the undo.
+    if let Some(eval_id) = payload.eval_id {
+        let _ = mark_undone(app, &EvalId(eval_id)).await;
+    }
 
     // Step 6: nothing here is a `reject`, so no unsubscribe has ever been sent.
     Ok(UndoResponse {
@@ -250,6 +258,13 @@ pub async fn undo_reject(
 
     // The `undo` metric (S10 8), once the reversal has committed.
     emit_undo(app, &user, SwipeAction::Reject);
+
+    // T-906a (BAKE-6): flip the same eval record's `outcome.undone`, if this
+    // left swipe wrote one. A missing record (TTL, opt-out) is fine, and a
+    // failure never fails the undo.
+    if let Some(eval_id) = payload.eval_id {
+        let _ = mark_undone(app, &EvalId(eval_id)).await;
+    }
 
     // The undo succeeded but the unsubscribe had already gone (or was in
     // flight): the exact "unsubscribe sent after a successful undo" (S10 8),
