@@ -1,6 +1,6 @@
 //! Rates with Wilson 95% intervals and the junk confusion counts (STAT-1, STAT-2).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::labels::Label;
 use super::Z_95;
@@ -9,7 +9,7 @@ use super::Z_95;
 ///
 /// `n` is `Some(0)` when the denominator is known but empty; a suppressed rate
 /// has every field `None`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Rate {
     /// The point estimate, `None` when there is no denominator.
     pub value: Option<f64>,

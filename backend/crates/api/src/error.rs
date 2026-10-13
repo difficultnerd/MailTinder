@@ -33,7 +33,16 @@ pub enum ApiError {
     CategoryExists,
     ConsentOutdated,
     ExperimentUnavailable,
-    VersionsMixed,
+    /// More than one input or question version over the range and pooling was
+    /// not asked for (S7 5.13). The body carries the versions present.
+    VersionsMixed {
+        /// Distinct input versions.
+        input: Vec<String>,
+        /// Distinct question versions.
+        question: Vec<String>,
+        /// Distinct price versions.
+        price: Vec<String>,
+    },
     SnapshotLimit,
     NotAcceptable,
     UndoExpired,
@@ -67,7 +76,7 @@ impl ApiError {
             | Self::CategoryExists
             | Self::ConsentOutdated
             | Self::ExperimentUnavailable
-            | Self::VersionsMixed
+            | Self::VersionsMixed { .. }
             | Self::SnapshotLimit => StatusCode::CONFLICT,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             Self::UndoExpired => StatusCode::GONE,
@@ -96,7 +105,7 @@ impl ApiError {
             Self::CategoryExists => "category_exists",
             Self::ConsentOutdated => "consent_outdated",
             Self::ExperimentUnavailable => "experiment_unavailable",
-            Self::VersionsMixed => "versions_mixed",
+            Self::VersionsMixed { .. } => "versions_mixed",
             Self::SnapshotLimit => "snapshot_limit",
             Self::NotAcceptable => "not_acceptable",
             Self::UndoExpired => "undo_expired",
@@ -125,7 +134,7 @@ impl ApiError {
             Self::CategoryExists => "Category already exists",
             Self::ConsentOutdated => "Consent outdated",
             Self::ExperimentUnavailable => "Experiment unavailable",
-            Self::VersionsMixed => "Versions mixed",
+            Self::VersionsMixed { .. } => "Versions mixed",
             Self::SnapshotLimit => "Snapshot limit reached",
             Self::NotAcceptable => "Not acceptable",
             Self::UndoExpired => "Undo expired",
@@ -191,6 +200,18 @@ impl From<StoreError> for ApiError {
     }
 }
 
+/// The versions the refused report range carries (S7 5.13, schema
+/// `VersionsPresent`): carried by the `409 versions_mixed` problem body.
+#[derive(Serialize)]
+pub struct VersionsPresentBody {
+    /// Distinct input versions.
+    pub input: Vec<String>,
+    /// Distinct question versions.
+    pub question: Vec<String>,
+    /// Distinct price versions.
+    pub price: Vec<String>,
+}
+
 /// The RFC 9457 problem body. `request_id` is filled by the problem layer.
 #[derive(Serialize)]
 pub struct ProblemBody {
@@ -204,6 +225,8 @@ pub struct ProblemBody {
     pub mailbox_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub versions_present: Option<VersionsPresentBody>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<String>>,
 }
@@ -239,6 +262,18 @@ pub fn render_problem(resp: &mut Response, request_id: RequestId) {
         retry_after_seconds: match err {
             ApiError::RateLimited { retry_after_s } => Some(*retry_after_s),
             ApiError::ProviderUnavailable { retry_after_s, .. } => *retry_after_s,
+            _ => None,
+        },
+        versions_present: match err {
+            ApiError::VersionsMixed {
+                input,
+                question,
+                price,
+            } => Some(VersionsPresentBody {
+                input: input.clone(),
+                question: question.clone(),
+                price: price.clone(),
+            }),
             _ => None,
         },
         fields: match err {
