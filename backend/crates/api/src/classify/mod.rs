@@ -19,6 +19,7 @@ pub mod eval;
 pub mod input;
 pub mod payload;
 pub mod prompt;
+pub mod switches;
 
 use std::sync::Arc;
 use std::time::Duration;

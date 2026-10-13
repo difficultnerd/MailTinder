@@ -64,6 +64,7 @@ pub const ROUTE_TEMPLATES: &[&str] = &[
     "/api/v1/admin/invite-requests/{request_id}/decline",
     "/api/v1/admin/users",
     "/api/v1/admin/users/{user_id}/sessions",
+    "/api/v1/admin/experiments/classifier",
 ];
 
 use crate::config::ApiConfig;
@@ -251,6 +252,8 @@ fn route_template(_method: &axum::http::Method, path: &str) -> &'static str {
         "/api/v1/session"
     } else if path == "/api/v1/me/experiments" {
         "/api/v1/me/experiments"
+    } else if path == "/api/v1/admin/experiments/classifier" {
+        "/api/v1/admin/experiments/classifier"
     } else if path == "/api/v1/mailboxes" {
         "/api/v1/mailboxes"
     } else if path == "/api/v1/feed/next" {
@@ -317,6 +320,11 @@ pub fn app_state_with_classifiers(
         invite_mailer,
         classifiers,
         bakeoff_gate: classify::BakeoffGate::default(),
+        // The start-up environment switches; the document half is read lazily
+        // (T-906b).
+        switches: Arc::new(classify::switches::ClassifierSwitches::new(
+            classify::switches::EnvSwitches::from_env(),
+        )),
         business_calendar: Arc::new(crate::services::delivery_check::national_calendar()),
         tunables: crate::startup::runtime_tunables(),
     }

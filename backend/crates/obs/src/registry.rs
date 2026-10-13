@@ -139,6 +139,13 @@ pub const OUTCOMES: &[&str] = &[
     "skip",
     "file",
     "reject",
+    // Kill-switch changes (T-906b): the `kill_switch_change` security event has
+    // no free field for the model and its new value (S5 logs), so the outcome
+    // code carries both.
+    "gemini_enabled",
+    "gemini_disabled",
+    "jev_enabled",
+    "jev_disabled",
 ];
 
 pub const OPS: &[&str] = &[
@@ -171,6 +178,10 @@ pub const OPS: &[&str] = &[
     // The runner delivery of an unsubscribe job (T-1114), including the benign
     // race where a successful undo cancelled the job before the delivery ran.
     "unsub.run",
+    // The kill-switch reader could not read `config/classifiers` (T-906b): the
+    // switches fail closed once the last good read is older than
+    // `SWITCH_STALE_MAX`.
+    "classifier_config_unavailable",
 ];
 
 pub const AMR_VALUES: &[&str] = &[
