@@ -1,0 +1,129 @@
+name: live-contract
+
+# T-1106: the nightly live Gmail contract run. Not a required check.
+#
+# The shared `MailProvider` contract suite (T-203) runs against the real Gmail
+# adapter on the sandbox account. That account holds synthetic mail only and
+# sends nothing: seeding IMPORTS the T-204 corpus with `users.messages.import`,
+# and the transport guard inside the run refuses any call to a send endpoint.
+#
+# Two jobs on purpose. The live job holds the credentials, so it has read
+# access only and never uploads the captured test output (the shared suite
+# interpolates message subjects and provider error values into its own error
+# strings). The follow-up job has `issues: write`, holds no credentials, and
+# classifies on the fixed `LiveOutcome` code the live job passes as a job
+# output, never by reading that log.
+on:
+  schedule:
+    - cron: "23 17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-contract
+  cancel-in-progress: false
+
+jobs:
+  live:
+    # Never on a pull request or a fork: this job holds live credentials.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Holds GMAIL_SANDBOX_CLIENT_ID, GMAIL_SANDBOX_CLIENT_SECRET,
+    # GMAIL_SANDBOX_REFRESH_TOKEN and GMAIL_SANDBOX_ADDRESS.
+    environment: live-sandbox
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.classify.outputs.outcome }}
+      failed: ${{ steps.classify.outputs.failed }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend
+
+      # The suite runs WITHOUT `--nocapture`, so its output is captured to a
+      # file that is never printed and never uploaded. The step prints only the
+      # pass/fail result and the NAMES of the failing tests, both fixed test
+      # identifiers read back from that file.
+      - id: run
+        name: Run the live contract suite
+        env:
+          GMAIL_SANDBOX_CLIENT_ID: ${{ secrets.GMAIL_SANDBOX_CLIENT_ID }}
+          GMAIL_SANDBOX_CLIENT_SECRET: ${{ secrets.GMAIL_SANDBOX_CLIENT_SECRET }}
+          GMAIL_SANDBOX_REFRESH_TOKEN: ${{ secrets.GMAIL_SANDBOX_REFRESH_TOKEN }}
+          GMAIL_SANDBOX_ADDRESS: ${{ secrets.GMAIL_SANDBOX_ADDRESS }}
+        run: |
+          set +e
+          cargo test --locked -p adapters-gmail --features live --test live_contract -- --ignored > /tmp/live-contract.log 2>&1
+          code=$?
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - id: classify
+        name: Classify the run
+        if: always()
+        env:
+          CODE: ${{ steps.run.outputs.code }}
+        run: |
+          set -u
+          log=/tmp/live-contract.log
+          outcome=ContractFailed
+          if grep -q 'credentials expired::Gmail sandbox needs re-authorising' "$log"; then
+            outcome=CredentialsExpired
+          elif grep -q 'outcome=NotConfigured' "$log"; then
+            outcome=NotConfigured
+          elif grep -q 'test result: ok' "$log" && [ "${CODE:-1}" = "0" ]; then
+            outcome=Passed
+          fi
+          failed=$(sed -n 's/^test \([A-Za-z0-9_:]*\) \.\.\. FAILED$/\1/p' "$log" | sort -u | paste -sd, -)
+          printf 'outcome=%s\nfailed=%s\n' "$outcome" "${failed:-none}"
+          # Fixed identifiers only: the outcome code and failing test names.
+          {
+            echo "outcome=$outcome"
+            echo "failed=${failed:-none}"
+          } >> "$GITHUB_OUTPUT"
+
+  report:
+    # Runs only after a failed live run, never on a pull request or a fork.
+    needs: live
+    if: always() && needs.live.result == 'failure' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # `permissions:` is valid only at workflow or job level: the write scope
+    # lives here, on the job that holds no credentials.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Open or update one issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ needs.live.outputs.outcome }}
+          FAILED: ${{ needs.live.outputs.failed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${OUTCOME:-}" = "CredentialsExpired" ]; then
+            title="Gmail sandbox needs re-authorising"
+          else
+            title="Live Gmail contract run failed"
+          fi
+          body=$(printf 'Outcome: `%s`\nFailing tests: `%s`\nRun: %s\n' \
+            "${OUTCOME:-ContractFailed}" "${FAILED:-none}" "$RUN_URL")
+          number=$(gh issue list --state open --search "$title in:title" \
+            --json number,title --jq '.[] | select(.title == "'"$title"'") | .number' | head -n1)
+          if [ -n "${number:-}" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
