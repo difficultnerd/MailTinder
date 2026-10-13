@@ -80,6 +80,7 @@ impl Default for InMemoryServerStore {
             classifier_eval: ClassifierEvalImpl {
                 table: Table::new(),
                 fail_next: Arc::clone(&fail_next),
+                fail_put: AtomicU32::new(0),
             },
             bakeoff_snapshots: SnapshotsImpl {
                 table: Table::new(),
@@ -173,6 +174,13 @@ impl InMemoryServerStore {
     /// Fail only the next Needs Attention write, leaving Feed reads working.
     pub fn fail_next_needs_attention_put(&self) {
         self.needs_attention.fail_put.store(1, Ordering::SeqCst);
+    }
+
+    /// Fail only the next `classifier_eval` write, leaving every read working.
+    /// Proves the eval write is best effort: a store outage there never fails
+    /// the swipe or its undo (T-906a edge case).
+    pub fn fail_next_classifier_eval_put(&self) {
+        self.classifier_eval.fail_put.store(1, Ordering::SeqCst);
     }
 }
 
@@ -909,6 +917,7 @@ impl SessionRepo for SessionsImpl {
 struct ClassifierEvalImpl {
     table: Table<EvalId, ClassifierEvalRecord>,
     fail_next: Arc<AtomicU32>,
+    fail_put: AtomicU32,
 }
 impl ClassifierEvalImpl {
     fn arm_check(&self) -> Result<(), StoreError> {
@@ -939,6 +948,9 @@ impl Repo<EvalId, ClassifierEvalRecord> for ClassifierEvalImpl {
         pre: Precondition,
     ) -> Result<Version, StoreError> {
         self.arm_check()?;
+        if self.fail_put.swap(0, Ordering::SeqCst) != 0 {
+            return Err(StoreError::Unavailable);
+        }
         self.table.put(r, &pre)
     }
     async fn delete(&self, k: &EvalId, pre: Precondition) -> Result<(), StoreError> {

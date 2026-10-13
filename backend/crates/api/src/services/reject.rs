@@ -25,8 +25,8 @@ use domain::{
 };
 use ports::store::{aad_fields, NeedsAttentionId};
 use ports::{
-    Aad, Ciphertext, JobRecord, MailError, MailProvider, MailboxCtx, MessageQuery,
-    NeedsAttentionRecord, Precondition, StoreError, WrappedKey,
+    Aad, Ciphertext, EvalId, JobRecord, MailError, MailProvider, MailboxCtx, MessageQuery,
+    NeedsAttentionRecord, Precondition, StoreError, SwipeDirection, WrappedKey,
 };
 use serde::{Deserialize, Serialize};
 use svc_common::links::safe_link;
@@ -34,6 +34,7 @@ use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
 
+use crate::classify::eval::{write_eval, EvalInput};
 use crate::error::ApiError;
 use crate::http::request_id::RequestId;
 use crate::limits::{policies, LimitSubject};
@@ -91,6 +92,7 @@ pub async fn execute(
     meta: &MessageMeta,
     plan: &SwipePlan,
     swipe_id: Uuid,
+    eval: Option<EvalInput<'_>>,
 ) -> Result<SwipeResultDto, ApiError> {
     let user = session.user;
     let now = app.ports.clock.now();
@@ -110,6 +112,22 @@ pub async fn execute(
 
     // Step 2: the provider change.
     let previous_labels = change_mailbox(&**mail, ctx, meta, plan).await?;
+
+    // Step 2b (T-906a): the eval record for the left swipe, once the trash has
+    // landed, so its ID can go into the undo payload below. Best effort: it
+    // never fails the reject.
+    let eval_id = match eval {
+        Some(input) => write_eval(
+            app,
+            session,
+            input.payload,
+            SwipeDirection::Left,
+            &input.idempotency_key,
+        )
+        .await
+        .unwrap_or_default(),
+        None => None,
+    };
 
     // Step 3: the job (never without the trash).
     if let Some(unsub) = &plan.unsubscribe {
@@ -173,6 +191,7 @@ pub async fn execute(
             previous_labels.clone(),
             new_rule.as_ref(),
             na_item,
+            eval_id,
         );
         let result = SwipeResultDto {
             outcome: plan.outcome,
@@ -281,6 +300,7 @@ fn new_rule_for(state: &UserState, plan: &SwipePlan, rate: Option<u32>) -> Optio
 
 /// Step 9: the undo payload. `rule_id` is set only when this swipe created the
 /// rule.
+#[allow(clippy::too_many_arguments)]
 fn undo_payload(
     plan: &SwipePlan,
     meta: &MessageMeta,
@@ -289,6 +309,7 @@ fn undo_payload(
     previous_labels: LabelSet,
     new_rule: Option<&StoredRule>,
     na_item: Option<NeedsAttentionId>,
+    eval_id: Option<EvalId>,
 ) -> UndoPayload {
     let mut record = SwipeRecord::from_plan(plan, meta, SwipeAction::Reject, now);
     record.previous_labels = previous_labels;
@@ -299,6 +320,7 @@ fn undo_payload(
         history_entry: (plan.change == MailboxChange::ReportSpamAndTrash).then_some(swipe_id),
         na_item: na_item.map(|id| id.0),
         skip_key: None,
+        eval_id: eval_id.map(|id| id.0),
     }
 }
 
