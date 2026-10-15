@@ -230,7 +230,7 @@ jobs:
       - name: Build the web app
         # No `MT_E2E` define: staging is a real deployment, not a test session.
         working-directory: app
-        run: flutter build web --release
+        run: flutter build web --release --no-web-resources-cdn --pwa-strategy=none
 
       - name: Point the staging alias at the staging project
         env:
@@ -346,7 +346,7 @@ jobs:
 
       - name: Build the web app
         working-directory: app
-        run: flutter build web --release
+        run: flutter build web --release --no-web-resources-cdn --pwa-strategy=none
 
       - name: Point the prod alias at the production project
         env:
