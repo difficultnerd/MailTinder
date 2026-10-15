@@ -216,13 +216,14 @@ approves. Nothing is rebuilt for production: the promote job copies the manifest
 digests staging ran into the production repository (`crane`, pinned to one
 release and checksum checked), so the bytes staging ran are the bytes that ship.
 
-T-1105 owns the staging smoke tests and adds its reusable workflow to the job
-slot in `deploy.yml` marked `# T-1105 adds the smoke job here`; it depends on
-this task, so it is not wired up yet. **Until T-1105 lands that smoke job,
-`deploy-prod` depends on `deploy-staging` alone and the `production`
-environment's required reviewer (James) is the only gate between a staging
-deploy and production** - nothing automatically checks the staging deployment
-before the promotion is approved.
+T-1105 owns the staging smoke tests: `.github/workflows/smoke.yml` is a
+reusable workflow that runs the smoke binary as `mt-smoke` against the staging
+deployment, and `deploy.yml` calls it after `deploy-staging` (passing the two
+internal service URLs the deploy job reads, since `mt-smoke` holds no Cloud Run
+role of its own). `deploy-prod` `needs:` the smoke job, so **a digest that
+failed the staging smoke tests is never promoted** - the `production`
+environment's required reviewer (James) is the second gate, on top of it (S11
+2.1). The workflow is also runnable by hand against the same deployment.
 
 The workflow starts only for a push to `main` that can change a deployed
 artifact (`on.push.paths`: `backend/**`, `app/**`, `firebase.json`,
@@ -256,6 +257,7 @@ scoped to the `staging` or `production` environment.**
 | `PROD_DEPLOYER` | the production `mt-deployer` service account email |
 | `DEPLOY_ENABLED` | set to `true` after the first successful staging deploy (T-1104b): a missing staging variable then fails the run loudly, naming it, instead of skipping the deploy quietly |
 | `STAGING_URL` | the staging Hosting URL (T-1105 reads it) |
+| `ZAP_TARGET_URL` | the staging Hosting URL the nightly ZAP baseline scans (T-1105, S10 7.4). Until it is set the `zap-dast` workflow skips, the same way `configured` skips a deploy; it is deliberately *not* a required check |
 
 GitHub environments, and why each deploy job must name one:
 
@@ -288,9 +290,9 @@ owner makes the Terraform and allowlist change together.
 
 Container scanning stays off in CI (CLAUDE.md); if Artifact Registry scanning
 is ever enabled it runs in Google Cloud, and nothing in this pipeline reads its
-findings. There is no smoke test yet (T-1105), so nothing automatically stops a
-bad staging deployment before the promotion: the `production` environment's
-required reviewer is the only gate between staging and production.
+findings. Since T-1105, a bad staging deployment is stopped before the
+promotion by the smoke job (`deploy-prod` `needs:` it), with the `production`
+environment's required reviewer as the second gate.
 
 ### Rolling back
 

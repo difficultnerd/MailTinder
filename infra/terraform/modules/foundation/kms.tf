@@ -32,12 +32,17 @@ resource "google_kms_crypto_key_iam_binding" "data_key_kek" {
   crypto_key_id = google_kms_crypto_key.data_key_kek.id
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
 
-  # Exactly api, unsub and worker (S4 2, 3 October 2026).
-  members = [
-    "serviceAccount:${local.runtime_service_accounts.api}",
-    "serviceAccount:${local.runtime_service_accounts.unsub}",
-    "serviceAccount:${local.runtime_service_accounts.worker}",
-  ]
+  # Exactly api, unsub and worker (S4 2, 3 October 2026), plus whatever the
+  # root passes in `additional_data_key_holders` - empty in production and in
+  # staging's own default; staging adds its smoke identity there (T-1105).
+  members = concat(
+    [
+      "serviceAccount:${local.runtime_service_accounts.api}",
+      "serviceAccount:${local.runtime_service_accounts.unsub}",
+      "serviceAccount:${local.runtime_service_accounts.worker}",
+    ],
+    var.additional_data_key_holders,
+  )
 }
 
 resource "google_kms_crypto_key" "system_fields" {

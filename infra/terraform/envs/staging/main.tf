@@ -3,8 +3,9 @@
 # somewhere that is not production (S4 1 Environments, decision T5, T-1103).
 #
 # Staging may differ from ../../prod only in the values passed to the modules:
-# `env`, `project_id`, `lock_log_bucket`, `max_instances` and
-# `deploy_environment`. Every module call is identical, and
+# `env`, `project_id`, `lock_log_bucket`, `max_instances`,
+# `deploy_environment` and `additional_data_key_holders` (the last one is the
+# smoke identity, T-1105). Every module call is identical, and
 # scripts/tf_env_parity.sh fails the build if the two roots ever call a
 # different module.
 module "foundation" {
@@ -18,6 +19,13 @@ module "foundation" {
   # 90-day bucket cannot be undone, so this is the one staging-only setting here
   # (T-1103 edge case). Retention and location are unchanged.
   lock_log_bucket = false
+
+  # T-1105: the smoke identity (smoke.tf) is a fourth holder of `data-key-kek`
+  # *in staging only*. Its binding is authoritative, so the extra member is
+  # passed *in band* here rather than added beside it with a second IAM
+  # resource, which would fight the binding on every apply. Production passes
+  # nothing and keeps exactly three holders (S4 2, S6 5).
+  additional_data_key_holders = ["serviceAccount:${google_service_account.smoke.email}"]
 }
 
 # The runtime: Cloud Run, Cloud Tasks, Scheduler, Hosting and the deploy

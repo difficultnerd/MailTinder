@@ -1,0 +1,42 @@
+name: zap-dast
+
+# T-1105 (S10 7.4, decisions T4 and T5): the ZAP layer, installed from
+# `optional/zap` and pointed at the staging deployment.
+#
+# Baseline (passive) scan only: the active API scan needs an authenticated ZAP
+# context, which does not exist yet, so ZAP_OPENAPI_URL is deliberately never
+# set and no api-scan job is defined here (S10 7.4, T-1105 "Out of scope").
+#
+# Nightly at 16:41 UTC - early morning in eastern Australia (James's timezone),
+# so the report is waiting when the day starts [DEFAULT]. Not a required status
+# check: it needs a deployed target and runs on a schedule (S10 7.4).
+#
+# Only scan systems you own or have written permission to test.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 16 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    # Step for James: set repository variable ZAP_TARGET_URL (Settings >
+    # Variables) to the staging Hosting URL, e.g. https://<site_id>.web.app.
+    if: ${{ vars.ZAP_TARGET_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: ZAP baseline scan (passive)
+        run: |
+          mkdir -p zap-out && chmod 777 zap-out
+          docker run --rm -v "$PWD/.zap:/zap/wrk/rules:ro" -v "$PWD/zap-out:/zap/wrk/out:rw" \
+            ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t "${{ vars.ZAP_TARGET_URL }}" -c rules/rules.tsv \
+            -r out/report.html -J out/report.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: zap-report
+          path: zap-out/

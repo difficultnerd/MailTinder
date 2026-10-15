@@ -1,0 +1,10 @@
+# ZAP rule overrides: <rule id>	<IGNORE|WARN|FAIL>	(<comment>)
+# Example:
+# 10096	IGNORE	(Timestamp disclosure; accepted)
+#
+# T-1105: this is the triage file for the staging baseline scan
+# (`.github/workflows/zap.yml`, nightly, passive only). The first report's
+# findings are triaged here - a rule is IGNOREd with a comment saying why it is
+# not a finding for this app, or left out so the baseline reports it - and the
+# triage is recorded in the pull request that adds it. Nothing is listed yet:
+# the first run needs the repository variable ZAP_TARGET_URL (set by James).

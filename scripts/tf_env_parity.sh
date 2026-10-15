@@ -24,9 +24,17 @@ done
 [ "$status" -eq 0 ] || exit 1
 
 # The sorted module sources of a root, with trailing comments and whitespace
-# stripped so formatting is not a difference.
+# stripped so formatting is not a difference. `smoke.tf` is ignored by name:
+# the smoke identity (T-1105) is staging-only by design and calls no module, so
+# it can never make one root call a module the other does not.
 module_sources() {
-  grep -hE '^[[:space:]]*source[[:space:]]*=' "$ENVS/$1"/*.tf |
+  local files=()
+  for file in "$ENVS/$1"/*.tf; do
+    [ "$(basename "$file")" = "smoke.tf" ] && continue
+    files+=("$file")
+  done
+  [ "${#files[@]}" -eq 0 ] && return 0
+  grep -hE '^[[:space:]]*source[[:space:]]*=' "${files[@]}" |
     sed -E 's/[[:space:]]*(#|\/\/).*$//; s/[[:space:]]+$//' |
     sort
 }

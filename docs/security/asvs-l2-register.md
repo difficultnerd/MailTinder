@@ -222,12 +222,12 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 **Planned control:** JSON API with explicit content types; no sensitive data in URLs
 
-**Verification:** Integration tests
+**Verification:** Integration tests; ZAP baseline (nightly, staging)
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | V4.1.1 | 1 | Verify that every HTTP response with a message body contains a Content-Type header field that matches the actual content of the response, including the charset parameter to specify safe character encoding (e.g., UTF-8, ISO-8859-1) according to IANA Media Types, such as "text/", "/+xml" and "/xml". | `Content-Type` with charset on every response | backend/http | test `asvs_v4_1_1_*` | Planned |
-| V4.1.2 | 2 | Verify that only user-facing endpoints (intended for manual web-browser access) automatically redirect from HTTP to HTTPS, while other services or endpoints do not implement transparent redirects. This is to avoid a situation where a client is erroneously sending unencrypted HTTP requests, but since the requests are being automatically redirected to HTTPS, the leakage of sensitive data goes undiscovered. | `api` serves HTTPS only, no HTTP redirect | backend/http | dast | Planned |
+| V4.1.2 | 2 | Verify that only user-facing endpoints (intended for manual web-browser access) automatically redirect from HTTP to HTTPS, while other services or endpoints do not implement transparent redirects. This is to avoid a situation where a client is erroneously sending unencrypted HTTP requests, but since the requests are being automatically redirected to HTTPS, the leakage of sensitive data goes undiscovered. | `api` serves HTTPS only, no HTTP redirect | backend/http; .github/workflows/zap.yml | dast | Built (ZAP baseline, nightly against staging, T-1105; first report pending `ZAP_TARGET_URL`) |
 | V4.1.3 | 2 | Verify that any HTTP header field used by the application and set by an intermediary layer, such as a load balancer, a web proxy, or a backend-for-frontend service, cannot be overridden by the end-user. Example headers might include X-Real-IP, X-Forwarded-*, or X-User-ID. | Client IP read only from the trusted front-end header position | backend/http | test `asvs_v4_1_3_*` | Planned |
 
 ## V4.2 HTTP Message Structure Validation
@@ -691,11 +691,11 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 **Planned control:** TLS 1.2 minimum, 1.3 preferred, managed certificates on Firebase Hosting and Cloud Run
 
-**Verification:** Configuration test
+**Verification:** Configuration test; ZAP baseline (nightly, staging)
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| V12.1.1 | 1 | Verify that only the latest recommended versions of the TLS protocol are enabled, such as TLS 1.2 and TLS 1.3. The latest version of the TLS protocol must be the preferred option. | TLS 1.2 and 1.3 at the Google front end | Firebase Hosting, Cloud Run | dast | Planned |
+| V12.1.1 | 1 | Verify that only the latest recommended versions of the TLS protocol are enabled, such as TLS 1.2 and TLS 1.3. The latest version of the TLS protocol must be the preferred option. | TLS 1.2 and 1.3 at the Google front end | Firebase Hosting, Cloud Run; .github/workflows/zap.yml | dast | Built (ZAP baseline, nightly against staging, T-1105; first report pending `ZAP_TARGET_URL`) |
 | V12.1.2 | 2 | Verify that only recommended cipher suites are enabled, with the strongest cipher suites set as preferred. L3 applications must only support cipher suites which provide forward secrecy. | Google-managed cipher suites | Firebase Hosting, Cloud Run | review | Planned |
 | V12.1.3 | 2 | Verify that the application validates that mTLS client certificates are trusted before using the certificate identity for authentication or authorization. | N/A: no mTLS client certificates | - | - | N/A |
 
@@ -762,13 +762,13 @@ Source: OWASP Application Security Verification Standard 5.0.0, licensed CC BY-S
 
 **Planned control:** No debug endpoints, stack traces or version banners in production
 
-**Verification:** Integration tests
+**Verification:** Integration tests; ZAP baseline (nightly, staging)
 
 | ID | L | Requirement | Control | Location | Verify | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | V13.4.1 | 1 | Verify that the application is deployed either without any source control metadata, including the .git or .svn folders, or in a way that these folders are inaccessible both externally and to the application itself. | Container holds only the release binary: the runtime stage is distroless `nonroot`, copies exactly one file from the build stage and runs `USER nonroot`; the build context carries no `.git` | backend/Dockerfile, backend/.dockerignore | test `asvs_v13_4_1_*` (reads `backend/Dockerfile`) | Implemented (container image) |
 | V13.4.2 | 2 | Verify that debug modes are disabled for all components in production environments to prevent exposure of debugging features and information leakage. | API test invite route requires both the `testkit` feature and runtime `MT_E2E=1`; production builds omit `testkit` and refuse e2e startup; the deploy image is built `--release --locked` with no feature selection at all. Advance-clock is not implemented and is not evidence for this control. | backend/crates/api/src/lib.rs, backend/crates/api/src/startup.rs, backend/Dockerfile, .github/workflows/ci.yml, .github/workflows/deploy.yml | `asvs_v13_4_2_test_routes_absent_without_testkit_feature` (404 even with `MT_E2E=1`); `asvs_v13_4_2_invite_route_requires_runtime_e2e_mode` (404 unset/0, 201 with 1); `api_e2e_env_refused_without_testkit_build`; `asvs_v13_4_2_dockerfile_builds_release_without_features` (reads `backend/Dockerfile`); CI release build and no-feature route/startup tests | Implemented (API and deploy image); remaining components planned |
-| V13.4.3 | 2 | Verify that web servers do not expose directory listings to clients unless explicitly intended. | No directory listing on Hosting or `api` | firebase.json | dast | Planned |
+| V13.4.3 | 2 | Verify that web servers do not expose directory listings to clients unless explicitly intended. | No directory listing on Hosting or `api` | firebase.json; .github/workflows/zap.yml | dast | Built (ZAP baseline, nightly against staging, T-1105; first report pending `ZAP_TARGET_URL`) |
 | V13.4.4 | 2 | Verify that using the HTTP TRACE method is not supported in production environments, to avoid potential information leakage. | `TRACE` refused | backend/http | test `asvs_v13_4_4_*` | Planned |
 | V13.4.5 | 2 | Verify that documentation (such as for internal APIs) and monitoring endpoints are not exposed unless explicitly intended. | No docs or metrics routes on `api` | backend/http | test `asvs_v13_4_5_*` | Planned |
 

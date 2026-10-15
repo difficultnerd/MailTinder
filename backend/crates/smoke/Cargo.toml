@@ -1,0 +1,36 @@
+[package]
+name = "smoke"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The post-deploy smoke binary (T-1105). A binary, never a service: it is not
+# deployed and nothing depends on it. `cargo run --release --locked -p smoke`.
+[[bin]]
+name = "smoke"
+path = "src/main.rs"
+
+[dependencies]
+domain.workspace = true
+ports.workspace = true
+obs.workspace = true
+svc-common.workspace = true
+adapters-gcp.workspace = true
+async-trait.workspace = true
+time.workspace = true
+url.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+# `testkit` is dev-only, so the shipped binary still links no test code (S10
+# 3.1): the checks below are driven against its in-memory fakes, which is what
+# keeps the crate above the coverage floor (S10 10.2) without excluding it. The
+# proof of the behaviour stays the staging run in `smoke.yml`.
+[dev-dependencies]
+testkit.workspace = true
+
+[lints]
+workspace = true
