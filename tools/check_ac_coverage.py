@@ -182,18 +182,34 @@ def test_key(known_id: str) -> str:
     return norm
 
 
+# Task-local story rows: `OWN AC1`, and `E2E-INFRA AC1` but never the spec's
+# own hyphenated-digits shape `SW-03 AC2` (see is_task_local_story_ac).
+TASK_LOCAL_STORY_AC_RE = re.compile(
+    r"^(?:[A-Z][A-Z0-9]*"
+    r"|[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][A-Z0-9]*) AC\d+[a-z]?$"
+)
+
+
 def is_task_local_story_ac(raw_id: str) -> bool:
     """True for an `AC` row of a story the spec sources do not define.
 
-    A task may name its own story (T-1101g's `E2E-INFRA AC1`, whose checks are
-    proved by `e2e_infra_ac1_*` tests). Such a row supplies its own test key
-    from the whole ID; the named test must still exist, so a typo fails exactly
-    like a missing test instead of being ignored.
+    A task may name its own story: T-1101g's `E2E-INFRA AC1` (whose checks are
+    proved by `e2e_infra_ac1_*` tests) and T-1116/T-1117/T-1118's `BOOT`,
+    `TFW` and `OWN AC1` rows (proved by `boot_ac1_*`, `tfw_ac1_*`, `own_ac1_*`
+    tests). Such a row supplies its own test key from the whole ID; the named
+    test must still exist, so a typo fails exactly like a missing test instead
+    of being ignored.
 
-    The story part must carry a word (letters, not only a number), which is what
-    distinguishes `E2E-INFRA` from the spec's own `SW-03` style IDs.
+    Two shapes are accepted, and neither can hide a spec ID:
+
+    - one word, `OWN AC1` (T-1116-T-1118): every story the spec sources define
+      is hyphenated (`SW-03`, `INV-5`, `SES-1`), so a bare word that is not in
+      the known-ID map is a task-local story by construction;
+    - the hyphenated form whose last part carries a word, `E2E-INFRA AC1`,
+      which is what distinguishes it from the spec's own `SW-03 AC2` style IDs
+      (the last part there is digits).
     """
-    return bool(re.match(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-[A-Z][A-Z0-9]* AC\d+[a-z]?$", raw_id))
+    return bool(TASK_LOCAL_STORY_AC_RE.match(raw_id))
 
 
 def rust_test_names(root: Path) -> set[str]:
@@ -260,13 +276,58 @@ def semgrep_rule_ids(root: Path) -> set[str]:
     return rules
 
 
-def has_test(key: str, rust: set[str], dart: set[str]) -> bool:
-    """True when some test name in rust or dart equals key or starts with key + '_'."""
+def shell_test_names(root: Path) -> set[str]:
+    """Collect bash test function names from `*_test.sh` files (T-1118).
+
+    Some acceptance criteria are proved by a shell test rather than a Rust or
+    Dart one: `scripts/infra/tests/set_secret_test.sh` declares
+    `own_ac1_value_never_in_argv_or_output`, exactly the name the task file
+    lists. A bash function cannot carry a hyphen, so the key convention is the
+    same as everywhere else (`own_ac1` + `_` + behaviour).
+
+    Only files whose name ends in `_test.sh` are read, so a helper function in
+    an ordinary script can never look like coverage. Build outputs, VCS
+    metadata and dependency directories are pruned rather than walked.
+    """
+    names: set[str] = set()
+    fn_re = re.compile(
+        r"^[ \t]*function[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\([ \t]*\))?[ \t]*\{"
+        r"|^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([ \t]*\)[ \t]*\{",
+        re.MULTILINE,
+    )
+    skip_dirs = {".git", "target", "build", "node_modules", ".dart_tool"}
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        for fname in filenames:
+            if not fname.endswith("_test.sh"):
+                continue
+            path = Path(dirpath) / fname
+            try:
+                content = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for m in fn_re.finditer(content):
+                names.add(m.group(1) or m.group(2))
+
+    return names
+
+
+def has_test(
+    key: str,
+    rust: set[str],
+    dart: set[str],
+    shell: set[str] | None = None,
+) -> bool:
+    """True when some test name in rust, dart or shell equals key or starts with key + '_'."""
     prefix = key + "_"
     for name in rust:
         if name == key or name.startswith(prefix):
             return True
     for name in dart:
+        if name == key or name.startswith(prefix):
+            return True
+    for name in shell or ():
         if name == key or name.startswith(prefix):
             return True
     return False
@@ -333,6 +394,11 @@ def main(argv: list[str] | None = None) -> int:
     rust_names = rust_test_names(root)
     dart_keys = dart_test_keys(root)
     semgrep_rules = semgrep_rule_ids(root)
+    shell_names = shell_test_names(root)
+
+    def covered(key: str) -> bool:
+        """True when a Rust, Dart or shell test name carries the ID."""
+        return has_test(key, rust_names, dart_keys, shell_names)
 
     # Read enforced tasks
     enforced_ids: list[str] = []
@@ -376,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
             # Check if S9 state test name
             if re.match(r"^s9_[a-z0-9_]+$", raw_id):
                 # Must exist exactly as Rust name or Dart key prefix (or exact match)
-                if not has_test(raw_id, rust_names, dart_keys):
+                if not covered(raw_id):
                     failures.append(
                         f"{rel_task_path}: {raw_id}: missing test (expected a name starting {raw_id})"
                     )
@@ -397,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                 # exist, so a typo fails like a missing test.
                 if is_task_local_story_ac(raw_id):
                     key = test_key(raw_id)
-                    if not has_test(key, rust_names, dart_keys):
+                    if not covered(key):
                         failures.append(
                             f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                         )
@@ -418,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
                 v = kid.verify or "-"
                 if v == "test":
                     key = test_key(kid.id)
-                    if not has_test(key, rust_names, dart_keys):
+                    if not covered(key):
                         failures.append(
                             f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                         )
@@ -436,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             else:
                 key = test_key(kid.id)
-                if not has_test(key, rust_names, dart_keys):
+                if not covered(key):
                     failures.append(
                         f"{rel_task_path}: {raw_id}: missing test (expected a name starting {key})"
                     )
@@ -447,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
             v = kid.verify or "-"
             if v == "test":
                 key = test_key(kid.id)
-                if not has_test(key, rust_names, dart_keys):
+                if not covered(key):
                     failures.append(
                         f"docs/security/asvs-l2-register.md: {kid.id}: missing test (expected a name starting {key})"
                     )
@@ -494,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
         uncovered: list[str] = []
         for kid in acs:
             key = test_key(kid.id)
-            if has_test(key, rust_names, dart_keys):
+            if covered(key):
                 covered_count += 1
             else:
                 uncovered.append(kid.id)
@@ -512,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
     inv_total = len(s3_list)
     for kid in s3_list:
         key = test_key(kid.id)
-        if has_test(key, rust_names, dart_keys):
+        if covered(key):
             inv_covered += 1
 
     # Register 'test' rows covered of their total
@@ -520,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
     reg_test_covered = 0
     for kid in reg_test_rows:
         key = test_key(kid.id)
-        if has_test(key, rust_names, dart_keys):
+        if covered(key):
             reg_test_covered += 1
 
     report_lines.append("## Totals")
