@@ -50,6 +50,9 @@ pub struct CallbackQuery {
     pub prompt: Option<String>,
     /// Google only, ignored.
     pub hd: Option<String>,
+    /// The issuer identifier (RFC 9207), sent by Google since 2026; ignored
+    /// here because the ID token's own `iss` is what is verified.
+    pub iss: Option<String>,
 }
 
 /// Everything an intent handler needs after `state`, code and ID token are
