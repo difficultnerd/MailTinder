@@ -330,7 +330,7 @@ fn query(state: &str) -> String {
 
 fn query_with_google_extras(state: &str) -> String {
     format!(
-        "code=code-A&state={state}&scope=openid%20email&authuser=0&prompt=consent&hd=example.com"
+        "code=code-A&state={state}&scope=openid%20email&authuser=0&prompt=consent&hd=example.com&iss=https%3A%2F%2Faccounts.google.com"
     )
 }
 
