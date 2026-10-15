@@ -183,6 +183,7 @@ Generated from each task file's header (3 October 2026). Dependencies list only 
 | [T-1123](T-1123-tick-script.md) | tick.sh: the hourly watch as one tested script that fails loudly | M11 | sonnet | T-1122 |
 | [T-1124](T-1124-orphan-watcher-and-digest-blockers.md) | Orphan-branch watcher, PENDING stubs, blockers in the digest | M11 | sonnet | T-1122 |
 | [T-1104d](T-1104d-deploy-policy-test-hardening.md) | Harden the deploy workflow policy test (review findings S-1 to S-7 of PR #89) | M11 | sonnet | T-1104b |
+| [T-1121](T-1121-behaviour-coverage-check.md) | Make the behaviour tables of newer tasks enforceable (the AC manifest entry for them enforces nothing today) | M11 | sonnet | T-1120a |
 | [T-1115b](T-1115b-redaction-escaped-quote-and-flaky-property.md) | Redaction: escaped quotes in quoted local parts; deterministic `@` property | M9 | sonnet | T-1115 |
 | [T-1115c](T-1115c-swipe-token-clear-type-400.md) | Swipe: unrecognised clear token type is a 400 | M9 | sonnet | T-1114 |
 | [T-1115d](T-1115d-redaction-unterminated-quote.md) | Redaction: unterminated quote with an escaped quote leaves the name prefix | M9 | sonnet | T-1115b |
