@@ -20,6 +20,7 @@ from tools.check_ac_coverage import (
     parse_task_acs,
     rust_test_names,
     semgrep_rule_ids,
+    shell_test_names,
     test_key,
 )
 
@@ -134,15 +135,26 @@ The tests are JEV-1, BAKE-2, EXP-1, GUARD-1, and STAT-1.
         self.assertEqual(test_key("XC-01"), "xc_01")
         # A task-local story (T-1101g) keys off the whole row ID.
         self.assertEqual(test_key("E2E-INFRA AC1"), "e2e_infra_ac1")
+        # A one-word task-local story (T-1116-T-1118) does too.
+        self.assertEqual(test_key("OWN AC1"), "own_ac1")
+        self.assertEqual(test_key("BOOT AC12b"), "boot_ac12b")
 
     def test_task_local_story_ac_shape(self):
         self.assertTrue(is_task_local_story_ac("E2E-INFRA AC1"))
         self.assertTrue(is_task_local_story_ac("E2E-INFRA AC12b"))
+        # A one-word story (T-1116-T-1118) is task-local too: no spec source
+        # defines a hyphen-free story.
+        self.assertTrue(is_task_local_story_ac("OWN AC1"))
+        self.assertTrue(is_task_local_story_ac("OWN AC2"))
+        self.assertTrue(is_task_local_story_ac("BOOT AC12b"))
+        self.assertTrue(is_task_local_story_ac("TFW AC8"))
         # A plain unknown ID, a known-story row and a state test name keep the
         # existing handling.
         self.assertFalse(is_task_local_story_ac("UNKNOWN-99"))
         self.assertFalse(is_task_local_story_ac("SW-03 AC2"))
         self.assertFalse(is_task_local_story_ac("s9_feed_empty"))
+        # A bare word without an AC number is not an AC row either.
+        self.assertFalse(is_task_local_story_ac("OWN"))
 
     def test_rust_names_found_in_proptest_block(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +327,69 @@ void main() {
             rs_dir = tmp_root / "backend/crates/e2e/tests"
             rs_dir.mkdir(parents=True)
             (rs_dir / "unsub_infra.rs").write_text("fn e2e_infra_ac1_job_due_and_posted_once() {}\n")
+            self.assertEqual(main(["--root", str(tmp_root)]), 0)
+
+    def test_shell_test_names_from_test_scripts_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tests_dir = tmp_root / "scripts/infra/tests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "set_secret_test.sh").write_text(
+                """#!/usr/bin/env bash
+own_ac1_value_never_in_argv_or_output() {
+  :
+}
+function own_ac2_refuses_unknown_or_missing_secret {
+  :
+}
+usage() { :; }
+"""
+            )
+            # An ordinary script is never a source of coverage.
+            (tests_dir.parent / "set-secret.sh").write_text(
+                "own_ac9_not_a_test() { :; }\n"
+            )
+            # Build output is pruned, not walked.
+            target = tmp_root / "target"
+            target.mkdir()
+            (target / "stale_test.sh").write_text("own_ac1_stale() { :; }\n")
+
+            names = shell_test_names(tmp_root)
+            self.assertIn("own_ac1_value_never_in_argv_or_output", names)
+            self.assertIn("own_ac2_refuses_unknown_or_missing_secret", names)
+            self.assertIn("usage", names)
+            self.assertNotIn("own_ac9_not_a_test", names)
+            self.assertNotIn("own_ac1_stale", names)
+
+    def test_has_test_matches_shell_names_with_underscore_boundary(self):
+        shell = {"own_ac1_value_never_in_argv_or_output"}
+        self.assertTrue(has_test("own_ac1", set(), set(), shell))
+        # The boundary matters here too: own_ac2 is not in that name.
+        self.assertFalse(has_test("own_ac2", set(), set(), shell))
+        self.assertFalse(has_test("own_ac", set(), set(), shell))
+        # Omitting the shell set keeps the previous behaviour.
+        self.assertFalse(has_test("own_ac1", set(), set()))
+
+    def test_task_local_shell_test_proves_the_ac(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            self._setup_tree(tmp_root)
+            (tmp_root / "docs/backlog/T-101-sample.md").write_text(
+                """# T-101
+## Acceptance criteria
+| ID | Behaviour |
+| --- | --- |
+| OWN AC1 | The value never appears in arguments, output, logs or files |
+"""
+            )
+            # Deliberately missing: the row's own key must name a real test.
+            self.assertEqual(main(["--root", str(tmp_root)]), 1)
+
+            tests_dir = tmp_root / "scripts/infra/tests"
+            tests_dir.mkdir(parents=True)
+            (tests_dir / "set_secret_test.sh").write_text(
+                "own_ac1_value_never_in_argv_or_output() { :; }\n"
+            )
             self.assertEqual(main(["--root", str(tmp_root)]), 0)
 
     def test_inactive_id_in_task_fails(self):
